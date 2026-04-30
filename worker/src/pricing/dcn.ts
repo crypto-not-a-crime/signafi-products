@@ -1,3 +1,5 @@
+import { DCN_SELL_PUT_TEMPLATE, getDcnTemplateSummary, type DcnTemplateSummary } from "./dcn-template";
+
 export type BidAskLevel = [price: number, amount: number];
 
 export interface DcnPricingRequest {
@@ -8,6 +10,7 @@ export interface DcnPricingRequest {
   firmMarginBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;
+  scenarioExpiryPrice?: number;
   scenarioDownsidePrice?: number;
   scenarioUpsidePrice?: number;
   nowMs?: number;
@@ -60,7 +63,29 @@ export interface FormulaTraceRow {
   value: number | string | boolean | null;
 }
 
+export type DcnScenarioSide = "downside" | "upside";
+export type DcnPayoutAsset = "BTC" | "USDT";
+
+export interface DcnScenarioResult {
+  expiryPrice: number;
+  side: DcnScenarioSide;
+  clientPayoutAsset: DcnPayoutAsset;
+  clientPayoutAmount: number | null;
+  clientPayoutBtc: number | null;
+  clientPayoutUsdt: number | null;
+  clientPrincipalInterestBtc: number | null;
+  clientPrincipalInterestUsdt: number | null;
+  optionSettlementBtc: number | null;
+  netHedgeBtc: number | null;
+  btcToPurchase: number | null;
+  sellBtcProceedsUsdt: number | null;
+  firmProfitUsdt: number | null;
+  annualizedFirmProfit: number | null;
+  formulaTrace: FormulaTraceRow[];
+}
+
 export interface DcnCalculation {
+  formulaTemplate: DcnTemplateSummary;
   instrumentName: string;
   investmentUsdt: number;
   spotPrice: number;
@@ -76,6 +101,9 @@ export interface DcnCalculation {
   netOptionProceedsBtc: number | null;
   netOptionProceedsUsdt: number | null;
   premiumCoversInterest: boolean;
+  selectedScenario: DcnScenarioResult;
+  downsideScenario: DcnScenarioResult;
+  upsideScenario: DcnScenarioResult;
   upsideProfitUsdt: number | null;
   upsideAnnualizedProfit: number | null;
   downsideProfitUsdt: number | null;
@@ -149,6 +177,129 @@ export function modelSellIntoBidDepth(
   };
 }
 
+interface DcnScenarioInput {
+  investmentUsdt: number;
+  strike: number;
+  dayCount: number;
+  requiredContracts: number;
+  clientYield: number | null;
+  clientPrincipalInterestBtc: number | null;
+  clientPrincipalInterestUsdt: number | null;
+  netOptionProceedsBtc: number | null;
+}
+
+export function calculateDcnScenario(expiryPrice: number, input: DcnScenarioInput): DcnScenarioResult {
+  const side: DcnScenarioSide = expiryPrice < input.strike ? "downside" : "upside";
+  const clientPayoutBtc = side === "downside" ? input.clientPrincipalInterestBtc : null;
+  const clientPayoutUsdt = side === "upside" ? input.clientPrincipalInterestUsdt : null;
+  const clientPayoutAsset: DcnPayoutAsset = side === "downside" ? "BTC" : "USDT";
+  const clientPayoutAmount = side === "downside" ? clientPayoutBtc : clientPayoutUsdt;
+  const optionSettlementBtc =
+    side === "downside" ? -((input.strike - expiryPrice) / expiryPrice) * input.requiredContracts : 0;
+  const netHedgeBtc = input.netOptionProceedsBtc === null ? null : input.netOptionProceedsBtc + optionSettlementBtc;
+  const btcToPurchase =
+    side === "downside" && netHedgeBtc !== null && input.clientPrincipalInterestBtc !== null
+      ? input.clientPrincipalInterestBtc - netHedgeBtc
+      : null;
+  const sellBtcProceedsUsdt =
+    side === "upside" && input.netOptionProceedsBtc !== null ? input.netOptionProceedsBtc * expiryPrice : null;
+  const firmProfitUsdt =
+    side === "downside"
+      ? btcToPurchase === null
+        ? null
+        : input.investmentUsdt - btcToPurchase * expiryPrice
+      : sellBtcProceedsUsdt === null || input.clientPrincipalInterestUsdt === null
+        ? null
+        : input.investmentUsdt + sellBtcProceedsUsdt - input.clientPrincipalInterestUsdt;
+  const annualizedFirmProfit =
+    firmProfitUsdt === null ? null : (firmProfitUsdt / input.investmentUsdt / input.dayCount) * 365;
+
+  const formulaTrace: FormulaTraceRow[] =
+    side === "downside"
+      ? [
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.downsideExpiryPrice,
+            label: "Final BTC level",
+            formula: "scenario expiry price",
+            value: expiryPrice
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.downsideOptionSettlementBtc,
+            label: "Option settlement BTC",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.downsideOptionSettlementBtc,
+            value: optionSettlementBtc
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.downsideNetHedgeBtc,
+            label: "Net hedge BTC",
+            formula: "netOptionProceedsBTC + optionSettlementBTC",
+            value: netHedgeBtc
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.downsideClientPayoutBtc,
+            label: "Client payout BTC",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.clientPayoutBtc,
+            value: clientPayoutBtc
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.downsideBtcToPurchase,
+            label: "BTC to purchase",
+            formula: "clientPayoutBTC - netHedgeBTC",
+            value: btcToPurchase
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.downsideFirmProfitUsdt,
+            label: "Downside firm profit USDT",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.downsideFirmProfitUsdt,
+            value: firmProfitUsdt
+          }
+        ]
+      : [
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.upsideExpiryPrice,
+            label: "Final BTC level",
+            formula: "scenario expiry price",
+            value: expiryPrice
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.upsideSellBtcProceedsUsdt,
+            label: "Sell BTC proceeds USDT",
+            formula: "netOptionProceedsBTC * expiryPrice",
+            value: sellBtcProceedsUsdt
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.upsideClientPayoutUsdt,
+            label: "Client payout USDT",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.clientPayoutUsdt,
+            value: clientPayoutUsdt
+          },
+          {
+            cell: DCN_SELL_PUT_TEMPLATE.cells.upsideFirmProfitUsdt,
+            label: "Upside firm profit USDT",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.upsideFirmProfitUsdt,
+            value: firmProfitUsdt
+          }
+        ];
+
+  return {
+    expiryPrice,
+    side,
+    clientPayoutAsset,
+    clientPayoutAmount,
+    clientPayoutBtc,
+    clientPayoutUsdt,
+    clientPrincipalInterestBtc: input.clientPrincipalInterestBtc,
+    clientPrincipalInterestUsdt: input.clientPrincipalInterestUsdt,
+    optionSettlementBtc,
+    netHedgeBtc,
+    btcToPurchase,
+    sellBtcProceedsUsdt,
+    firmProfitUsdt,
+    annualizedFirmProfit,
+    formulaTrace
+  };
+}
+
 export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
   const nowMs = request.nowMs ?? Date.now();
   const firmMarginBps = request.firmMarginBps ?? 200;
@@ -183,23 +334,26 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const clientPrincipalInterestBtc =
     clientYield === null ? null : (investmentUsdt / market.strike) * (1 + clientYield * (dayCount / 365));
 
-  const upsideProfitUsdt =
-    netOptionProceedsBtc === null || clientPrincipalInterestUsdt === null
-      ? null
-      : investmentUsdt + netOptionProceedsBtc * scenarioUpsidePrice - clientPrincipalInterestUsdt;
-  const upsideAnnualizedProfit =
-    upsideProfitUsdt === null ? null : (upsideProfitUsdt / investmentUsdt / dayCount) * 365;
-
-  const optionSettlementBtc =
-    scenarioDownsidePrice < market.strike
-      ? -((market.strike - scenarioDownsidePrice) / scenarioDownsidePrice) * requiredContracts
-      : 0;
-  const hedgeBtc = netOptionProceedsBtc === null ? null : netOptionProceedsBtc + optionSettlementBtc;
-  const btcToPurchase =
-    hedgeBtc === null || clientPrincipalInterestBtc === null ? null : clientPrincipalInterestBtc - hedgeBtc;
-  const downsideProfitUsdt = btcToPurchase === null ? null : investmentUsdt - btcToPurchase * scenarioDownsidePrice;
-  const downsideAnnualizedProfit =
-    downsideProfitUsdt === null ? null : (downsideProfitUsdt / investmentUsdt / dayCount) * 365;
+  const baseScenarioInput = {
+    investmentUsdt,
+    strike: market.strike,
+    dayCount,
+    requiredContracts,
+    clientYield,
+    clientPrincipalInterestBtc,
+    clientPrincipalInterestUsdt,
+    netOptionProceedsBtc
+  };
+  const selectedScenario = calculateDcnScenario(
+    request.scenarioExpiryPrice ?? market.strike,
+    baseScenarioInput
+  );
+  const downsideScenario = calculateDcnScenario(scenarioDownsidePrice, baseScenarioInput);
+  const upsideScenario = calculateDcnScenario(scenarioUpsidePrice, baseScenarioInput);
+  const upsideProfitUsdt = upsideScenario.firmProfitUsdt;
+  const upsideAnnualizedProfit = upsideScenario.annualizedFirmProfit;
+  const downsideProfitUsdt = downsideScenario.firmProfitUsdt;
+  const downsideAnnualizedProfit = downsideScenario.annualizedFirmProfit;
 
   const checks = {
     quoteFresh: quoteAgeSeconds !== null && quoteAgeSeconds <= quoteFreshnessSeconds,
@@ -208,6 +362,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     premiumCoversInterest,
     clientYieldPositive: clientYield !== null && clientYield > 0,
     firmMarginPositive: firmMarginBps > 0,
+    selectedScenarioProfitPositive: selectedScenario.firmProfitUsdt !== null && selectedScenario.firmProfitUsdt > 0,
     upsideProfitPositive: upsideProfitUsdt !== null && upsideProfitUsdt > 0,
     downsideProfitPositive: downsideProfitUsdt !== null && downsideProfitUsdt > 0
   };
@@ -228,7 +383,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     {
       cell: "C17",
       label: "Option Baseline Premium",
-      formula: "C15/C11*365",
+      formula: DCN_SELL_PUT_TEMPLATE.formulas.grossReferenceYield,
       value: grossReferenceYield
     },
     {
@@ -240,7 +395,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     {
       cell: "Client Yield",
       label: "Client target yield",
-      formula: "MAX(C17 - Signafi Margin, 0)",
+      formula: DCN_SELL_PUT_TEMPLATE.formulas.clientYield,
       value: clientYield
     },
     {
@@ -268,20 +423,24 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
       value: premiumCoversInterest
     },
     {
-      cell: "Upside Profit",
-      label: "Issuer upside profit",
-      formula: "C4 + C22*upsidePrice - client principal and interest",
-      value: upsideProfitUsdt
+      cell: "Selected Scenario",
+      label: "Selected BTC expiry price",
+      formula: "scenarioExpiryPrice",
+      value: selectedScenario.expiryPrice
     },
     {
-      cell: "Downside Profit",
-      label: "Issuer downside profit",
-      formula: "C4 - BTC_to_purchase*downsidePrice",
-      value: downsideProfitUsdt
+      cell: "Selected Payout",
+      label: `Client receives ${selectedScenario.clientPayoutAsset}`,
+      formula:
+        selectedScenario.clientPayoutAsset === "BTC"
+          ? DCN_SELL_PUT_TEMPLATE.formulas.clientPayoutBtc
+          : DCN_SELL_PUT_TEMPLATE.formulas.clientPayoutUsdt,
+      value: selectedScenario.clientPayoutAmount
     }
   ];
 
   return {
+    formulaTemplate: getDcnTemplateSummary(),
     instrumentName: market.instrumentName,
     investmentUsdt,
     spotPrice,
@@ -297,6 +456,9 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     netOptionProceedsBtc,
     netOptionProceedsUsdt,
     premiumCoversInterest,
+    selectedScenario,
+    downsideScenario,
+    upsideScenario,
     upsideProfitUsdt,
     upsideAnnualizedProfit,
     downsideProfitUsdt,

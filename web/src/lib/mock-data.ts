@@ -1,7 +1,16 @@
 import type { DcnCandidate, DcnPricingResponse } from "@/types";
+import { calculateScenario } from "./dcn-scenario";
 
 export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCandidate {
-  const candidate: DcnCandidate = {
+  const base: DcnCandidate = {
+    formulaTemplate: {
+      id: "dcn-sell-put-workbook-v1",
+      version: "2026-04-30",
+      label: "DCN Sell Put workbook template",
+      sourceWorkbook: "SP_Sell_Put_Calc_with_Scenario_Analysis.xlsx",
+      sourceSheets: ["Product 3 - Sell Put", "Scenario Analysis"],
+      firmMarginBps: 200
+    },
     instrumentName: "BTC-31JUL26-75000-P",
     investmentUsdt: 500000,
     spotPrice: 78500,
@@ -17,6 +26,9 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
     netOptionProceedsBtc: 0.40832,
     netOptionProceedsUsdt: 32053.12,
     premiumCoversInterest: true,
+    selectedScenario: undefined,
+    downsideScenario: undefined,
+    upsideScenario: undefined,
     upsideProfitUsdt: 17900,
     upsideAnnualizedProfit: 0.1415,
     downsideProfitUsdt: 11420,
@@ -38,8 +50,7 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
       { cell: "C15", label: "Put Bid Price", formula: "depth-weighted bid", value: 0.0641 },
       { cell: "C17", label: "Option Baseline Premium", formula: "C15/C11*365", value: (0.0641 / 92) * 365 },
       { cell: "Client Yield", label: "Client target yield", formula: "C17 - 2.0% p.a.", value: (0.0641 / 92) * 365 - 0.02 },
-      { cell: "Upside Profit", label: "Issuer upside profit", formula: "scenario analysis", value: 17900 },
-      { cell: "Downside Profit", label: "Issuer downside profit", formula: "scenario analysis", value: 11420 }
+      { cell: "Selected Payout", label: "Client payout", formula: "scenario analysis", value: 522000 }
     ],
     depth: {
       requiredContracts: 6.4,
@@ -57,6 +68,14 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
       ]
     }
   };
+  const candidate = { ...base, ...overrides };
+  candidate.selectedScenario = candidate.selectedScenario ?? calculateScenario(candidate, candidate.strike);
+  candidate.downsideScenario = candidate.downsideScenario ?? calculateScenario(candidate, candidate.strike * (2 / 3));
+  candidate.upsideScenario = candidate.upsideScenario ?? calculateScenario(candidate, candidate.strike * 1.2);
+  candidate.downsideProfitUsdt = candidate.downsideScenario.firmProfitUsdt;
+  candidate.downsideAnnualizedProfit = candidate.downsideScenario.annualizedFirmProfit;
+  candidate.upsideProfitUsdt = candidate.upsideScenario.firmProfitUsdt;
+  candidate.upsideAnnualizedProfit = candidate.upsideScenario.annualizedFirmProfit;
   return { ...candidate, ...overrides };
 }
 

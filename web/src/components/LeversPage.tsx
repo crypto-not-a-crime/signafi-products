@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { DcnCandidate, DcnPricingResponse } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
+import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 import { SiteNav } from "./Logo";
 
 const runwayOptions = [
@@ -18,6 +19,7 @@ export function LeversPage() {
   const [targetYieldPct, setTargetYieldPct] = useState(10);
   const [strikePreference, setStrikePreference] = useState<"any" | "five_otm" | "ten_otm">("five_otm");
   const [data, setData] = useState<DcnPricingResponse | null>(null);
+  const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,6 +31,14 @@ export function LeversPage() {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [investmentUsdt, runwayDays, targetYieldPct, strikePreference]);
+
+  useEffect(() => {
+    if (!data?.bestCandidate) return;
+    const range = getScenarioRange(data.bestCandidate);
+    setExpiryPrice((current) =>
+      current === null || current < range.min || current > range.max ? range.defaultPrice : current
+    );
+  }, [data?.bestCandidate?.instrumentName, data?.bestCandidate?.strike]);
 
   async function fetchPricing() {
     setLoading(true);
@@ -57,6 +67,8 @@ export function LeversPage() {
   }
 
   const best = data?.bestCandidate ?? null;
+  const scenarioRange = best ? getScenarioRange(best) : null;
+  const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const monthly = investmentUsdt * (targetYieldPct / 100) / 12;
   const riskPct = best?.depth.slippagePct ? Math.min(25, 6 + best.depth.slippagePct * 100) : 8;
 
@@ -217,6 +229,15 @@ export function LeversPage() {
                 </div>
               ) : null}
 
+              {best && scenarioRange && selectedExpiryPrice !== null ? (
+                <ClientPayoutSimulator
+                  candidate={best}
+                  expiryPrice={selectedExpiryPrice}
+                  range={scenarioRange}
+                  onChange={setExpiryPrice}
+                />
+              ) : null}
+
               {best ? <CandidateCard candidate={best} best /> : null}
               {data?.candidates?.slice(1, 3).map((candidate) => (
                 <CandidateCard candidate={candidate} key={candidate.instrumentName} />
@@ -226,6 +247,64 @@ export function LeversPage() {
         </section>
       </main>
     </>
+  );
+}
+
+function ClientPayoutSimulator({
+  candidate,
+  expiryPrice,
+  range,
+  onChange
+}: {
+  candidate: DcnCandidate;
+  expiryPrice: number;
+  range: ReturnType<typeof getScenarioRange>;
+  onChange: (value: number) => void;
+}) {
+  const scenario = calculateScenario(candidate, expiryPrice);
+  const payout =
+    scenario.clientPayoutAsset === "BTC"
+      ? `${formatNumber(scenario.clientPayoutAmount, 6)} BTC`
+      : formatUsd(scenario.clientPayoutAmount, 2);
+
+  return (
+    <div className="candidate-card payout-simulator">
+      <div className="row-between">
+        <div>
+          <div className="pc-label">Client payout simulator</div>
+          <h3 className="card-title">{scenario.side === "downside" ? "BTC delivery" : "USDT redemption"}</h3>
+        </div>
+        <span className="status-badge status-live">{scenario.clientPayoutAsset}</span>
+      </div>
+      <div className="control-block compact-control">
+        <div className="row-between">
+          <span className="field-label">BTC expiry price</span>
+          <strong className="mono">{formatUsd(expiryPrice)}</strong>
+        </div>
+        <input
+          type="range"
+          min={range.min}
+          max={range.max}
+          step={range.step}
+          value={expiryPrice}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        <div className="range-labels">
+          <span>{formatUsd(range.min)}</span>
+          <span>Strike {formatUsd(candidate.strike)}</span>
+          <span>{formatUsd(range.max)}</span>
+        </div>
+      </div>
+      <div className="metric-grid">
+        <Metric label="Client receives" value={payout} tone="ok" />
+        <Metric label="Scenario" value={scenario.side === "downside" ? "Below strike" : "At/above strike"} />
+        <Metric label="Client yield" value={formatPct(candidate.clientYield)} tone="ok" />
+        <Metric label="Strike" value={formatUsd(candidate.strike)} />
+      </div>
+      <p className="card-copy">
+        Below strike, payout is BTC. At or above strike, payout is USDT principal plus fixed product interest.
+      </p>
+    </div>
   );
 }
 
@@ -252,8 +331,6 @@ function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; b
         <Metric label="Top bid" value={formatNumber(candidate.depth.bestBidPrice, 5)} />
         <Metric label="Slippage" value={formatPct(candidate.depth.slippagePct, 3)} />
         <Metric label="Depth filled" value={`${formatNumber(candidate.depth.filledContracts, 1)} / ${formatNumber(candidate.depth.requiredContracts, 1)}`} />
-        <Metric label="Upside profit" value={formatUsd(candidate.upsideProfitUsdt)} tone={candidate.checks.upsideProfitPositive ? "ok" : "fail"} />
-        <Metric label="Downside profit" value={formatUsd(candidate.downsideProfitUsdt)} tone={candidate.checks.downsideProfitPositive ? "ok" : "fail"} />
       </div>
     </div>
   );

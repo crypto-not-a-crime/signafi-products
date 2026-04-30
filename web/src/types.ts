@@ -4,7 +4,42 @@ export interface DepthFill {
   notionalBtc: number;
 }
 
+export interface FormulaTemplateSummary {
+  id: string;
+  version: string;
+  label: string;
+  sourceWorkbook: string;
+  sourceSheets: string[];
+  firmMarginBps: number;
+}
+
+export interface FormulaTraceRow {
+  cell: string;
+  label: string;
+  formula: string;
+  value: number | string | boolean | null;
+}
+
+export interface DcnScenarioResult {
+  expiryPrice: number;
+  side: "downside" | "upside";
+  clientPayoutAsset: "BTC" | "USDT";
+  clientPayoutAmount: number | null;
+  clientPayoutBtc: number | null;
+  clientPayoutUsdt: number | null;
+  clientPrincipalInterestBtc: number | null;
+  clientPrincipalInterestUsdt: number | null;
+  optionSettlementBtc: number | null;
+  netHedgeBtc: number | null;
+  btcToPurchase: number | null;
+  sellBtcProceedsUsdt: number | null;
+  firmProfitUsdt: number | null;
+  annualizedFirmProfit: number | null;
+  formulaTrace: FormulaTraceRow[];
+}
+
 export interface DcnCandidate {
+  formulaTemplate?: FormulaTemplateSummary;
   instrumentName: string;
   investmentUsdt: number;
   spotPrice: number;
@@ -20,6 +55,9 @@ export interface DcnCandidate {
   netOptionProceedsBtc: number | null;
   netOptionProceedsUsdt: number | null;
   premiumCoversInterest: boolean;
+  selectedScenario?: DcnScenarioResult;
+  downsideScenario?: DcnScenarioResult;
+  upsideScenario?: DcnScenarioResult;
   upsideProfitUsdt: number | null;
   upsideAnnualizedProfit: number | null;
   downsideProfitUsdt: number | null;
@@ -27,12 +65,7 @@ export interface DcnCandidate {
   quoteAgeSeconds: number | null;
   eligible: boolean;
   checks: Record<string, boolean>;
-  formulaTrace: Array<{
-    cell: string;
-    label: string;
-    formula: string;
-    value: number | string | boolean | null;
-  }>;
+  formulaTrace: FormulaTraceRow[];
   depth: {
     requiredContracts: number;
     filledContracts: number;

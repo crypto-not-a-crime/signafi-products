@@ -358,6 +358,7 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
     quoteFreshnessSeconds: Number(request.quoteFreshnessSeconds ?? config.quoteFreshnessSeconds),
     orderBookDepth: Number(request.orderBookDepth ?? config.defaultOrderBookDepth),
+    scenarioExpiryPrice: request.scenarioExpiryPrice,
     scenarioDownsidePrice: request.scenarioDownsidePrice,
     scenarioUpsidePrice: request.scenarioUpsidePrice,
     nowMs: request.nowMs

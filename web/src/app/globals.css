@@ -599,6 +599,19 @@ input[type="range"] {
   padding: 18px;
 }
 
+.compact-control {
+  margin-top: 14px;
+}
+
+.range-labels {
+  color: var(--muted);
+  display: flex;
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
 .quick-btns,
 .pill-row {
   display: flex;
@@ -654,6 +667,10 @@ input[type="range"] {
 .candidate-card.best {
   border-color: var(--navy);
   border-width: 1.5px;
+}
+
+.payout-simulator {
+  border-color: rgba(0, 179, 126, 0.35);
 }
 
 .metric-grid {
@@ -716,6 +733,14 @@ input[type="range"] {
   color: var(--navy);
   padding: 11px 12px;
   width: 100%;
+}
+
+.scenario-panel {
+  background: var(--off-white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-top: 18px;
+  padding: 16px;
 }
 
 .form-grid {
