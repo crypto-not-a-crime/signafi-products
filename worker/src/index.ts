@@ -12,6 +12,7 @@ import {
 import { DeribitClient, type DeribitTicker } from "./deribit";
 import {
   calculateDcnSellPut,
+  compareDcnCandidatesForClientMandate,
   scorePutCandidate,
   type BidAskLevel,
   type DcnPricingRequest,
@@ -208,8 +209,7 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
   }
 
   priced.sort((a, b) => {
-    if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
-    return (b.clientYield ?? 0) - (a.clientYield ?? 0);
+    return compareDcnCandidatesForClientMandate(normalized, a, b);
   });
 
   return json({

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateDcnScenario,
   calculateDcnSellPut,
+  compareDcnCandidatesForClientMandate,
   dayCountFromExpiry,
   modelSellIntoBidDepth,
   roundContracts
@@ -183,4 +184,44 @@ describe("DCN sell-put pricing", () => {
     expect(result.checks.quoteFresh).toBe(false);
     expect(result.eligible).toBe(false);
   });
+
+  it("treats the target yield as a mandate, then prefers higher upside firm profit", () => {
+    const request = { investmentUsdt: 1000000, targetYieldBps: 1200 };
+    const lowerProfitNearTarget = rankableCandidate(0.1271, 4500);
+    const higherProfitHigherYield = rankableCandidate(0.1508, 6200);
+    const belowTarget = rankableCandidate(0.118, 10000);
+
+    expect(
+      [lowerProfitNearTarget, higherProfitHigherYield].sort((a, b) =>
+        compareDcnCandidatesForClientMandate(request, a, b)
+      )[0]
+    ).toBe(higherProfitHigherYield);
+
+    expect(
+      [belowTarget, lowerProfitNearTarget].sort((a, b) => compareDcnCandidatesForClientMandate(request, a, b))[0]
+    ).toBe(lowerProfitNearTarget);
+  });
+
+  it("prefers the closest below-target yield when no candidate meets the mandate", () => {
+    const request = { investmentUsdt: 1000000, targetYieldBps: 1400 };
+    const closerYield = rankableCandidate(0.13, 2500);
+    const lowerYieldHigherProfit = rankableCandidate(0.11, 9000);
+
+    expect(
+      [lowerYieldHigherProfit, closerYield].sort((a, b) =>
+        compareDcnCandidatesForClientMandate(request, a, b)
+      )[0]
+    ).toBe(closerYield);
+  });
 });
+
+function rankableCandidate(clientYield: number, upsideProfitUsdt: number) {
+  return {
+    eligible: true,
+    clientYield,
+    upsideProfitUsdt,
+    quoteAgeSeconds: 1,
+    depth: { slippagePct: 0.002 },
+    score: 90
+  };
+}

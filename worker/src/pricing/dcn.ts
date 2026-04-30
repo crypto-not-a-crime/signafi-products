@@ -115,6 +115,15 @@ export interface DcnCalculation {
   formulaTrace: FormulaTraceRow[];
 }
 
+export interface DcnRankableCandidate {
+  eligible: boolean;
+  clientYield: number | null;
+  upsideProfitUsdt: number | null;
+  quoteAgeSeconds: number | null;
+  depth: Pick<DepthModel, "slippagePct">;
+  score?: number;
+}
+
 export function roundContracts(rawContracts: number, minTradeAmount = 0.1): number {
   if (!Number.isFinite(rawContracts) || rawContracts <= 0) {
     return minTradeAmount;
@@ -336,7 +345,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
 
   const clientPrincipalInterestUsdt =
     clientYield === null ? null : investmentUsdt * (1 + clientYield * (dayCount / 365));
-  const scenarioUpsidePrice = request.scenarioUpsidePrice ?? market.strike * 1.2;
+  const scenarioUpsidePrice = request.scenarioUpsidePrice ?? spotPrice;
   const scenarioDownsidePrice = request.scenarioDownsidePrice ?? market.strike * (2 / 3);
   const clientPrincipalInterestBtc =
     clientYield === null ? null : (investmentUsdt / market.strike) * (1 + clientYield * (dayCount / 365));
@@ -487,13 +496,85 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
   const runwayDays = request.runwayDays ?? dayCount;
   const targetYield = (request.targetYieldBps ?? 0) / 10000;
   const roughClientYield = Math.max(0, (market.bidPrice / dayCount) * 365 - (request.firmMarginBps ?? 200) / 10000);
+  const requiredContracts = roundContracts(request.investmentUsdt / spot, market.minTradeAmount ?? 0.1);
+  const roughTradingFeePerContractBtc = -Math.min(0.0003, 0.125 * market.bidPrice);
+  const roughNetOptionProceedsBtc = requiredContracts * (market.bidPrice + roughTradingFeePerContractBtc);
+  const roughClientPayoutUsdt = request.investmentUsdt * (1 + roughClientYield * (dayCount / 365));
+  const roughUpsidePrice = request.scenarioUpsidePrice ?? spot;
+  const roughUpsideProfitUsdt = request.investmentUsdt + roughNetOptionProceedsBtc * roughUpsidePrice - roughClientPayoutUsdt;
+  const roughUpsideProfitRate = roughUpsideProfitUsdt / request.investmentUsdt;
   const moneyness = market.strike / spot;
   const preferredMoneyness =
     request.strikePreference === "ten_otm" ? 0.9 : request.strikePreference === "five_otm" ? 0.95 : 0.93;
 
   const runwayPenalty = Math.abs(dayCount - runwayDays) / Math.max(runwayDays, 1);
-  const targetPenalty = targetYield > 0 ? Math.abs(roughClientYield - targetYield) / Math.max(targetYield, 0.01) : 0;
+  const targetDenominator = Math.max(targetYield, 0.01);
+  const targetShortfallPenalty = targetYield > 0 ? Math.max(0, targetYield - roughClientYield) / targetDenominator : 0;
+  const targetOvershootPenalty = targetYield > 0 ? Math.max(0, roughClientYield - targetYield) / targetDenominator : 0;
   const moneynessPenalty = Math.abs(moneyness - preferredMoneyness);
 
-  return 100 - runwayPenalty * 25 - targetPenalty * 30 - moneynessPenalty * 100;
+  return (
+    100 +
+    roughUpsideProfitRate * 200 -
+    runwayPenalty * 25 -
+    targetShortfallPenalty * 80 -
+    targetOvershootPenalty * 5 -
+    moneynessPenalty * 100
+  );
+}
+
+export function compareDcnCandidatesForClientMandate(
+  request: DcnPricingRequest,
+  a: DcnRankableCandidate,
+  b: DcnRankableCandidate
+): number {
+  if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+
+  const targetYield = (request.targetYieldBps ?? 0) / 10000;
+  const aYield = finiteOr(a.clientYield, -Infinity);
+  const bYield = finiteOr(b.clientYield, -Infinity);
+  const aMeetsTarget = targetYield <= 0 || aYield >= targetYield;
+  const bMeetsTarget = targetYield <= 0 || bYield >= targetYield;
+
+  if (aMeetsTarget !== bMeetsTarget) return aMeetsTarget ? -1 : 1;
+
+  if (aMeetsTarget && bMeetsTarget) {
+    const profitOrder = compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt);
+    if (profitOrder !== 0) return profitOrder;
+
+    const targetExcessOrder = compareAsc(aYield - targetYield, bYield - targetYield);
+    if (targetExcessOrder !== 0) return targetExcessOrder;
+  } else {
+    const yieldOrder = compareDesc(a.clientYield, b.clientYield);
+    if (yieldOrder !== 0) return yieldOrder;
+
+    const profitOrder = compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt);
+    if (profitOrder !== 0) return profitOrder;
+  }
+
+  const slippageOrder = compareAsc(a.depth.slippagePct, b.depth.slippagePct);
+  if (slippageOrder !== 0) return slippageOrder;
+
+  const quoteAgeOrder = compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds);
+  if (quoteAgeOrder !== 0) return quoteAgeOrder;
+
+  return compareDesc(a.score, b.score);
+}
+
+function compareAsc(a: number | null | undefined, b: number | null | undefined): number {
+  const av = finiteOr(a, Infinity);
+  const bv = finiteOr(b, Infinity);
+  if (av === bv) return 0;
+  return av - bv;
+}
+
+function compareDesc(a: number | null | undefined, b: number | null | undefined): number {
+  const av = finiteOr(a, -Infinity);
+  const bv = finiteOr(b, -Infinity);
+  if (av === bv) return 0;
+  return bv - av;
+}
+
+function finiteOr(value: number | null | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
