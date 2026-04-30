@@ -1,0 +1,19 @@
+name = "signafi-market-worker"
+main = "src/index.ts"
+compatibility_date = "2026-04-30"
+
+[triggers]
+crons = ["*/2 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "signafi_market"
+database_id = "replace-with-cloudflare-d1-database-id"
+
+[[durable_objects.bindings]]
+name = "MARKET_DATA"
+class_name = "MarketDataDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MarketDataDurableObject"]
