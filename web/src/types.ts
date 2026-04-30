@@ -87,3 +87,21 @@ export interface DcnPricingResponse {
   bestCandidate: DcnCandidate | null;
   mock?: boolean;
 }
+
+export interface MarketOption {
+  instrument_name: string;
+  option_type: "call" | "put";
+  strike: number;
+  expiration_timestamp: number;
+  bid_price: number | null;
+  bid_amount: number | null;
+  ask_price: number | null;
+  ask_amount: number | null;
+  mark_price: number | null;
+  last_price: number | null;
+  mark_iv: number | null;
+  open_interest: number | null;
+  underlying_price: number | null;
+  deribit_timestamp: number | null;
+  ingested_at: number | null;
+}

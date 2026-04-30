@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { DcnCandidate } from "@/types";
+import { useEffect, useMemo, useState } from "react";
+import type { DcnCandidate, MarketOption } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 
@@ -16,7 +16,12 @@ interface Health {
 
 export function AdminConsole() {
   const [health, setHealth] = useState<Health | null>(null);
+  const [options, setOptions] = useState<MarketOption[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(false);
   const [instrumentName, setInstrumentName] = useState("BTC-31JUL26-75000-P");
+  const [selectedOptionType, setSelectedOptionType] = useState<"call" | "put">("put");
+  const [selectedExpiry, setSelectedExpiry] = useState("");
+  const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(500000);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
@@ -25,7 +30,79 @@ export function AdminConsole() {
 
   useEffect(() => {
     void refreshHealth();
+    void loadOptions();
   }, []);
+
+  useEffect(() => {
+    if (options.length === 0 || selectedExpiry) return;
+    const preferred =
+      options.find((option) => option.instrument_name === instrumentName) ??
+      options.find((option) => option.option_type === "put" && (option.bid_price ?? 0) > 0) ??
+      options.find((option) => option.option_type === "put") ??
+      options[0];
+    if (!preferred) return;
+    setSelectedOptionType(preferred.option_type);
+    setSelectedExpiry(String(preferred.expiration_timestamp));
+    setSelectedStrike(String(preferred.strike));
+  }, [instrumentName, options, selectedExpiry]);
+
+  const expiryOptions = useMemo(() => {
+    const expiries = new Map<number, MarketOption>();
+    for (const option of options) {
+      if (option.option_type === selectedOptionType && option.expiration_timestamp) {
+        expiries.set(option.expiration_timestamp, option);
+      }
+    }
+    return Array.from(expiries.keys()).sort((a, b) => a - b);
+  }, [options, selectedOptionType]);
+
+  useEffect(() => {
+    if (expiryOptions.length === 0) return;
+    if (!expiryOptions.some((expiry) => String(expiry) === selectedExpiry)) {
+      setSelectedExpiry(String(expiryOptions[0]));
+    }
+  }, [expiryOptions, selectedExpiry]);
+
+  const strikeOptions = useMemo(() => {
+    const expiry = Number(selectedExpiry);
+    const strikes = new Set<number>();
+    for (const option of options) {
+      if (option.option_type === selectedOptionType && option.expiration_timestamp === expiry) {
+        strikes.add(option.strike);
+      }
+    }
+    return Array.from(strikes).sort((a, b) => a - b);
+  }, [options, selectedExpiry, selectedOptionType]);
+
+  useEffect(() => {
+    if (strikeOptions.length === 0) return;
+    if (!strikeOptions.some((strike) => String(strike) === selectedStrike)) {
+      setSelectedStrike(String(strikeOptions[0]));
+    }
+  }, [selectedStrike, strikeOptions]);
+
+  const selectedOption = useMemo(() => {
+    const expiry = Number(selectedExpiry);
+    const strike = Number(selectedStrike);
+    return (
+      options.find(
+        (option) =>
+          option.option_type === selectedOptionType &&
+          option.expiration_timestamp === expiry &&
+          option.strike === strike
+      ) ?? null
+    );
+  }, [options, selectedExpiry, selectedOptionType, selectedStrike]);
+
+  useEffect(() => {
+    if (selectedOption) setInstrumentName(selectedOption.instrument_name);
+  }, [selectedOption]);
+
+  useEffect(() => {
+    setAudit(null);
+    setQuoteVerification(null);
+    setExpiryPrice(null);
+  }, [instrumentName, investmentUsdt]);
 
   useEffect(() => {
     if (!audit) return;
@@ -38,6 +115,17 @@ export function AdminConsole() {
   async function refreshHealth() {
     const response = await fetch("/api/admin/market-health", { cache: "no-store" });
     setHealth(await response.json());
+  }
+
+  async function loadOptions() {
+    setOptionsLoading(true);
+    try {
+      const response = await fetch("/api/market/options?limit=1000", { cache: "no-store" });
+      const payload = (await response.json()) as { options?: MarketOption[] };
+      setOptions((payload.options ?? []).filter((option) => option.expiration_timestamp && option.strike));
+    } finally {
+      setOptionsLoading(false);
+    }
   }
 
   async function runAudit() {
@@ -104,12 +192,46 @@ export function AdminConsole() {
             <h2 className="card-title">Run verification</h2>
             <div className="form-grid">
               <label>
-                <span className="field-label">Deribit instrument</span>
-                <input
+                <span className="field-label">Expiry date</span>
+                <select
                   className="admin-input"
-                  value={instrumentName}
-                  onChange={(event) => setInstrumentName(event.target.value)}
-                />
+                  value={selectedExpiry}
+                  onChange={(event) => setSelectedExpiry(event.target.value)}
+                  disabled={optionsLoading || expiryOptions.length === 0}
+                >
+                  {expiryOptions.map((expiry) => (
+                    <option key={expiry} value={expiry}>
+                      {formatExpiry(expiry)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="field-label">Call / Put</span>
+                <select
+                  className="admin-input"
+                  value={selectedOptionType}
+                  onChange={(event) => setSelectedOptionType(event.target.value as "call" | "put")}
+                  disabled={optionsLoading}
+                >
+                  <option value="put">Put</option>
+                  <option value="call">Call</option>
+                </select>
+              </label>
+              <label>
+                <span className="field-label">Strike</span>
+                <select
+                  className="admin-input"
+                  value={selectedStrike}
+                  onChange={(event) => setSelectedStrike(event.target.value)}
+                  disabled={optionsLoading || strikeOptions.length === 0}
+                >
+                  {strikeOptions.map((strike) => (
+                    <option key={strike} value={strike}>
+                      {formatUsd(strike)}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span className="field-label">Investment USDT</span>
@@ -121,15 +243,35 @@ export function AdminConsole() {
                 />
               </label>
             </div>
+            <div className="soft-row" style={{ marginTop: 12 }}>
+              <span>Selected instrument</span>
+              <strong className="mono">{optionsLoading ? "Loading..." : instrumentName || "-"}</strong>
+            </div>
+            {selectedOptionType === "call" ? (
+              <p className="card-copy" style={{ marginTop: 10 }}>
+                Quote verification works for calls. DCN sell-put calculation audit is available for put instruments only.
+              </p>
+            ) : null}
             <div className="quick-btns">
-              <button className="admin-button" onClick={runAudit} disabled={loading}>
+              <button
+                className="admin-button"
+                onClick={runAudit}
+                disabled={loading || selectedOptionType !== "put" || !instrumentName}
+              >
                 Verify calculations
               </button>
-              <button className="btn-ghost" onClick={verifyQuote} disabled={loading}>
+              <button className="btn-ghost" onClick={verifyQuote} disabled={loading || !instrumentName}>
                 Verify Deribit quote
               </button>
-              <button className="btn-ghost" onClick={refreshHealth} disabled={loading}>
-                Refresh health
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  void refreshHealth();
+                  void loadOptions();
+                }}
+                disabled={loading || optionsLoading}
+              >
+                Refresh market
               </button>
             </div>
 
@@ -285,6 +427,18 @@ export function AdminConsole() {
       </section>
     </main>
   );
+}
+
+function formatExpiry(timestamp: number): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "short",
+    year: "2-digit"
+  })
+    .format(new Date(timestamp))
+    .replace(",", "")
+    .toUpperCase();
 }
 
 function CheckRow({ label, ok }: { label: string; ok: boolean }) {
