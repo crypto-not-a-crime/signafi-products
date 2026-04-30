@@ -125,7 +125,11 @@ export function roundContracts(rawContracts: number, minTradeAmount = 0.1): numb
 
 export function dayCountFromExpiry(expirationTimestamp: number, nowMs = Date.now()): number {
   const msPerDay = 24 * 60 * 60 * 1000;
-  return Math.max(1, Math.ceil((expirationTimestamp - nowMs) / msPerDay));
+  const todayUtc = new Date(nowMs);
+  const expiryUtc = new Date(expirationTimestamp);
+  const todayDate = Date.UTC(todayUtc.getUTCFullYear(), todayUtc.getUTCMonth(), todayUtc.getUTCDate());
+  const expiryDate = Date.UTC(expiryUtc.getUTCFullYear(), expiryUtc.getUTCMonth(), expiryUtc.getUTCDate());
+  return Math.max(0, Math.round((expiryDate - todayDate) / msPerDay));
 }
 
 export function modelSellIntoBidDepth(
@@ -212,7 +216,9 @@ export function calculateDcnScenario(expiryPrice: number, input: DcnScenarioInpu
         ? null
         : input.investmentUsdt + sellBtcProceedsUsdt - input.clientPrincipalInterestUsdt;
   const annualizedFirmProfit =
-    firmProfitUsdt === null ? null : (firmProfitUsdt / input.investmentUsdt / input.dayCount) * 365;
+    firmProfitUsdt === null || input.dayCount <= 0
+      ? null
+      : (firmProfitUsdt / input.investmentUsdt / input.dayCount) * 365;
 
   const formulaTrace: FormulaTraceRow[] =
     side === "downside"
@@ -313,7 +319,8 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const quoteTime = market.deribitTimestamp ?? market.ingestedAt ?? null;
   const quoteAgeSeconds = quoteTime ? Math.max(0, (nowMs - quoteTime) / 1000) : null;
 
-  const grossReferenceYield = effectivePutBidPrice === null ? null : (effectivePutBidPrice / dayCount) * 365;
+  const grossReferenceYield =
+    effectivePutBidPrice === null || dayCount <= 0 ? null : (effectivePutBidPrice / dayCount) * 365;
   const clientYield = grossReferenceYield === null ? null : Math.max(0, grossReferenceYield - firmMarginBps / 10000);
   const clientInterestUsdt = clientYield === null ? null : investmentUsdt * clientYield * (dayCount / 365);
   const tradingFeePerContractBtc =
@@ -372,7 +379,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     { cell: "C4", label: "Initial Investment (USDT)", formula: "user input", value: investmentUsdt },
     { cell: "C5", label: "BTC Spot Price", formula: "Deribit underlying_price", value: spotPrice },
     { cell: "C7", label: "Strike Price", formula: "selected Deribit put strike", value: market.strike },
-    { cell: "C11", label: "Day Count", formula: "DAYS(expiry, today)", value: dayCount },
+    { cell: "C11", label: "Day Count", formula: DCN_SELL_PUT_TEMPLATE.formulas.dayCount, value: dayCount },
     { cell: "C14", label: "Contracts", formula: "ROUND(C4/C5, 1)", value: requiredContracts },
     {
       cell: "C15",
@@ -476,6 +483,7 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
   if (!spot || !market.bidPrice || market.bidPrice <= 0) return -Infinity;
 
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, request.nowMs ?? Date.now());
+  if (dayCount <= 0) return -Infinity;
   const runwayDays = request.runwayDays ?? dayCount;
   const targetYield = (request.targetYieldBps ?? 0) / 10000;
   const roughClientYield = Math.max(0, (market.bidPrice / dayCount) * 365 - (request.firmMarginBps ?? 200) / 10000);

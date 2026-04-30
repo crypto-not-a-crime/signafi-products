@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { calculateDcnScenario, calculateDcnSellPut, modelSellIntoBidDepth, roundContracts } from "../src/pricing/dcn";
+import {
+  calculateDcnScenario,
+  calculateDcnSellPut,
+  dayCountFromExpiry,
+  modelSellIntoBidDepth,
+  roundContracts
+} from "../src/pricing/dcn";
 
 const NOW = Date.UTC(2026, 3, 30);
 const EXPIRY_92_DAYS = NOW + 92 * 24 * 60 * 60 * 1000;
@@ -36,6 +42,15 @@ describe("DCN depth modelling", () => {
 });
 
 describe("DCN sell-put pricing", () => {
+  it("counts calendar days exclusive of today and inclusive of the expiry date", () => {
+    const nowIntraday = Date.UTC(2026, 3, 30, 5, 30);
+    const expiryIntraday = Date.UTC(2026, 6, 31, 8, 0);
+    const sameDateExpiry = Date.UTC(2026, 3, 30, 8, 0);
+
+    expect(dayCountFromExpiry(expiryIntraday, nowIntraday)).toBe(92);
+    expect(dayCountFromExpiry(sameDateExpiry, nowIntraday)).toBe(0);
+  });
+
   it("rounds contracts like the workbook model", () => {
     expect(roundContracts(1000000 / 78493, 0.1)).toBe(12.7);
   });
