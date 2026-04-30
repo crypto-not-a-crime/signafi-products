@@ -23,6 +23,7 @@ export interface Env {
   MARKET_DATA: DurableObjectNamespace;
   BACKEND_API_TOKEN?: string;
   DERIBIT_BASE_URL?: string;
+  DERIBIT_PROXY_TOKEN?: string;
   DERIBIT_WS_URL?: string;
 }
 
@@ -190,7 +191,7 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
     .sort((a, b) => b.score - a.score)
     .slice(0, config.maxDepthCandidates);
 
-  const client = new DeribitClient(env.DERIBIT_BASE_URL);
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const priced = [];
 
   for (const item of shortlisted) {
@@ -228,7 +229,7 @@ async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
   const stored = await getInstrumentQuote(env.DB, payload.instrumentName);
   if (!stored) return json({ error: "Instrument not found in D1" }, 404);
 
-  const client = new DeribitClient(env.DERIBIT_BASE_URL);
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const book = await client.getOrderBook(payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth);
   const snapshotId = await insertOrderBookSnapshot(
     env.DB,
@@ -248,7 +249,7 @@ async function handleVerifyQuote(request: Request, env: Env): Promise<Response> 
   if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
 
   const stored = await getInstrumentQuote(env.DB, payload.instrumentName);
-  const client = new DeribitClient(env.DERIBIT_BASE_URL);
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const [ticker, book, memory] = await Promise.all([
     client.ticker(payload.instrumentName),
     client.getOrderBook(payload.instrumentName, payload.depth ?? 100),
@@ -338,12 +339,11 @@ async function handleStreamStart(_request: Request, env: Env): Promise<Response>
 }
 
 async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: number; syncedAt: number }> {
-  const client = new DeribitClient(env.DERIBIT_BASE_URL);
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const nowMs = Date.now();
-  const [instruments, summaries] = await Promise.all([
-    client.getInstruments("BTC"),
-    client.getBookSummaryByCurrency("BTC")
-  ]);
+  const instruments = await client.getInstruments("BTC");
+  await sleep(250);
+  const summaries = await client.getBookSummaryByCurrency("BTC");
   const instrumentCount = await upsertInstruments(env.DB, instruments, nowMs);
   const quoteCount = await upsertBookSummaries(env.DB, summaries, nowMs);
   return { instruments: instrumentCount, quotes: quoteCount, syncedAt: nowMs };
@@ -422,4 +422,8 @@ function cors(response: Response): Response {
     statusText: response.statusText,
     headers
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

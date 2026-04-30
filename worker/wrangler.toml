@@ -2,6 +2,9 @@ name = "signafi-market-worker"
 main = "src/index.ts"
 compatibility_date = "2026-04-30"
 
+[vars]
+DERIBIT_BASE_URL = "https://signafi-products.vercel.app/api/deribit"
+
 [triggers]
 crons = ["*/2 * * * *"]
 

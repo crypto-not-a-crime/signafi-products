@@ -83,7 +83,10 @@ interface DeribitRpcResponse<T> {
 }
 
 export class DeribitClient {
-  constructor(private readonly baseUrl = "https://www.deribit.com/api/v2") {}
+  constructor(
+    private readonly baseUrl = "https://www.deribit.com/api/v2",
+    private readonly proxyToken?: string
+  ) {}
 
   async getInstruments(currency = "BTC"): Promise<DeribitInstrument[]> {
     return this.rpc<DeribitInstrument[]>("public/get_instruments", {
@@ -114,16 +117,31 @@ export class DeribitClient {
   }
 
   private async rpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    const url = `${this.baseUrl}/${method}?${new URLSearchParams(flattenParams(params)).toString()}`;
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        accept: "application/json"
-      }
-    });
+    const url = `${this.baseUrl.replace(/\/$/, "")}/`;
+    let response: Response | null = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "SignafiMarketWorker/1.0",
+          ...(this.proxyToken ? { authorization: `Bearer ${this.proxyToken}` } : {})
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method,
+          params
+        })
+      });
 
-    if (!response.ok) {
-      throw new Error(`Deribit ${method} failed with ${response.status}`);
+      if (response.ok || !isRetryableStatus(response.status) || attempt === 3) break;
+      await sleep(500 * 2 ** attempt);
+    }
+
+    if (!response?.ok) {
+      throw new Error(`Deribit ${method} failed with ${response?.status ?? "unknown"}`);
     }
 
     const payload = (await response.json()) as DeribitRpcResponse<T>;
@@ -137,11 +155,10 @@ export class DeribitClient {
   }
 }
 
-function flattenParams(params: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
-    out[key] = String(value);
-  }
-  return out;
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
