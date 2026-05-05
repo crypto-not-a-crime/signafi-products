@@ -390,6 +390,8 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const downsideAnnualizedProfit = downsideScenario.annualizedFirmProfit;
 
   const checks = {
+    spotPricePositive: spotPrice > 0,
+    strikeBelowSpot: market.strike < spotPrice,
     quoteFresh: quoteAgeSeconds !== null && quoteAgeSeconds <= quoteFreshnessSeconds,
     usableBid: effectivePutBidPrice !== null && effectivePutBidPrice > 0,
     sufficientDepth: depth.sufficientDepth,
@@ -513,6 +515,7 @@ export function priceCandidateAtSize(request: DcnPricingRequest, market: PutMark
 export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketInput): number {
   const spot = market.underlyingPrice ?? 0;
   if (!spot || !market.bidPrice || market.bidPrice <= 0) return -Infinity;
+  if (market.strike >= spot) return -Infinity;
 
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, request.nowMs ?? Date.now());
   if (dayCount <= 0) return -Infinity;
@@ -533,7 +536,8 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
   const targetBonus = fit.targetMet ? 1000 : 0;
 
   if (mode === "auto_yield") {
-    return 1000 + roughClientYield * 1000 - fit.normalizedRunwayGap * 200 - fit.strikeMoneynessGap * 200;
+    const boundedYieldScore = Math.min(Math.max(roughClientYield, 0), 1) * 100;
+    return 1000 - fit.normalizedRunwayGap * 1000 - fit.strikeMoneynessGap * 2000 + boundedYieldScore;
   }
 
   if (mode === "auto_strike") {
@@ -629,7 +633,7 @@ export function selectDcnCandidate<T extends DcnRankableCandidate>(
   candidates: T[]
 ): { candidates: T[]; bestCandidate: T | null; recommendation: DcnRecommendation } {
   const sorted = [...candidates].sort((a, b) => compareDcnCandidatesForClientMandate(request, a, b));
-  const bestCandidate = sorted[0] ?? null;
+  const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
   return {
     candidates: sorted,
     bestCandidate,

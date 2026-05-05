@@ -36,6 +36,8 @@ Worker:
 - `BACKEND_API_TOKEN` - Shared token required for admin endpoints.
 - `DERIBIT_BASE_URL` - Optional, defaults to `https://www.deribit.com/api/v2`.
 - `DERIBIT_WS_URL` - Optional, defaults to `wss://www.deribit.com/ws/api/v2`.
+- `DERIBIT_CLIENT_ID` - Optional Deribit API key for admin `private/get_margins` checks. Requires `trade:read`.
+- `DERIBIT_CLIENT_SECRET` - Optional Deribit API secret for admin `private/get_margins` checks. Requires `trade:read`.
 
 ## Cloudflare D1
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, MarketExpirySummary, MarketOption } from "@/types";
+import type { DcnCandidate, DeribitMarginCheck, MarketExpirySummary, MarketOption } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 
@@ -33,8 +33,10 @@ export function AdminConsole() {
   const [investmentUsdt, setInvestmentUsdt] = useState(500000);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
+  const [marginCheck, setMarginCheck] = useState<DeribitMarginCheck | null>(null);
   const [quoteVerification, setQuoteVerification] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
+  const [marginLoading, setMarginLoading] = useState(false);
 
   useEffect(() => {
     void refreshHealth();
@@ -112,6 +114,7 @@ export function AdminConsole() {
 
   useEffect(() => {
     setAudit(null);
+    setMarginCheck(null);
     setQuoteVerification(null);
     setExpiryPrice(null);
   }, [instrumentName, investmentUsdt]);
@@ -167,26 +170,75 @@ export function AdminConsole() {
     }
   }
 
+  async function requestAuditCalculation(): Promise<DcnCandidate | null> {
+    const response = await fetch("/api/admin/dcn-audit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        instrumentName,
+        investmentUsdt,
+        targetYieldBps: 1000,
+        runwayDays: 92,
+        firmMarginBps: 200,
+        orderBookDepth: 100,
+        scenarioExpiryPrice: expiryPrice ?? undefined
+      })
+    });
+    const payload = (await response.json()) as { calculation?: DcnCandidate; error?: string };
+    const calculation = payload.calculation ?? null;
+    setAudit(calculation);
+    return calculation;
+  }
+
   async function runAudit() {
     setLoading(true);
+    setMarginCheck(null);
     try {
-      const response = await fetch("/api/admin/dcn-audit", {
+      await requestAuditCalculation();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function checkMargins() {
+    setMarginLoading(true);
+    setMarginCheck(null);
+    try {
+      const calculation = audit ?? (await requestAuditCalculation());
+      const amount = calculation?.requiredContracts ?? 0;
+      const price = calculation?.effectivePutBidPrice ?? 0;
+      if (!calculation || amount <= 0 || price <= 0) {
+        setMarginCheck({
+          instrumentName,
+          amount,
+          price,
+          error: "Calculation audit did not produce positive C14 contracts and C15 price values."
+        });
+        return;
+      }
+
+      const response = await fetch("/api/admin/deribit-margins", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          instrumentName,
-          investmentUsdt,
-          targetYieldBps: 1000,
-          runwayDays: 92,
-          firmMarginBps: 200,
-          orderBookDepth: 100,
-          scenarioExpiryPrice: expiryPrice ?? undefined
+          instrumentName: calculation.instrumentName,
+          amount,
+          price
         })
       });
-      const payload = await response.json();
-      setAudit(payload.calculation ?? null);
+      const payload = (await response.json()) as DeribitMarginCheck;
+      setMarginCheck(
+        response.ok
+          ? payload
+          : {
+              instrumentName: calculation.instrumentName,
+              amount,
+              price,
+              error: payload.error ?? `Margin check failed with HTTP ${response.status}`
+            }
+      );
     } finally {
-      setLoading(false);
+      setMarginLoading(false);
     }
   }
 
@@ -207,6 +259,7 @@ export function AdminConsole() {
   const scenarioRange = audit ? getScenarioRange(audit) : null;
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const selectedScenario = audit && selectedExpiryPrice !== null ? calculateScenario(audit, selectedExpiryPrice) : null;
+  const busy = loading || marginLoading;
 
   return (
     <main className="admin-page">
@@ -305,17 +358,24 @@ export function AdminConsole() {
               <button
                 className="admin-button"
                 onClick={runAudit}
-                disabled={loading || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || selectedOptionType !== "put" || !instrumentName}
               >
                 Verify calculations
               </button>
-              <button className="btn-ghost" onClick={verifyQuote} disabled={loading || !instrumentName}>
+              <button
+                className="btn-ghost"
+                onClick={checkMargins}
+                disabled={busy || selectedOptionType !== "put" || !instrumentName}
+              >
+                {marginLoading ? "Checking..." : "Check margins"}
+              </button>
+              <button className="btn-ghost" onClick={verifyQuote} disabled={busy || !instrumentName}>
                 Verify Deribit quote
               </button>
               <button
                 className="btn-ghost"
                 onClick={() => void refreshMarket()}
-                disabled={loading || optionsLoading || syncingMarket}
+                disabled={busy || optionsLoading || syncingMarket}
               >
                 {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
@@ -462,6 +522,38 @@ export function AdminConsole() {
                 </>
               ) : (
                 <p className="card-copy">Run a calculation audit to view pass/fail checks.</p>
+              )}
+            </div>
+
+            <div className="admin-card">
+              <h2 className="card-title">Deribit margin requirement</h2>
+              {marginCheck ? (
+                marginCheck.error ? (
+                  <p className="card-copy">{marginCheck.error}</p>
+                ) : (
+                  <>
+                    <div className="soft-row">
+                      <span>Instrument</span>
+                      <strong className="mono">{marginCheck.instrumentName}</strong>
+                    </div>
+                    <div className="soft-row">
+                      <span>C14 amount</span>
+                      <strong className="mono">{formatNumber(marginCheck.amount, 1)}</strong>
+                    </div>
+                    <div className="soft-row">
+                      <span>C15 price</span>
+                      <strong className="mono">{formatNumber(marginCheck.price, 5)}</strong>
+                    </div>
+                    <div className="metric-grid">
+                      <Metric label="Sell margin" value={formatNumber(marginCheck.result?.sell, 8)} />
+                      <Metric label="Buy margin" value={formatNumber(marginCheck.result?.buy, 8)} />
+                      <Metric label="Min price" value={formatNumber(marginCheck.result?.min_price, 5)} />
+                      <Metric label="Max price" value={formatNumber(marginCheck.result?.max_price, 5)} />
+                    </div>
+                  </>
+                )
+              ) : (
+                <p className="card-copy">No margin check run yet.</p>
               )}
             </div>
 

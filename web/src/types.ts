@@ -100,6 +100,22 @@ export interface DcnPricingResponse {
   mock?: boolean;
 }
 
+export interface DeribitMarginResult {
+  buy: number;
+  sell: number;
+  min_price: number;
+  max_price: number;
+}
+
+export interface DeribitMarginCheck {
+  instrumentName: string;
+  amount: number;
+  price: number;
+  result?: DeribitMarginResult;
+  error?: string;
+  mock?: boolean;
+}
+
 export interface MarketOption {
   instrument_name: string;
   option_type: "call" | "put";

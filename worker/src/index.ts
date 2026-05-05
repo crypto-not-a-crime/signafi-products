@@ -26,6 +26,8 @@ export interface Env {
   BACKEND_API_TOKEN?: string;
   DERIBIT_BASE_URL?: string;
   DERIBIT_PROXY_TOKEN?: string;
+  DERIBIT_CLIENT_ID?: string;
+  DERIBIT_CLIENT_SECRET?: string;
   DERIBIT_WS_URL?: string;
 }
 
@@ -37,6 +39,7 @@ const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, adm
   ["GET", /^\/api\/admin\/market-health$/, handleMarketHealth, true],
   ["POST", /^\/api\/admin\/dcn-audit$/, handleDcnAudit, true],
   ["POST", /^\/api\/admin\/verify-quote$/, handleVerifyQuote, true],
+  ["POST", /^\/api\/admin\/deribit-margins$/, handleDeribitMargins, true],
   ["POST", /^\/api\/admin\/sync-market-data$/, handleSyncMarketData, true],
   ["GET", /^\/api\/admin\/stream-status$/, handleStreamStatus, true],
   ["POST", /^\/api\/admin\/stream-start$/, handleStreamStart, true]
@@ -305,6 +308,37 @@ async function handleVerifyQuote(request: Request, env: Env): Promise<Response> 
   });
 }
 
+async function handleDeribitMargins(request: Request, env: Env): Promise<Response> {
+  const payload = await request.json<{ instrumentName?: string; amount?: number; price?: number }>();
+  if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
+  if (!isPositiveFinite(payload.amount)) return json({ error: "amount must be a positive number" }, 400);
+  if (!isPositiveFinite(payload.price)) return json({ error: "price must be a positive number" }, 400);
+  if (!env.DERIBIT_CLIENT_ID || !env.DERIBIT_CLIENT_SECRET) {
+    return json(
+      {
+        error:
+          "Deribit API credentials are not configured. Set DERIBIT_CLIENT_ID and DERIBIT_CLIENT_SECRET with trade:read scope."
+      },
+      503
+    );
+  }
+
+  const client = new DeribitClient(
+    env.DERIBIT_BASE_URL,
+    env.DERIBIT_PROXY_TOKEN,
+    env.DERIBIT_CLIENT_ID,
+    env.DERIBIT_CLIENT_SECRET
+  );
+  const result = await client.getMargins(payload.instrumentName, payload.amount, payload.price);
+
+  return json({
+    instrumentName: payload.instrumentName,
+    amount: payload.amount,
+    price: payload.price,
+    result
+  });
+}
+
 async function handleMarketHealth(_request: Request, env: Env): Promise<Response> {
   const nowMs = Date.now();
   const summaryFreshnessSeconds = 180;
@@ -480,6 +514,10 @@ function isAuthorized(request: Request, env: Env): boolean {
   if (!env.BACKEND_API_TOKEN) return true;
   const header = request.headers.get("authorization") ?? "";
   return header === `Bearer ${env.BACKEND_API_TOKEN}`;
+}
+
+function isPositiveFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function json(data: unknown, status = 200): Response {

@@ -6,6 +6,7 @@ import {
   dayCountFromExpiry,
   modelSellIntoBidDepth,
   roundContracts,
+  scorePutCandidate,
   selectDcnCandidate
 } from "../src/pricing/dcn";
 import { spotPriceFromTicker } from "../src/deribit";
@@ -339,6 +340,56 @@ describe("DCN sell-put pricing", () => {
       .toBe(shorterRunway);
   });
 
+  it("auto return shortlist favors fixed runway and strike buffer before raw yield", () => {
+    const request = {
+      investmentUsdt: 1000000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikePreference: "five_otm" as const,
+      selectorMode: "auto_yield" as const,
+      firmMarginBps: 200,
+      nowMs: NOW
+    };
+    const fixedRunwayStrike = {
+      instrumentName: "BTC-180D-76000-P",
+      strike: 76000,
+      expirationTimestamp: NOW + 180 * 24 * 60 * 60 * 1000,
+      underlyingPrice: 80000,
+      bidPrice: 0.05
+    };
+    const highYieldButWrongRunway = {
+      instrumentName: "BTC-52D-76000-P",
+      strike: 76000,
+      expirationTimestamp: NOW + 52 * 24 * 60 * 60 * 1000,
+      underlyingPrice: 80000,
+      bidPrice: 0.1
+    };
+
+    expect(scorePutCandidate(request, fixedRunwayStrike)).toBeGreaterThan(
+      scorePutCandidate(request, highYieldButWrongRunway)
+    );
+  });
+
+  it("does not shortlist puts with strikes at or above spot for the below-spot DCN product", () => {
+    const request = {
+      investmentUsdt: 1000000,
+      runwayDays: 180,
+      strikePreference: "five_otm" as const,
+      selectorMode: "auto_yield" as const,
+      nowMs: NOW
+    };
+
+    expect(
+      scorePutCandidate(request, {
+        instrumentName: "BTC-180D-260000-P",
+        strike: 260000,
+        expirationTimestamp: NOW + 180 * 24 * 60 * 60 * 1000,
+        underlyingPrice: 80000,
+        bidPrice: 2.1
+      })
+    ).toBe(-Infinity);
+  });
+
   it("enforces max slippage as an eligibility gate", () => {
     const result = calculateDcnSellPut(
       {
@@ -367,6 +418,25 @@ describe("DCN sell-put pricing", () => {
     expect(result.depth.sufficientDepth).toBe(true);
     expect(result.checks.slippageWithinLimit).toBe(false);
     expect(result.eligible).toBe(false);
+  });
+
+  it("does not recommend an ineligible candidate as the best match", () => {
+    const request = {
+      investmentUsdt: 1000000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikePreference: "five_otm" as const,
+      selectorMode: "auto_yield" as const
+    };
+    const ineligible = rankableCandidate("review-only", {
+      eligible: false,
+      clientYield: 0,
+      dayCount: 52,
+      strike: 260000,
+      spotPrice: 80000
+    });
+
+    expect(selectDcnCandidate(request, [ineligible]).bestCandidate).toBeNull();
   });
 });
 

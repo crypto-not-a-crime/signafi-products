@@ -261,6 +261,16 @@ export function LeversPage() {
                 </div>
               ) : null}
 
+              {data && !loading && !best ? (
+                <div className="candidate-card">
+                  <span className="status-badge status-warn">No eligible match</span>
+                  <p className="card-copy">
+                    No live put passed the depth, freshness, below-spot strike, slippage, and profitability checks for
+                    this combination.
+                  </p>
+                </div>
+              ) : null}
+
               {best && scenarioRange && selectedExpiryPrice !== null ? (
                 <ClientPayoutSimulator
                   candidate={best}

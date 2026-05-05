@@ -75,6 +75,21 @@ export interface DeribitOrderBook extends DeribitTicker {
   max_price?: number;
 }
 
+export interface DeribitMarginResult {
+  buy: number;
+  sell: number;
+  min_price: number;
+  max_price: number;
+}
+
+interface DeribitAuthResult {
+  access_token: string;
+  expires_in: number;
+  token_type?: string;
+  refresh_token?: string;
+  scope?: string;
+}
+
 interface DeribitRpcResponse<T> {
   jsonrpc: "2.0";
   id: number;
@@ -86,9 +101,13 @@ interface DeribitRpcResponse<T> {
 }
 
 export class DeribitClient {
+  private accessToken: { token: string; expiresAt: number } | null = null;
+
   constructor(
     private readonly baseUrl = "https://www.deribit.com/api/v2",
-    private readonly proxyToken?: string
+    private readonly proxyToken?: string,
+    private readonly clientId?: string,
+    private readonly clientSecret?: string
   ) {}
 
   async getInstruments(currency = "BTC"): Promise<DeribitInstrument[]> {
@@ -123,18 +142,47 @@ export class DeribitClient {
     });
   }
 
-  private async rpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  async getMargins(instrumentName: string, amount: number, price: number): Promise<DeribitMarginResult> {
+    return this.privateRpc<DeribitMarginResult>("private/get_margins", {
+      instrument_name: instrumentName,
+      amount,
+      price
+    });
+  }
+
+  private async privateRpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    const token = await this.getAccessToken();
+    return this.rpc<T>(method, params, token);
+  }
+
+  private async getAccessToken(): Promise<string> {
+    if (this.accessToken && this.accessToken.expiresAt - Date.now() > 30_000) {
+      return this.accessToken.token;
+    }
+    if (!this.clientId || !this.clientSecret) {
+      throw new Error("Deribit API credentials are not configured");
+    }
+
+    const auth = await this.rpc<DeribitAuthResult>("public/auth", {
+      grant_type: "client_credentials",
+      client_id: this.clientId,
+      client_secret: this.clientSecret
+    });
+    const expiresInMs = Math.max(0, auth.expires_in - 30) * 1000;
+    this.accessToken = {
+      token: auth.access_token,
+      expiresAt: Date.now() + expiresInMs
+    };
+    return auth.access_token;
+  }
+
+  private async rpc<T>(method: string, params: Record<string, unknown>, deribitAccessToken?: string): Promise<T> {
     const url = `${this.baseUrl.replace(/\/$/, "")}/`;
     let response: Response | null = null;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       response = await fetch(url, {
         method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-          "user-agent": "SignafiMarketWorker/1.0",
-          ...(this.proxyToken ? { authorization: `Bearer ${this.proxyToken}` } : {})
-        },
+        headers: this.headers(deribitAccessToken),
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: Date.now(),
@@ -159,6 +207,23 @@ export class DeribitClient {
       throw new Error(`Deribit ${method} returned no result`);
     }
     return payload.result;
+  }
+
+  private headers(deribitAccessToken?: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      "content-type": "application/json",
+      "user-agent": "SignafiMarketWorker/1.0"
+    };
+
+    if (this.proxyToken) {
+      headers.authorization = `Bearer ${this.proxyToken}`;
+      if (deribitAccessToken) headers["x-deribit-authorization"] = `Bearer ${deribitAccessToken}`;
+    } else if (deribitAccessToken) {
+      headers.authorization = `Bearer ${deribitAccessToken}`;
+    }
+
+    return headers;
   }
 }
 

@@ -14,12 +14,14 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.text();
+  const deribitAuthorization = request.headers.get("x-deribit-authorization");
   const response = await fetch(DERIBIT_RPC_URL, {
     method: "POST",
     headers: {
       accept: "application/json",
       "content-type": "application/json",
-      "user-agent": "SignafiDeribitProxy/1.0"
+      "user-agent": "SignafiDeribitProxy/1.0",
+      ...(deribitAuthorization ? { authorization: deribitAuthorization } : {})
     },
     body,
     cache: "no-store"
