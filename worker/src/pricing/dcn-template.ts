@@ -31,7 +31,7 @@ export const DCN_SELL_PUT_TEMPLATE = {
   formulas: {
     dayCount: "calendar expiry date - calendar today date (exclusive today, inclusive expiry date)",
     grossReferenceYield: "effectivePutBidPrice / dayCount * 365",
-    clientYield: "grossReferenceYield - firmMarginBps / 10000",
+    clientYield: "ROUND(MAX(grossReferenceYield - firmMarginBps / 10000, 0) * 100, 1) / 100",
     clientPayoutBtc: "investmentUSDT / strike * (1 + clientYield * days / 365)",
     clientPayoutUsdt: "investmentUSDT * (1 + clientYield * days / 365)",
     downsideOptionSettlementBtc: "IF(expiryPrice < strike, -((strike - expiryPrice) / expiryPrice * contracts), 0)",
@@ -40,10 +40,14 @@ export const DCN_SELL_PUT_TEMPLATE = {
   }
 } as const;
 
-export type DcnTemplateSummary = Pick<
-  typeof DCN_SELL_PUT_TEMPLATE,
-  "id" | "version" | "label" | "sourceWorkbook" | "sourceSheets" | "firmMarginBps"
->;
+export interface DcnTemplateSummary {
+  id: typeof DCN_SELL_PUT_TEMPLATE.id;
+  version: typeof DCN_SELL_PUT_TEMPLATE.version;
+  label: typeof DCN_SELL_PUT_TEMPLATE.label;
+  sourceWorkbook: typeof DCN_SELL_PUT_TEMPLATE.sourceWorkbook;
+  sourceSheets: string[];
+  firmMarginBps: number;
+}
 
 export function getDcnTemplateSummary(): DcnTemplateSummary {
   return {

@@ -31,6 +31,7 @@ export function AdminConsole() {
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(500000);
+  const [firmMarginPct, setFirmMarginPct] = useState(2);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
   const [marginCheck, setMarginCheck] = useState<DeribitMarginCheck | null>(null);
@@ -119,11 +120,11 @@ export function AdminConsole() {
     setQuoteVerification(null);
     setRefreshError(null);
     setExpiryPrice(null);
-  }, [instrumentName, investmentUsdt]);
+  }, [instrumentName, investmentUsdt, firmMarginPct]);
 
   useEffect(() => {
     if (!audit) return;
-    const range = getScenarioRange(audit);
+    const range = getAdminScenarioRange(audit);
     setExpiryPrice((current) =>
       current === null || current < range.min || current > range.max ? range.defaultPrice : current
     );
@@ -160,6 +161,8 @@ export function AdminConsole() {
     }
   }
 
+  const firmMarginBps = Math.max(0, Math.round(firmMarginPct * 100));
+
   async function refreshMarket() {
     setSyncingMarket(true);
     setMarginCheck(null);
@@ -174,7 +177,7 @@ export function AdminConsole() {
           investmentUsdt,
           targetYieldBps: 1000,
           runwayDays: 92,
-          firmMarginBps: 200,
+          firmMarginBps,
           orderBookDepth: 100,
           scenarioExpiryPrice: expiryPrice ?? undefined
         }),
@@ -201,7 +204,7 @@ export function AdminConsole() {
         investmentUsdt,
         targetYieldBps: 1000,
         runwayDays: 92,
-        firmMarginBps: 200,
+        firmMarginBps,
         orderBookDepth: 100,
         scenarioExpiryPrice: expiryPrice ?? undefined
       })
@@ -278,7 +281,7 @@ export function AdminConsole() {
     }
   }
 
-  const scenarioRange = audit ? getScenarioRange(audit) : null;
+  const scenarioRange = audit ? getAdminScenarioRange(audit) : null;
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const selectedScenario = audit && selectedExpiryPrice !== null ? calculateScenario(audit, selectedExpiryPrice) : null;
   const busy = loading || marginLoading;
@@ -366,6 +369,20 @@ export function AdminConsole() {
                   onChange={(event) => setInvestmentUsdt(Number(event.target.value))}
                 />
               </label>
+              <label>
+                <span className="field-label">Firm margin % p.a.</span>
+                <input
+                  className="admin-input"
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={firmMarginPct}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    setFirmMarginPct(Number.isFinite(next) ? next : 0);
+                  }}
+                />
+              </label>
             </div>
             <div className="soft-row" style={{ marginTop: 12 }}>
               <span>Selected instrument</span>
@@ -411,7 +428,7 @@ export function AdminConsole() {
             {audit ? (
               <>
                 <div className="metric-grid">
-                  <Metric label="Client yield" value={formatPct(audit.clientYield)} tone={audit.eligible ? "ok" : "warn"} />
+                  <Metric label="Client yield" value={formatPct(audit.clientYield, 1)} tone={audit.eligible ? "ok" : "warn"} />
                   <Metric label="Effective C15 bid" value={formatNumber(audit.effectivePutBidPrice, 5)} />
                   <Metric
                     label="Selected firm P&L"
@@ -605,6 +622,14 @@ function formatExpiry(timestamp: number): string {
     .format(new Date(timestamp))
     .replace(",", "")
     .toUpperCase();
+}
+
+function getAdminScenarioRange(candidate: DcnCandidate) {
+  return getScenarioRange(candidate, {
+    min: 0,
+    max: candidate.strike * 3,
+    step: 1000
+  });
 }
 
 function formatAge(seconds: number | null | undefined): string {

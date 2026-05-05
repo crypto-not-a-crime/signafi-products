@@ -1,10 +1,17 @@
 import type { DcnCandidate, DcnScenarioResult, FormulaTraceRow } from "@/types";
 
-export function getScenarioRange(candidate: DcnCandidate) {
-  const min = roundToStep(candidate.strike * 0.6, 1000);
-  const max = roundToStep(Math.max(candidate.strike * 1.55, candidate.spotPrice * 1.35), 1000);
-  const defaultPrice = clamp(roundToStep(candidate.strike, 1000), min, max);
-  return { min, max, step: 1000, defaultPrice };
+interface ScenarioRangeOptions {
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export function getScenarioRange(candidate: DcnCandidate, options: ScenarioRangeOptions = {}) {
+  const step = options.step ?? 1000;
+  const min = options.min ?? roundToStep(candidate.strike * 0.6, step);
+  const max = options.max ?? roundToStep(Math.max(candidate.strike * 1.55, candidate.spotPrice * 1.35), step);
+  const defaultPrice = clamp(roundToStep(candidate.strike, step), min, max);
+  return { min, max, step, defaultPrice };
 }
 
 export function calculateScenario(candidate: DcnCandidate, expiryPrice: number): DcnScenarioResult {
@@ -22,11 +29,15 @@ export function calculateScenario(candidate: DcnCandidate, expiryPrice: number):
   const clientPayoutAsset = side === "downside" ? "BTC" : "USDT";
   const clientPayoutAmount = side === "downside" ? clientPayoutBtc : clientPayoutUsdt;
   const optionSettlementBtc =
-    side === "downside"
+    side === "downside" && expiryPrice > 0
       ? -((candidate.strike - expiryPrice) / expiryPrice) * candidate.requiredContracts
-      : 0;
+      : side === "downside"
+        ? null
+        : 0;
   const netHedgeBtc =
-    candidate.netOptionProceedsBtc === null ? null : candidate.netOptionProceedsBtc + optionSettlementBtc;
+    candidate.netOptionProceedsBtc === null || optionSettlementBtc === null
+      ? null
+      : candidate.netOptionProceedsBtc + optionSettlementBtc;
   const btcToPurchase =
     side === "downside" && netHedgeBtc !== null && clientPrincipalInterestBtc !== null
       ? clientPrincipalInterestBtc - netHedgeBtc
@@ -79,7 +90,7 @@ export function calculateScenario(candidate: DcnCandidate, expiryPrice: number):
 function buildScenarioTrace(
   side: "downside" | "upside",
   expiryPrice: number,
-  optionSettlementBtc: number,
+  optionSettlementBtc: number | null,
   netHedgeBtc: number | null,
   clientPayoutBtc: number | null,
   clientPayoutUsdt: number | null,

@@ -235,7 +235,7 @@ export function LeversPage() {
                 <div className="metric-grid">
                   <div className="metric-card">
                     <div className="sum-lbl">Client yield</div>
-                    <div className="metric-value green">{formatPct(best?.clientYield)}</div>
+                    <div className="metric-value green">{formatPct(best?.clientYield, 1)}</div>
                   </div>
                   <div className="metric-card">
                     <div className="sum-lbl">Runway</div>
@@ -341,7 +341,7 @@ function ClientPayoutSimulator({
       <div className="metric-grid">
         <Metric label="Client receives" value={payout} tone="ok" />
         <Metric label="Scenario" value={scenario.side === "downside" ? "Below strike" : "At/above strike"} />
-        <Metric label="Client yield" value={formatPct(candidate.clientYield)} tone="ok" />
+        <Metric label="Client yield" value={formatPct(candidate.clientYield, 1)} tone="ok" />
         <Metric label="Strike" value={formatUsd(candidate.strike)} />
       </div>
       <p className="card-copy">
@@ -375,7 +375,7 @@ function RecommendationCard({
           <div className="pc-label">Recommendation</div>
           <h3 className="card-title">{recommendation.recommendedLever === "none" ? "Closest product" : `Recommended ${recommendation.recommendedLever}`}</h3>
         </div>
-        <span className="status-badge status-live">{formatPct(candidate.clientYield)}</span>
+        <span className="status-badge status-live">{formatPct(candidate.clientYield, 1)}</span>
       </div>
       <p className="card-copy">{recommendation.reason}</p>
       <div className="metric-grid">
@@ -406,7 +406,7 @@ function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; b
       </p>
       <div className="metric-grid">
         <Metric label="Gross C17 yield" value={formatPct(candidate.grossReferenceYield)} />
-        <Metric label="Client yield" value={formatPct(candidate.clientYield)} tone="ok" />
+        <Metric label="Client yield" value={formatPct(candidate.clientYield, 1)} tone="ok" />
         <Metric label="Effective C15 bid" value={formatNumber(candidate.effectivePutBidPrice, 5)} />
         <Metric label="Top bid" value={formatNumber(candidate.depth.bestBidPrice, 5)} />
         <Metric label="Slippage" value={formatPct(candidate.depth.slippagePct, 3)} />

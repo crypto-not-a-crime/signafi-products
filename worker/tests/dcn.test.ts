@@ -6,6 +6,7 @@ import {
   dayCountFromExpiry,
   modelSellIntoBidDepth,
   roundContracts,
+  roundYieldToOneDecimalPercent,
   scorePutCandidate,
   selectDcnCandidate
 } from "../src/pricing/dcn";
@@ -85,7 +86,8 @@ describe("DCN sell-put pricing", () => {
     expect(result.requiredContracts).toBe(12.7);
     expect(result.effectivePutBidPrice).toBeCloseTo(0.0645, 8);
     expect(result.grossReferenceYield).toBeCloseTo((0.0645 / 92) * 365, 8);
-    expect(result.clientYield).toBeCloseTo((0.0645 / 92) * 365 - 0.02, 8);
+    expect(result.clientYield).toBe(roundYieldToOneDecimalPercent((0.0645 / 92) * 365 - 0.02));
+    expect(result.clientInterestUsdt).toBeCloseTo(1000000 * result.clientYield! * (92 / 365), 8);
     expect(result.tradingFeesBtc).toBeCloseTo(-0.00381, 8);
     expect(result.netOptionProceedsBtc).toBeCloseTo(0.81534, 5);
     expect(result.premiumCoversInterest).toBe(true);
@@ -211,7 +213,7 @@ describe("DCN sell-put pricing", () => {
       }
     );
 
-    expect(result.clientYield).toBeCloseTo((0.04358 / 92) * 365 - 0.02, 10);
+    expect(result.clientYield).toBe(roundYieldToOneDecimalPercent((0.04358 / 92) * 365 - 0.02));
   });
 
   it("fails eligibility when the quote is stale", () => {

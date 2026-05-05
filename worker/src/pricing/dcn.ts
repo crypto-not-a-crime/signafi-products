@@ -149,6 +149,11 @@ export function roundContracts(rawContracts: number, minTradeAmount = 0.1): numb
   return Math.max(rounded, minTradeAmount);
 }
 
+export function roundYieldToOneDecimalPercent(yieldDecimal: number): number {
+  if (!Number.isFinite(yieldDecimal)) return 0;
+  return Math.round(yieldDecimal * 1000) / 1000;
+}
+
 export function dayCountFromExpiry(expirationTimestamp: number, nowMs = Date.now()): number {
   const msPerDay = 24 * 60 * 60 * 1000;
   const todayUtc = new Date(nowMs);
@@ -225,8 +230,15 @@ export function calculateDcnScenario(expiryPrice: number, input: DcnScenarioInpu
   const clientPayoutAsset: DcnPayoutAsset = side === "downside" ? "BTC" : "USDT";
   const clientPayoutAmount = side === "downside" ? clientPayoutBtc : clientPayoutUsdt;
   const optionSettlementBtc =
-    side === "downside" ? -((input.strike - expiryPrice) / expiryPrice) * input.requiredContracts : 0;
-  const netHedgeBtc = input.netOptionProceedsBtc === null ? null : input.netOptionProceedsBtc + optionSettlementBtc;
+    side === "downside" && expiryPrice > 0
+      ? -((input.strike - expiryPrice) / expiryPrice) * input.requiredContracts
+      : side === "downside"
+        ? null
+        : 0;
+  const netHedgeBtc =
+    input.netOptionProceedsBtc === null || optionSettlementBtc === null
+      ? null
+      : input.netOptionProceedsBtc + optionSettlementBtc;
   const btcToPurchase =
     side === "downside" && netHedgeBtc !== null && input.clientPrincipalInterestBtc !== null
       ? input.clientPrincipalInterestBtc - netHedgeBtc
@@ -348,7 +360,8 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
 
   const grossReferenceYield =
     effectivePutBidPrice === null || dayCount <= 0 ? null : (effectivePutBidPrice / dayCount) * 365;
-  const clientYield = grossReferenceYield === null ? null : Math.max(0, grossReferenceYield - firmMarginBps / 10000);
+  const rawClientYield = grossReferenceYield === null ? null : Math.max(0, grossReferenceYield - firmMarginBps / 10000);
+  const clientYield = rawClientYield === null ? null : roundYieldToOneDecimalPercent(rawClientYield);
   const clientInterestUsdt = clientYield === null ? null : investmentUsdt * clientYield * (dayCount / 365);
   const tradingFeePerContractBtc =
     effectivePutBidPrice === null ? null : -Math.min(0.0003, 0.125 * effectivePutBidPrice);
@@ -426,7 +439,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     {
       cell: "Signafi Margin",
       label: "Firm margin",
-      formula: "configured firm_margin_bps / 10000",
+      formula: "request firmMarginBps / 10000",
       value: firmMarginBps / 10000
     },
     {
@@ -477,7 +490,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   ];
 
   return {
-    formulaTemplate: getDcnTemplateSummary(),
+    formulaTemplate: { ...getDcnTemplateSummary(), firmMarginBps },
     instrumentName: market.instrumentName,
     investmentUsdt,
     spotPrice,
@@ -519,7 +532,9 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
 
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, request.nowMs ?? Date.now());
   if (dayCount <= 0) return -Infinity;
-  const roughClientYield = Math.max(0, (market.bidPrice / dayCount) * 365 - (request.firmMarginBps ?? 200) / 10000);
+  const roughClientYield = roundYieldToOneDecimalPercent(
+    Math.max(0, (market.bidPrice / dayCount) * 365 - (request.firmMarginBps ?? 200) / 10000)
+  );
   const roughCandidate: DcnRankableCandidate = {
     eligible: true,
     clientYield: roughClientYield,

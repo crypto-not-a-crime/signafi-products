@@ -1,7 +1,13 @@
 import type { DcnCandidate, DcnPricingResponse } from "@/types";
 import { calculateScenario } from "./dcn-scenario";
 
+function roundYieldToOneDecimalPercent(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
 export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCandidate {
+  const grossReferenceYield = (0.0641 / 92) * 365;
+  const clientYield = roundYieldToOneDecimalPercent(grossReferenceYield - 0.02);
   const base: DcnCandidate = {
     formulaTemplate: {
       id: "dcn-sell-put-workbook-v1",
@@ -18,10 +24,10 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
     dayCount: 92,
     requiredContracts: 6.4,
     effectivePutBidPrice: 0.0641,
-    grossReferenceYield: (0.0641 / 92) * 365,
+    grossReferenceYield,
     firmMarginBps: 200,
-    clientYield: (0.0641 / 92) * 365 - 0.02,
-    clientInterestUsdt: 500000 * (((0.0641 / 92) * 365 - 0.02) * (92 / 365)),
+    clientYield,
+    clientInterestUsdt: 500000 * (clientYield * (92 / 365)),
     tradingFeesBtc: -0.00192,
     netOptionProceedsBtc: 0.40832,
     netOptionProceedsUsdt: 32053.12,
@@ -48,8 +54,14 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
     formulaTrace: [
       { cell: "C4", label: "Initial Investment (USDT)", formula: "user input", value: 500000 },
       { cell: "C15", label: "Put Bid Price", formula: "depth-weighted bid", value: 0.0641 },
-      { cell: "C17", label: "Option Baseline Premium", formula: "C15/C11*365", value: (0.0641 / 92) * 365 },
-      { cell: "Client Yield", label: "Client target yield", formula: "C17 - 2.0% p.a.", value: (0.0641 / 92) * 365 - 0.02 },
+      { cell: "C17", label: "Option Baseline Premium", formula: "C15/C11*365", value: grossReferenceYield },
+      { cell: "Signafi Margin", label: "Firm margin", formula: "admin firm margin input / 100", value: 0.02 },
+      {
+        cell: "Client Yield",
+        label: "Client target yield",
+        formula: "ROUND(MAX(C17 - Signafi Margin, 0) * 100, 1) / 100",
+        value: clientYield
+      },
       { cell: "Selected Payout", label: "Client payout", formula: "scenario analysis", value: 522000 }
     ],
     depth: {
@@ -89,6 +101,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
     investmentUsdt,
     requiredContracts: Math.round((investmentUsdt / 78500) * 10) / 10
   });
+  const alternativeGrossYield = (0.044 / 92) * 365;
+  const alternativeClientYield = roundYieldToOneDecimalPercent(alternativeGrossYield - 0.02);
   return {
     generatedAt: Date.now(),
     input,
@@ -98,8 +112,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
         instrumentName: "BTC-31JUL26-70000-P",
         strike: 70000,
         effectivePutBidPrice: 0.044,
-        clientYield: (0.044 / 92) * 365 - 0.02,
-        grossReferenceYield: (0.044 / 92) * 365,
+        clientYield: alternativeClientYield,
+        grossReferenceYield: alternativeGrossYield,
         upsideProfitUsdt: 9700,
         downsideProfitUsdt: 8400
       })
