@@ -4,10 +4,9 @@
 
 - Improve UI to not require scrolling down too much to see recommended products. Use whitespace at the side of the main boxes
 
+- Add firm profit calculatror for selling premium upfront
 
-- Add current BTC price in /3-levers for comparison, 
 
-- Put % away from spot in each product recommendation for strike price, and put days away from expiry date 
 
 
 
