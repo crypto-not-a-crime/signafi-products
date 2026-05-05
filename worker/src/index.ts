@@ -214,7 +214,7 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const spotPrice = await getBtcUsdcSpotPrice(client);
-  const depthCandidateCount = Math.max(config.maxDepthCandidates, 25);
+  const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 6), 12);
   const shortlisted = candidates
     .map((row) => ({ row, score: scorePutCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
     .filter((item) => Number.isFinite(item.score))
