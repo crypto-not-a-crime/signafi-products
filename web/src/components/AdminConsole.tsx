@@ -30,7 +30,7 @@ export function AdminConsole() {
   const [selectedOptionType, setSelectedOptionType] = useState<"call" | "put">("put");
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [selectedStrike, setSelectedStrike] = useState("");
-  const [investmentUsdt, setInvestmentUsdt] = useState(500000);
+  const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [firmMarginPct, setFirmMarginPct] = useState(2);
   const [savedFirmMarginPct, setSavedFirmMarginPct] = useState(2);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);

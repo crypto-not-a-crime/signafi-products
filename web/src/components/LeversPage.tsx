@@ -17,7 +17,7 @@ const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000
 const strikeBufferOptions = [5, 10, 15, 20, 25, 30];
 
 export function LeversPage() {
-  const [investmentUsdt, setInvestmentUsdt] = useState(500000);
+  const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [runway, setRunway] = useState("3m");
   const [targetYieldPct, setTargetYieldPct] = useState(10);
   const [strikeBufferMode, setStrikeBufferMode] = useState<"target" | "any">("target");
