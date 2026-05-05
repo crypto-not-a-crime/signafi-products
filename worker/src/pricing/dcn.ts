@@ -405,7 +405,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
 
   const formulaTrace: FormulaTraceRow[] = [
     { cell: "C4", label: "Initial Investment (USDT)", formula: "user input", value: investmentUsdt },
-    { cell: "C5", label: "BTC Spot Price", formula: "Deribit underlying_price", value: spotPrice },
+    { cell: "C5", label: "BTC Spot Price", formula: "Deribit BTC_USDC spot mid", value: spotPrice },
     { cell: "C7", label: "Strike Price", formula: "selected Deribit put strike", value: market.strike },
     { cell: "C11", label: "Day Count", formula: DCN_SELL_PUT_TEMPLATE.formulas.dayCount, value: dayCount },
     { cell: "C14", label: "Contracts", formula: "ROUND(C4/C5, 1)", value: requiredContracts },

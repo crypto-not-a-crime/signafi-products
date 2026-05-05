@@ -41,6 +41,9 @@ export interface DeribitTicker {
   instrument_name: string;
   timestamp: number;
   state?: string;
+  index_price?: number | null;
+  min_price?: number | null;
+  max_price?: number | null;
   best_bid_price?: number | null;
   best_bid_amount?: number | null;
   best_ask_price?: number | null;
@@ -109,6 +112,10 @@ export class DeribitClient {
     });
   }
 
+  async btcUsdcSpotTicker(): Promise<DeribitTicker> {
+    return this.ticker("BTC_USDC");
+  }
+
   async getOrderBook(instrumentName: string, depth = 100): Promise<DeribitOrderBook> {
     return this.rpc<DeribitOrderBook>("public/get_order_book", {
       instrument_name: instrumentName,
@@ -153,6 +160,23 @@ export class DeribitClient {
     }
     return payload.result;
   }
+}
+
+export function spotPriceFromTicker(ticker: DeribitTicker | null | undefined): number | null {
+  const bid = finitePositive(ticker?.best_bid_price);
+  const ask = finitePositive(ticker?.best_ask_price);
+  const mid = bid !== null && ask !== null ? (bid + ask) / 2 : null;
+  return (
+    mid ??
+    finitePositive(ticker?.mark_price) ??
+    finitePositive(ticker?.last_price) ??
+    finitePositive(ticker?.index_price) ??
+    null
+  );
+}
+
+function finitePositive(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function isRetryableStatus(status: number): boolean {

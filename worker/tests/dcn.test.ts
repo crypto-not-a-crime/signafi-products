@@ -8,6 +8,7 @@ import {
   roundContracts,
   selectDcnCandidate
 } from "../src/pricing/dcn";
+import { spotPriceFromTicker } from "../src/deribit";
 
 const NOW = Date.UTC(2026, 3, 30);
 const EXPIRY_92_DAYS = NOW + 92 * 24 * 60 * 60 * 1000;
@@ -87,6 +88,55 @@ describe("DCN sell-put pricing", () => {
     expect(result.tradingFeesBtc).toBeCloseTo(-0.00381, 8);
     expect(result.netOptionProceedsBtc).toBeCloseTo(0.81534, 5);
     expect(result.premiumCoversInterest).toBe(true);
+  });
+
+  it("uses BTC/USDC spot input as C5 rather than option underlying price semantics", () => {
+    const result = calculateDcnSellPut(
+      {
+        investmentUsdt: 1000000,
+        firmMarginBps: 200,
+        quoteFreshnessSeconds: 10,
+        nowMs: NOW
+      },
+      {
+        instrumentName: "BTC-30JUL26-75000-P",
+        strike: 75000,
+        expirationTimestamp: EXPIRY_92_DAYS,
+        minTradeAmount: 0.1,
+        underlyingPrice: 80258,
+        bidPrice: 0.0645,
+        bidAmount: 20,
+        deribitTimestamp: NOW,
+        bids: [[0.0645, 20]]
+      }
+    );
+
+    const c5 = result.formulaTrace.find((row) => row.cell === "C5");
+    expect(result.spotPrice).toBe(80258);
+    expect(c5?.formula).toBe("Deribit BTC_USDC spot mid");
+    expect(result.requiredContracts).toBe(roundContracts(1000000 / 80258, 0.1));
+  });
+
+  it("derives BTC/USDC spot from ticker midpoint with sensible fallbacks", () => {
+    expect(
+      spotPriceFromTicker({
+        instrument_name: "BTC_USDC",
+        timestamp: NOW,
+        best_bid_price: 80245,
+        best_ask_price: 80271,
+        mark_price: 80251.39,
+        last_price: 80266,
+        index_price: 80251.39
+      })
+    ).toBe(80258);
+    expect(
+      spotPriceFromTicker({
+        instrument_name: "BTC_USDC",
+        timestamp: NOW,
+        mark_price: 80251.39,
+        last_price: 80266
+      })
+    ).toBe(80251.39);
   });
 
   it("matches workbook sample firm upside/downside profits when using the workbook C8 client yield", () => {

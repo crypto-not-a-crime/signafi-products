@@ -9,7 +9,7 @@ import {
   upsertInstruments,
   upsertTicker
 } from "./db";
-import { DeribitClient, type DeribitTicker } from "./deribit";
+import { DeribitClient, spotPriceFromTicker, type DeribitTicker } from "./deribit";
 import {
   calculateDcnSellPut,
   priceCandidateAtSize,
@@ -212,14 +212,15 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
     candidates = await getPutCandidates(env.DB, nowMs);
   }
 
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
+  const spotPrice = await getBtcUsdcSpotPrice(client);
   const depthCandidateCount = Math.max(config.maxDepthCandidates, 25);
   const shortlisted = candidates
-    .map((row) => ({ row, score: scorePutCandidate(normalized, rowToMarket(row, [])) }))
+    .map((row) => ({ row, score: scorePutCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
     .filter((item) => Number.isFinite(item.score))
     .sort((a, b) => b.score - a.score)
     .slice(0, depthCandidateCount);
 
-  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const priced = [];
 
   for (const item of shortlisted) {
@@ -231,7 +232,7 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
       "pricing",
       Date.now()
     );
-    const calculation = priceCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp));
+    const calculation = priceCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
     priced.push({ score: item.score, snapshotId, ...calculation });
   }
 
@@ -256,7 +257,10 @@ async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
   if (!stored) return json({ error: "Instrument not found in D1" }, 404);
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const book = await client.getOrderBook(payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth);
+  const [book, spotPrice] = await Promise.all([
+    client.getOrderBook(payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth),
+    getBtcUsdcSpotPrice(client)
+  ]);
   const snapshotId = await insertOrderBookSnapshot(
     env.DB,
     book,
@@ -264,7 +268,7 @@ async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
     "admin-audit",
     Date.now()
   );
-  const calculation = calculateDcnSellPut(normalized, rowToMarket(stored, book.bids, book.timestamp));
+  const calculation = calculateDcnSellPut(normalized, rowToMarket(stored, book.bids, book.timestamp, spotPrice));
   const auditId = await insertAudit(env.DB, payload, payload.instrumentName, snapshotId, calculation, calculation.checks, Date.now());
 
   return json({ auditId, snapshotId, calculation });
@@ -395,6 +399,14 @@ async function getPricingStreamInstruments(env: Env): Promise<string[]> {
     .map((row) => row.instrument_name);
 }
 
+async function getBtcUsdcSpotPrice(client: DeribitClient): Promise<number | null> {
+  try {
+    return spotPriceFromTicker(await client.btcUsdcSpotTicker());
+  } catch {
+    return null;
+  }
+}
+
 async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: number; syncedAt: number }> {
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const nowMs = Date.now();
@@ -428,14 +440,19 @@ function normalizeSelectorMode(mode: DcnPricingRequest["selectorMode"]): DcnPric
   return mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike" ? mode : "closest";
 }
 
-function rowToMarket(row: JoinedPutRow, bids: BidAskLevel[] = [], bookTimestamp?: number): PutMarketInput {
+function rowToMarket(
+  row: JoinedPutRow,
+  bids: BidAskLevel[] = [],
+  bookTimestamp?: number,
+  spotPrice?: number | null
+): PutMarketInput {
   return {
     instrumentName: row.instrument_name,
     strike: row.strike,
     expirationTimestamp: row.expiration_timestamp,
     minTradeAmount: row.min_trade_amount,
     contractSize: row.contract_size,
-    underlyingPrice: row.underlying_price,
+    underlyingPrice: spotPrice ?? row.underlying_price,
     bidPrice: row.bid_price,
     bidAmount: row.bid_amount,
     askPrice: row.ask_price,
