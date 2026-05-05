@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, MarketOption } from "@/types";
+import type { DcnCandidate, MarketExpirySummary, MarketOption } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 
@@ -9,7 +9,13 @@ interface Health {
   activeInstrumentCount?: number;
   quoteCount?: number;
   staleQuoteCount?: number;
+  summaryStaleCount?: number;
+  liveTickerFreshCount?: number;
+  catalogSyncAgeSeconds?: number | null;
+  summaryFreshnessSeconds?: number;
+  liveFreshnessSeconds?: number;
   latestQuoteAt?: number;
+  latestSyncAt?: number;
   streamStatus?: unknown;
   mock?: boolean;
 }
@@ -17,7 +23,9 @@ interface Health {
 export function AdminConsole() {
   const [health, setHealth] = useState<Health | null>(null);
   const [options, setOptions] = useState<MarketOption[]>([]);
+  const [expirySummaries, setExpirySummaries] = useState<MarketExpirySummary[]>([]);
   const [optionsLoading, setOptionsLoading] = useState(false);
+  const [syncingMarket, setSyncingMarket] = useState(false);
   const [instrumentName, setInstrumentName] = useState("BTC-31JUL26-75000-P");
   const [selectedOptionType, setSelectedOptionType] = useState<"call" | "put">("put");
   const [selectedExpiry, setSelectedExpiry] = useState("");
@@ -30,7 +38,7 @@ export function AdminConsole() {
 
   useEffect(() => {
     void refreshHealth();
-    void loadOptions();
+    void loadExpiryOptions();
   }, []);
 
   useEffect(() => {
@@ -46,15 +54,14 @@ export function AdminConsole() {
     setSelectedStrike(String(preferred.strike));
   }, [instrumentName, options, selectedExpiry]);
 
-  const expiryOptions = useMemo(() => {
-    const expiries = new Map<number, MarketOption>();
-    for (const option of options) {
-      if (option.option_type === selectedOptionType && option.expiration_timestamp) {
-        expiries.set(option.expiration_timestamp, option);
-      }
-    }
-    return Array.from(expiries.keys()).sort((a, b) => a - b);
-  }, [options, selectedOptionType]);
+  const expiryOptions = useMemo(
+    () =>
+      expirySummaries
+        .filter((item) => item.option_type === selectedOptionType && item.expiration_timestamp)
+        .map((item) => item.expiration_timestamp)
+        .sort((a, b) => a - b),
+    [expirySummaries, selectedOptionType]
+  );
 
   useEffect(() => {
     if (expiryOptions.length === 0) return;
@@ -62,6 +69,11 @@ export function AdminConsole() {
       setSelectedExpiry(String(expiryOptions[0]));
     }
   }, [expiryOptions, selectedExpiry]);
+
+  useEffect(() => {
+    if (!selectedExpiry) return;
+    void loadOptions(selectedOptionType, selectedExpiry);
+  }, [selectedExpiry, selectedOptionType]);
 
   const strikeOptions = useMemo(() => {
     const expiry = Number(selectedExpiry);
@@ -117,14 +129,41 @@ export function AdminConsole() {
     setHealth(await response.json());
   }
 
-  async function loadOptions() {
+  async function loadExpiryOptions() {
     setOptionsLoading(true);
     try {
-      const response = await fetch("/api/market/options?limit=1000", { cache: "no-store" });
+      const response = await fetch("/api/market/options?summary=expiries&limit=5000", {
+        cache: "no-store"
+      });
+      const payload = (await response.json()) as { expiries?: MarketExpirySummary[] };
+      setExpirySummaries(payload.expiries ?? []);
+    } finally {
+      setOptionsLoading(false);
+    }
+  }
+
+  async function loadOptions(optionType = selectedOptionType, expiry = selectedExpiry) {
+    if (!expiry) return;
+    setOptionsLoading(true);
+    try {
+      const params = new URLSearchParams({ type: optionType, expiry, limit: "5000" });
+      const response = await fetch(`/api/market/options?${params.toString()}`, { cache: "no-store" });
       const payload = (await response.json()) as { options?: MarketOption[] };
       setOptions((payload.options ?? []).filter((option) => option.expiration_timestamp && option.strike));
     } finally {
       setOptionsLoading(false);
+    }
+  }
+
+  async function refreshMarket() {
+    setSyncingMarket(true);
+    try {
+      await fetch("/api/admin/sync-market-data", { method: "POST", cache: "no-store" });
+      await refreshHealth();
+      await loadExpiryOptions();
+      if (selectedExpiry) await loadOptions(selectedOptionType, selectedExpiry);
+    } finally {
+      setSyncingMarket(false);
     }
   }
 
@@ -184,7 +223,17 @@ export function AdminConsole() {
         <div className="admin-grid">
           <Metric label="Active instruments" value={health?.activeInstrumentCount ?? "-"} />
           <Metric label="Stored quotes" value={health?.quoteCount ?? "-"} />
-          <Metric label="Stale quotes" value={health?.staleQuoteCount ?? "-"} tone={health?.staleQuoteCount ? "warn" : "ok"} />
+          <Metric
+            label={`Summary stale >${health?.summaryFreshnessSeconds ?? 180}s`}
+            value={health?.summaryStaleCount ?? health?.staleQuoteCount ?? "-"}
+            tone={health?.summaryStaleCount || health?.staleQuoteCount ? "warn" : "ok"}
+          />
+          <Metric
+            label={`Live fresh <${health?.liveFreshnessSeconds ?? 10}s`}
+            value={health?.liveTickerFreshCount ?? "-"}
+            tone={health?.liveTickerFreshCount ? "ok" : "warn"}
+          />
+          <Metric label="Catalog age" value={formatAge(health?.catalogSyncAgeSeconds)} tone={(health?.catalogSyncAgeSeconds ?? 0) > 180 ? "warn" : "ok"} />
         </div>
 
         <div className="audit-grid" style={{ marginTop: 24 }}>
@@ -265,13 +314,10 @@ export function AdminConsole() {
               </button>
               <button
                 className="btn-ghost"
-                onClick={() => {
-                  void refreshHealth();
-                  void loadOptions();
-                }}
-                disabled={loading || optionsLoading}
+                onClick={() => void refreshMarket()}
+                disabled={loading || optionsLoading || syncingMarket}
               >
-                Refresh market
+                {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
             </div>
 
@@ -410,6 +456,7 @@ export function AdminConsole() {
                 <>
                   <CheckRow label="Quote fresh" ok={audit.checks.quoteFresh} />
                   <CheckRow label="Sufficient depth" ok={audit.checks.sufficientDepth} />
+                  <CheckRow label="Slippage within limit" ok={audit.checks.slippageWithinLimit ?? true} />
                   <CheckRow label="Premium covers interest" ok={audit.checks.premiumCoversInterest} />
                   <CheckRow label="Selected firm P&L positive" ok={(selectedScenario.firmProfitUsdt ?? 0) > 0} />
                 </>
@@ -439,6 +486,12 @@ function formatExpiry(timestamp: number): string {
     .format(new Date(timestamp))
     .replace(",", "")
     .toUpperCase();
+}
+
+function formatAge(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return "-";
+  if (seconds < 60) return `${seconds.toFixed(0)}s`;
+  return `${(seconds / 60).toFixed(1)}m`;
 }
 
 function CheckRow({ label, ok }: { label: string; ok: boolean }) {

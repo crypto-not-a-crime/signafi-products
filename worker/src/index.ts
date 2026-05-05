@@ -12,8 +12,9 @@ import {
 import { DeribitClient, type DeribitTicker } from "./deribit";
 import {
   calculateDcnSellPut,
-  compareDcnCandidatesForClientMandate,
+  priceCandidateAtSize,
   scorePutCandidate,
+  selectDcnCandidate,
   type BidAskLevel,
   type DcnPricingRequest,
   type PutMarketInput
@@ -63,7 +64,7 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(syncMarketData(env));
+    ctx.waitUntil(syncMarketData(env).then(() => ensurePricingStream(env)));
   }
 };
 
@@ -107,10 +108,12 @@ export class MarketDataDurableObject {
   }
 
   private async start(instruments: string[]): Promise<void> {
-    const unique = Array.from(new Set(instruments)).filter(Boolean).slice(0, 200);
-    this.subscribed = unique;
-    if (this.ws?.readyState === WebSocket.OPEN && unique.length > 0) {
-      this.subscribe(unique);
+    const unique = Array.from(new Set(instruments)).filter(Boolean).slice(0, 500);
+    const existing = new Set(this.subscribed);
+    const next = unique.filter((instrument) => !existing.has(instrument));
+    this.subscribed = Array.from(new Set([...this.subscribed, ...unique])).slice(0, 500);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      if (next.length > 0) this.subscribe(next);
       return;
     }
 
@@ -118,7 +121,7 @@ export class MarketDataDurableObject {
     this.ws = new WebSocket(wsUrl);
     this.lastConnectAt = Date.now();
 
-    this.ws.addEventListener("open", () => this.subscribe(unique));
+    this.ws.addEventListener("open", () => this.subscribe(this.subscribed));
     this.ws.addEventListener("message", (event) => {
       this.state.waitUntil(this.onMessage(String(event.data)));
     });
@@ -132,16 +135,19 @@ export class MarketDataDurableObject {
 
   private subscribe(instruments: string[]): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || instruments.length === 0) return;
-    this.ws.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: Date.now(),
-        method: "public/subscribe",
-        params: {
-          channels: instruments.map((instrument) => `ticker.${instrument}.agg2`)
-        }
-      })
-    );
+    for (let index = 0; index < instruments.length; index += 500) {
+      const batch = instruments.slice(index, index + 500);
+      this.ws.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now() + index,
+          method: "public/subscribe",
+          params: {
+            channels: batch.map((instrument) => `ticker.${instrument}.agg2`)
+          }
+        })
+      );
+    }
   }
 
   private async onMessage(message: string): Promise<void> {
@@ -155,8 +161,27 @@ export class MarketDataDurableObject {
 
 async function handleOptions(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const limit = Math.min(Number(url.searchParams.get("limit") ?? 300), 1000);
-  const optionType = url.searchParams.get("type");
+  const limit = Math.min(Number(url.searchParams.get("limit") ?? 300), 5000);
+  const rawOptionType = url.searchParams.get("type");
+  const optionType = rawOptionType === "call" || rawOptionType === "put" ? rawOptionType : null;
+  const expiryParam = url.searchParams.get("expiry");
+  const expiryTimestamp = expiryParam ? Number(expiryParam) : null;
+
+  if (url.searchParams.get("summary") === "expiries") {
+    const expiries = await env.DB
+      .prepare(
+        `SELECT i.option_type, i.expiration_timestamp, COUNT(*) AS instrument_count
+        FROM option_instruments i
+        WHERE i.is_active = 1
+          AND (? IS NULL OR i.option_type = ?)
+        GROUP BY i.option_type, i.expiration_timestamp
+        ORDER BY i.expiration_timestamp ASC, i.option_type ASC`
+      )
+      .bind(optionType, optionType)
+      .all();
+    return json({ expiries: expiries.results });
+  }
+
   const rows = await env.DB
     .prepare(
       `SELECT i.instrument_name, i.option_type, i.strike, i.expiration_timestamp,
@@ -166,10 +191,11 @@ async function handleOptions(request: Request, env: Env): Promise<Response> {
       LEFT JOIN option_quotes_latest q ON q.instrument_name = i.instrument_name
       WHERE i.is_active = 1
         AND (? IS NULL OR i.option_type = ?)
+        AND (? IS NULL OR i.expiration_timestamp = ?)
       ORDER BY i.expiration_timestamp ASC, i.strike ASC
       LIMIT ?`
     )
-    .bind(optionType, optionType, limit)
+    .bind(optionType, optionType, expiryTimestamp, expiryTimestamp, limit)
     .all();
   return json({ options: rows.results });
 }
@@ -186,11 +212,12 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
     candidates = await getPutCandidates(env.DB, nowMs);
   }
 
+  const depthCandidateCount = Math.max(config.maxDepthCandidates, 25);
   const shortlisted = candidates
     .map((row) => ({ row, score: scorePutCandidate(normalized, rowToMarket(row, [])) }))
     .filter((item) => Number.isFinite(item.score))
     .sort((a, b) => b.score - a.score)
-    .slice(0, config.maxDepthCandidates);
+    .slice(0, depthCandidateCount);
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const priced = [];
@@ -204,19 +231,18 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
       "pricing",
       Date.now()
     );
-    const calculation = calculateDcnSellPut(normalized, rowToMarket(item.row, book.bids, book.timestamp));
+    const calculation = priceCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp));
     priced.push({ score: item.score, snapshotId, ...calculation });
   }
 
-  priced.sort((a, b) => {
-    return compareDcnCandidatesForClientMandate(normalized, a, b);
-  });
+  const selected = selectDcnCandidate(normalized, priced);
 
   return json({
     generatedAt: nowMs,
     input: normalized,
-    candidates: priced,
-    bestCandidate: priced[0] ?? null
+    candidates: selected.candidates,
+    bestCandidate: selected.bestCandidate,
+    recommendation: selected.recommendation
   });
 }
 
@@ -284,25 +310,39 @@ async function handleVerifyQuote(request: Request, env: Env): Promise<Response> 
 
 async function handleMarketHealth(_request: Request, env: Env): Promise<Response> {
   const nowMs = Date.now();
-  const [instrumentStats, quoteStats, staleStats, latestAudit, streamStatus] = await Promise.all([
+  const summaryFreshnessSeconds = 180;
+  const liveFreshnessSeconds = 10;
+  const [instrumentStats, quoteStats, summaryStaleStats, liveTickerStats, latestAudit, streamStatus] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS count FROM option_instruments WHERE is_active = 1").first<{ count: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS count, MAX(ingested_at) AS latest FROM option_quotes_latest").first<{
       count: number;
       latest: number;
     }>(),
-    env.DB.prepare("SELECT COUNT(*) AS count FROM option_quotes_latest WHERE ingested_at < ?").bind(nowMs - 10_000).first<{
-      count: number;
-    }>(),
+    env.DB
+      .prepare("SELECT COUNT(*) AS count FROM option_quotes_latest WHERE ingested_at < ?")
+      .bind(nowMs - summaryFreshnessSeconds * 1000)
+      .first<{ count: number }>(),
+    env.DB
+      .prepare("SELECT COUNT(*) AS count FROM option_quotes_latest WHERE ingested_at >= ?")
+      .bind(nowMs - liveFreshnessSeconds * 1000)
+      .first<{ count: number }>(),
     env.DB.prepare("SELECT MAX(created_at) AS latest FROM dcn_quote_audit").first<{ latest: number | null }>(),
     getDurableObjectStatus(env)
   ]);
+  const latestQuoteAt = quoteStats?.latest ?? null;
 
   return json({
     nowMs,
     activeInstrumentCount: instrumentStats?.count ?? 0,
     quoteCount: quoteStats?.count ?? 0,
-    latestQuoteAt: quoteStats?.latest ?? null,
-    staleQuoteCount: staleStats?.count ?? 0,
+    latestQuoteAt,
+    latestSyncAt: latestQuoteAt,
+    catalogSyncAgeSeconds: latestQuoteAt === null ? null : Math.max(0, (nowMs - latestQuoteAt) / 1000),
+    summaryFreshnessSeconds,
+    summaryStaleCount: summaryStaleStats?.count ?? 0,
+    liveFreshnessSeconds,
+    liveTickerFreshCount: liveTickerStats?.count ?? 0,
+    staleQuoteCount: summaryStaleStats?.count ?? 0,
     latestAuditAt: latestAudit?.latest ?? null,
     streamStatus,
     d1FreeTierGuard: {
@@ -315,7 +355,8 @@ async function handleMarketHealth(_request: Request, env: Env): Promise<Response
 
 async function handleSyncMarketData(_request: Request, env: Env): Promise<Response> {
   const result = await syncMarketData(env);
-  return json(result);
+  const stream = await ensurePricingStream(env);
+  return json({ ...result, stream });
 }
 
 async function handleStreamStatus(_request: Request, env: Env): Promise<Response> {
@@ -323,19 +364,35 @@ async function handleStreamStatus(_request: Request, env: Env): Promise<Response
 }
 
 async function handleStreamStart(_request: Request, env: Env): Promise<Response> {
-  const nowMs = Date.now();
-  const rows = await getPutCandidates(env.DB, nowMs);
-  const instruments = rows
-    .filter((row) => row.underlying_price && row.strike < row.underlying_price && row.strike > row.underlying_price * 0.8)
-    .slice(0, 100)
-    .map((row) => row.instrument_name);
+  return json(await ensurePricingStream(env));
+}
+
+async function ensurePricingStream(env: Env): Promise<unknown> {
+  const instruments = await getPricingStreamInstruments(env);
   const id = env.MARKET_DATA.idFromName("btc-options");
   const stub = env.MARKET_DATA.get(id);
   const response = await stub.fetch("https://durable-object/start", {
     method: "POST",
     body: JSON.stringify({ instruments })
   });
-  return response;
+  return response.json().catch(() => ({ started: false, subscribed: instruments }));
+}
+
+async function getPricingStreamInstruments(env: Env): Promise<string[]> {
+  const nowMs = Date.now();
+  const rows = await getPutCandidates(env.DB, nowMs);
+  return rows
+    .filter((row) => row.underlying_price && row.strike < row.underlying_price && row.strike > row.underlying_price * 0.75)
+    .sort((a, b) => {
+      const aSpot = a.underlying_price ?? 1;
+      const bSpot = b.underlying_price ?? 1;
+      const aMoneynessGap = Math.abs(a.strike / aSpot - 0.9);
+      const bMoneynessGap = Math.abs(b.strike / bSpot - 0.9);
+      if (aMoneynessGap !== bMoneynessGap) return aMoneynessGap - bMoneynessGap;
+      return a.expiration_timestamp - b.expiration_timestamp;
+    })
+    .slice(0, 500)
+    .map((row) => row.instrument_name);
 }
 
 async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: number; syncedAt: number }> {
@@ -355,7 +412,9 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     targetYieldBps: Number(request.targetYieldBps ?? 1000),
     runwayDays: Number(request.runwayDays ?? 92),
     strikePreference: request.strikePreference ?? "any",
+    selectorMode: normalizeSelectorMode(request.selectorMode),
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
+    maxSlippageBps: Number(request.maxSlippageBps ?? config.maxSlippageBps),
     quoteFreshnessSeconds: Number(request.quoteFreshnessSeconds ?? config.quoteFreshnessSeconds),
     orderBookDepth: Number(request.orderBookDepth ?? config.defaultOrderBookDepth),
     scenarioExpiryPrice: request.scenarioExpiryPrice,
@@ -363,6 +422,10 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     scenarioUpsidePrice: request.scenarioUpsidePrice,
     nowMs: request.nowMs
   };
+}
+
+function normalizeSelectorMode(mode: DcnPricingRequest["selectorMode"]): DcnPricingRequest["selectorMode"] {
+  return mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike" ? mode : "closest";
 }
 
 function rowToMarket(row: JoinedPutRow, bids: BidAskLevel[] = [], bookTimestamp?: number): PutMarketInput {

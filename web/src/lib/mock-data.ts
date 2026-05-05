@@ -81,6 +81,10 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
 
 export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPricingResponse {
   const investmentUsdt = Number(input.investmentUsdt ?? 500000);
+  const selectorMode =
+    input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
+      ? input.selectorMode
+      : "closest";
   const best = mockDcnCandidate({
     investmentUsdt,
     requiredContracts: Math.round((investmentUsdt / 78500) * 10) / 10
@@ -101,6 +105,14 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
       })
     ],
     bestCandidate: best,
+    recommendation: {
+      selectorMode,
+      recommendedLever: selectorMode === "auto_yield" ? "yield" : selectorMode === "auto_runway" ? "runway" : selectorMode === "auto_strike" ? "strike" : "none",
+      reason: "Mock recommendation generated without live worker data.",
+      targetYieldGapBps: best.clientYield === null ? null : best.clientYield * 10000 - Number(input.targetYieldBps ?? 1000),
+      runwayGapDays: 0,
+      strikeMoneynessGapBps: null
+    },
     mock: true
   };
 }

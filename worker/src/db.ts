@@ -241,7 +241,7 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
     firmMarginBps: Number(map.get("firm_margin_bps") ?? 200),
     quoteFreshnessSeconds: Number(map.get("quote_freshness_seconds") ?? 10),
     defaultOrderBookDepth: Number(map.get("default_order_book_depth") ?? 100),
-    maxDepthCandidates: Number(map.get("max_depth_candidates") ?? 6),
+    maxDepthCandidates: Number(map.get("max_depth_candidates") ?? 25),
     maxSlippageBps: Number(map.get("max_slippage_bps") ?? 500)
   };
 }

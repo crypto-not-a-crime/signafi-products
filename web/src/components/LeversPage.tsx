@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, DcnPricingResponse } from "@/types";
+import type { DcnCandidate, DcnPricingResponse, DcnRecommendation, DcnSelectorMode } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 import { SiteNav } from "./Logo";
@@ -18,6 +18,7 @@ export function LeversPage() {
   const [runway, setRunway] = useState("3m");
   const [targetYieldPct, setTargetYieldPct] = useState(10);
   const [strikePreference, setStrikePreference] = useState<"any" | "five_otm" | "ten_otm">("five_otm");
+  const [selectorMode, setSelectorMode] = useState<DcnSelectorMode>("closest");
   const [data, setData] = useState<DcnPricingResponse | null>(null);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -30,7 +31,7 @@ export function LeversPage() {
       void fetchPricing();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [investmentUsdt, runwayDays, targetYieldPct, strikePreference]);
+  }, [investmentUsdt, runwayDays, targetYieldPct, strikePreference, selectorMode]);
 
   useEffect(() => {
     if (!data?.bestCandidate) return;
@@ -52,7 +53,9 @@ export function LeversPage() {
           targetYieldBps: Math.round(targetYieldPct * 100),
           runwayDays,
           strikePreference,
+          selectorMode,
           firmMarginBps: 200,
+          maxSlippageBps: 500,
           quoteFreshnessSeconds: 10,
           orderBookDepth: 100
         })
@@ -71,6 +74,7 @@ export function LeversPage() {
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const monthly = investmentUsdt * (targetYieldPct / 100) / 12;
   const riskPct = best?.depth.slippagePct ? Math.min(25, 6 + best.depth.slippagePct * 100) : 8;
+  const displayedRunwayDays = best?.dayCount ?? runwayDays;
 
   return (
     <>
@@ -99,6 +103,31 @@ export function LeversPage() {
                 The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's 2.0% p.a.
                 firm margin.
               </p>
+
+              <div className="control-block">
+                <div className="row-between">
+                  <div>
+                    <div className="field-label">Selector</div>
+                    <strong>What should the engine solve for?</strong>
+                  </div>
+                </div>
+                <div className="pill-row">
+                  {[
+                    ["closest", "Closest match"],
+                    ["auto_yield", "Auto return"],
+                    ["auto_runway", "Auto runway"],
+                    ["auto_strike", "Auto strike"]
+                  ].map(([id, label]) => (
+                    <button
+                      className={`choice-pill ${selectorMode === id ? "active" : ""}`}
+                      key={id}
+                      onClick={() => setSelectorMode(id as DcnSelectorMode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               <div className="control-block">
                 <div className="row-between">
@@ -143,6 +172,7 @@ export function LeversPage() {
                       className={`choice-pill ${runway === item.id ? "active" : ""}`}
                       key={item.id}
                       onClick={() => setRunway(item.id)}
+                      disabled={selectorMode === "auto_runway"}
                     >
                       {item.label}
                     </button>
@@ -165,6 +195,7 @@ export function LeversPage() {
                   step={1}
                   value={targetYieldPct}
                   onChange={(event) => setTargetYieldPct(Number(event.target.value))}
+                  disabled={selectorMode === "auto_yield"}
                 />
               </div>
 
@@ -185,6 +216,7 @@ export function LeversPage() {
                       className={`choice-pill ${strikePreference === id ? "active" : ""}`}
                       key={id}
                       onClick={() => setStrikePreference(id as typeof strikePreference)}
+                      disabled={selectorMode === "auto_strike"}
                     >
                       {label}
                     </button>
@@ -207,7 +239,7 @@ export function LeversPage() {
                   </div>
                   <div className="metric-card">
                     <div className="sum-lbl">Runway</div>
-                    <div className="metric-value">{runwayDays} days</div>
+                    <div className="metric-value">{displayedRunwayDays} days</div>
                   </div>
                   <div className="metric-card">
                     <div className="sum-lbl">Risk signal</div>
@@ -238,6 +270,7 @@ export function LeversPage() {
                 />
               ) : null}
 
+              {best && data?.recommendation ? <RecommendationCard recommendation={data.recommendation} candidate={best} /> : null}
               {best ? <CandidateCard candidate={best} best /> : null}
               {data?.candidates?.slice(1, 3).map((candidate) => (
                 <CandidateCard candidate={candidate} key={candidate.instrumentName} />
@@ -304,6 +337,43 @@ function ClientPayoutSimulator({
       <p className="card-copy">
         Below strike, payout is BTC. At or above strike, payout is USDT principal plus fixed product interest.
       </p>
+    </div>
+  );
+}
+
+function RecommendationCard({
+  recommendation,
+  candidate
+}: {
+  recommendation: DcnRecommendation;
+  candidate: DcnCandidate;
+}) {
+  const gap =
+    recommendation.targetYieldGapBps === null
+      ? "-"
+      : `${recommendation.targetYieldGapBps >= 0 ? "+" : ""}${formatNumber(recommendation.targetYieldGapBps, 0)} bps`;
+  const runwayGap = recommendation.runwayGapDays === null ? "-" : `${formatNumber(recommendation.runwayGapDays, 0)} days`;
+  const strikeGap =
+    recommendation.strikeMoneynessGapBps === null
+      ? "-"
+      : `${formatNumber(recommendation.strikeMoneynessGapBps, 0)} bps`;
+
+  return (
+    <div className="candidate-card">
+      <div className="row-between">
+        <div>
+          <div className="pc-label">Recommendation</div>
+          <h3 className="card-title">{recommendation.recommendedLever === "none" ? "Closest product" : `Recommended ${recommendation.recommendedLever}`}</h3>
+        </div>
+        <span className="status-badge status-live">{formatPct(candidate.clientYield)}</span>
+      </div>
+      <p className="card-copy">{recommendation.reason}</p>
+      <div className="metric-grid">
+        <Metric label="Yield gap" value={gap} />
+        <Metric label="Runway gap" value={runwayGap} />
+        <Metric label="Strike gap" value={strikeGap} />
+        <Metric label="Mode" value={recommendation.selectorMode.replace("_", " ")} />
+      </div>
     </div>
   );
 }

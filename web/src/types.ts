@@ -80,11 +80,23 @@ export interface DcnCandidate {
   };
 }
 
+export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
+
+export interface DcnRecommendation {
+  selectorMode: DcnSelectorMode;
+  recommendedLever: "none" | "yield" | "runway" | "strike";
+  reason: string;
+  targetYieldGapBps: number | null;
+  runwayGapDays: number | null;
+  strikeMoneynessGapBps: number | null;
+}
+
 export interface DcnPricingResponse {
   generatedAt: number;
   input: Record<string, unknown>;
   candidates: DcnCandidate[];
   bestCandidate: DcnCandidate | null;
+  recommendation?: DcnRecommendation;
   mock?: boolean;
 }
 
@@ -104,4 +116,10 @@ export interface MarketOption {
   underlying_price: number | null;
   deribit_timestamp: number | null;
   ingested_at: number | null;
+}
+
+export interface MarketExpirySummary {
+  option_type: "call" | "put";
+  expiration_timestamp: number;
+  instrument_count: number;
 }

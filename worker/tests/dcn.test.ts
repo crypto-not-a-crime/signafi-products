@@ -5,7 +5,8 @@ import {
   compareDcnCandidatesForClientMandate,
   dayCountFromExpiry,
   modelSellIntoBidDepth,
-  roundContracts
+  roundContracts,
+  selectDcnCandidate
 } from "../src/pricing/dcn";
 
 const NOW = Date.UTC(2026, 3, 30);
@@ -185,43 +186,159 @@ describe("DCN sell-put pricing", () => {
     expect(result.eligible).toBe(false);
   });
 
-  it("treats the target yield as a mandate, then prefers higher upside firm profit", () => {
-    const request = { investmentUsdt: 1000000, targetYieldBps: 1200 };
-    const lowerProfitNearTarget = rankableCandidate(0.1271, 4500);
-    const higherProfitHigherYield = rankableCandidate(0.1508, 6200);
-    const belowTarget = rankableCandidate(0.118, 10000);
+  it("keeps the same closest-fit product across investment sizes when both quotes remain executable", () => {
+    const baseRequest = {
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikePreference: "ten_otm" as const,
+      selectorMode: "closest" as const
+    };
+    const closestFit = rankableCandidate("BTC-25DEC26-70000-P", {
+      clientYield: 0.1048,
+      upsideProfitUsdt: 4500,
+      dayCount: 180,
+      strike: 70000,
+      spotPrice: 78000
+    });
+    const higherFirmProfit = rankableCandidate("BTC-25DEC26-74000-P", {
+      clientYield: 0.1339,
+      upsideProfitUsdt: 12000,
+      dayCount: 180,
+      strike: 74000,
+      spotPrice: 78000
+    });
 
-    expect(
-      [lowerProfitNearTarget, higherProfitHigherYield].sort((a, b) =>
-        compareDcnCandidatesForClientMandate(request, a, b)
-      )[0]
-    ).toBe(higherProfitHigherYield);
-
-    expect(
-      [belowTarget, lowerProfitNearTarget].sort((a, b) => compareDcnCandidatesForClientMandate(request, a, b))[0]
-    ).toBe(lowerProfitNearTarget);
+    expect(selectDcnCandidate({ ...baseRequest, investmentUsdt: 500000 }, [higherFirmProfit, closestFit]).bestCandidate)
+      .toBe(closestFit);
+    expect(selectDcnCandidate({ ...baseRequest, investmentUsdt: 1000000 }, [higherFirmProfit, closestFit]).bestCandidate)
+      .toBe(closestFit);
   });
 
-  it("prefers the closest below-target yield when no candidate meets the mandate", () => {
-    const request = { investmentUsdt: 1000000, targetYieldBps: 1400 };
-    const closerYield = rankableCandidate(0.13, 2500);
-    const lowerYieldHigherProfit = rankableCandidate(0.11, 9000);
+  it("changes product when the larger-size quote breaches depth or slippage eligibility", () => {
+    const request = {
+      investmentUsdt: 1000000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikePreference: "ten_otm" as const,
+      selectorMode: "closest" as const
+    };
+    const staleFit = rankableCandidate("BTC-25DEC26-70000-P", {
+      eligible: false,
+      clientYield: 0.1048,
+      dayCount: 180,
+      strike: 70000,
+      spotPrice: 78000
+    });
+    const nextExecutable = rankableCandidate("BTC-25DEC26-74000-P", {
+      clientYield: 0.1339,
+      dayCount: 180,
+      strike: 74000,
+      spotPrice: 78000
+    });
 
-    expect(
-      [lowerYieldHigherProfit, closerYield].sort((a, b) =>
-        compareDcnCandidatesForClientMandate(request, a, b)
-      )[0]
-    ).toBe(closerYield);
+    expect(selectDcnCandidate(request, [staleFit, nextExecutable]).bestCandidate).toBe(nextExecutable);
+  });
+
+  it("closest mode prefers the mandate fit over a higher-yield, higher-profit product", () => {
+    const request = {
+      investmentUsdt: 500000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikePreference: "ten_otm" as const,
+      selectorMode: "closest" as const
+    };
+    const nearTargetTenOtm = rankableCandidate("near-target", {
+      clientYield: 0.1048,
+      upsideProfitUsdt: 4500,
+      dayCount: 180,
+      strike: 70000,
+      spotPrice: 78000
+    });
+    const richerButWorseBuffer = rankableCandidate("richer", {
+      clientYield: 0.1339,
+      upsideProfitUsdt: 12000,
+      dayCount: 180,
+      strike: 74000,
+      spotPrice: 78000
+    });
+
+    expect([richerButWorseBuffer, nearTargetTenOtm].sort((a, b) => compareDcnCandidatesForClientMandate(request, a, b))[0])
+      .toBe(nearTargetTenOtm);
+  });
+
+  it("auto selector modes optimize the missing lever", () => {
+    const fixedRunwayStrike = {
+      investmentUsdt: 500000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikePreference: "ten_otm" as const
+    };
+    const lowerYield = rankableCandidate("lower-yield", { clientYield: 0.11, dayCount: 180, strike: 70000, spotPrice: 78000 });
+    const higherYield = rankableCandidate("higher-yield", { clientYield: 0.14, dayCount: 180, strike: 70000, spotPrice: 78000 });
+    expect(selectDcnCandidate({ ...fixedRunwayStrike, selectorMode: "auto_yield" }, [lowerYield, higherYield]).bestCandidate)
+      .toBe(higherYield);
+
+    const saferStrike = rankableCandidate("safer-strike", { clientYield: 0.11, dayCount: 180, strike: 66000, spotPrice: 78000 });
+    const richerStrike = rankableCandidate("richer-strike", { clientYield: 0.14, dayCount: 180, strike: 74000, spotPrice: 78000 });
+    expect(selectDcnCandidate({ ...fixedRunwayStrike, selectorMode: "auto_strike" }, [richerStrike, saferStrike]).bestCandidate)
+      .toBe(saferStrike);
+
+    const shorterRunway = rankableCandidate("shorter-runway", { clientYield: 0.11, dayCount: 92, strike: 70000, spotPrice: 78000 });
+    const longerRunway = rankableCandidate("longer-runway", { clientYield: 0.12, dayCount: 180, strike: 70000, spotPrice: 78000 });
+    expect(selectDcnCandidate({ ...fixedRunwayStrike, selectorMode: "auto_runway" }, [longerRunway, shorterRunway]).bestCandidate)
+      .toBe(shorterRunway);
+  });
+
+  it("enforces max slippage as an eligibility gate", () => {
+    const result = calculateDcnSellPut(
+      {
+        investmentUsdt: 1000000,
+        firmMarginBps: 200,
+        maxSlippageBps: 10,
+        quoteFreshnessSeconds: 10,
+        nowMs: NOW
+      },
+      {
+        instrumentName: "BTC-30JUL26-75000-P",
+        strike: 75000,
+        expirationTimestamp: EXPIRY_92_DAYS,
+        minTradeAmount: 0.1,
+        underlyingPrice: 78493,
+        bidPrice: 0.0645,
+        bidAmount: 20,
+        deribitTimestamp: NOW,
+        bids: [
+          [0.0645, 5],
+          [0.0500, 20]
+        ]
+      }
+    );
+
+    expect(result.depth.sufficientDepth).toBe(true);
+    expect(result.checks.slippageWithinLimit).toBe(false);
+    expect(result.eligible).toBe(false);
   });
 });
 
-function rankableCandidate(clientYield: number, upsideProfitUsdt: number) {
+function rankableCandidate(
+  instrumentName: string,
+  overrides: Partial<ReturnType<typeof baseRankableCandidate>> = {}
+) {
+  return { ...baseRankableCandidate(instrumentName), ...overrides };
+}
+
+function baseRankableCandidate(instrumentName: string) {
   return {
+    instrumentName,
     eligible: true,
-    clientYield,
-    upsideProfitUsdt,
+    clientYield: 0.12,
+    upsideProfitUsdt: 4500,
+    downsideProfitUsdt: 4500,
     quoteAgeSeconds: 1,
     depth: { slippagePct: 0.002 },
+    dayCount: 180,
+    strike: 70000,
+    spotPrice: 78000,
     score: 90
   };
 }

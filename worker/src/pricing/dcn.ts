@@ -1,13 +1,17 @@
 import { DCN_SELL_PUT_TEMPLATE, getDcnTemplateSummary, type DcnTemplateSummary } from "./dcn-template";
 
 export type BidAskLevel = [price: number, amount: number];
+export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
+export type DcnRecommendedLever = "none" | "yield" | "runway" | "strike";
 
 export interface DcnPricingRequest {
   investmentUsdt: number;
   targetYieldBps?: number;
   runwayDays?: number;
   strikePreference?: "any" | "five_otm" | "ten_otm";
+  selectorMode?: DcnSelectorMode;
   firmMarginBps?: number;
+  maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;
   scenarioExpiryPrice?: number;
@@ -119,9 +123,22 @@ export interface DcnRankableCandidate {
   eligible: boolean;
   clientYield: number | null;
   upsideProfitUsdt: number | null;
+  downsideProfitUsdt?: number | null;
   quoteAgeSeconds: number | null;
   depth: Pick<DepthModel, "slippagePct">;
+  dayCount?: number;
+  strike?: number;
+  spotPrice?: number;
   score?: number;
+}
+
+export interface DcnRecommendation {
+  selectorMode: DcnSelectorMode;
+  recommendedLever: DcnRecommendedLever;
+  reason: string;
+  targetYieldGapBps: number | null;
+  runwayGapDays: number | null;
+  strikeMoneynessGapBps: number | null;
 }
 
 export function roundContracts(rawContracts: number, minTradeAmount = 0.1): number {
@@ -318,6 +335,7 @@ export function calculateDcnScenario(expiryPrice: number, input: DcnScenarioInpu
 export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
   const nowMs = request.nowMs ?? Date.now();
   const firmMarginBps = request.firmMarginBps ?? 200;
+  const maxSlippageBps = request.maxSlippageBps ?? 500;
   const quoteFreshnessSeconds = request.quoteFreshnessSeconds ?? 10;
   const investmentUsdt = request.investmentUsdt;
   const spotPrice = market.underlyingPrice ?? 0;
@@ -375,6 +393,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     quoteFresh: quoteAgeSeconds !== null && quoteAgeSeconds <= quoteFreshnessSeconds,
     usableBid: effectivePutBidPrice !== null && effectivePutBidPrice > 0,
     sufficientDepth: depth.sufficientDepth,
+    slippageWithinLimit: depth.slippagePct !== null && depth.slippagePct * 10000 <= maxSlippageBps,
     premiumCoversInterest,
     clientYieldPositive: clientYield !== null && clientYield > 0,
     firmMarginPositive: firmMarginBps > 0,
@@ -487,39 +506,60 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   };
 }
 
+export function priceCandidateAtSize(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
+  return calculateDcnSellPut(request, market);
+}
+
 export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketInput): number {
   const spot = market.underlyingPrice ?? 0;
   if (!spot || !market.bidPrice || market.bidPrice <= 0) return -Infinity;
 
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, request.nowMs ?? Date.now());
   if (dayCount <= 0) return -Infinity;
-  const runwayDays = request.runwayDays ?? dayCount;
-  const targetYield = (request.targetYieldBps ?? 0) / 10000;
   const roughClientYield = Math.max(0, (market.bidPrice / dayCount) * 365 - (request.firmMarginBps ?? 200) / 10000);
-  const requiredContracts = roundContracts(request.investmentUsdt / spot, market.minTradeAmount ?? 0.1);
-  const roughTradingFeePerContractBtc = -Math.min(0.0003, 0.125 * market.bidPrice);
-  const roughNetOptionProceedsBtc = requiredContracts * (market.bidPrice + roughTradingFeePerContractBtc);
-  const roughClientPayoutUsdt = request.investmentUsdt * (1 + roughClientYield * (dayCount / 365));
-  const roughUpsidePrice = request.scenarioUpsidePrice ?? spot;
-  const roughUpsideProfitUsdt = request.investmentUsdt + roughNetOptionProceedsBtc * roughUpsidePrice - roughClientPayoutUsdt;
-  const roughUpsideProfitRate = roughUpsideProfitUsdt / request.investmentUsdt;
-  const moneyness = market.strike / spot;
-  const preferredMoneyness =
-    request.strikePreference === "ten_otm" ? 0.9 : request.strikePreference === "five_otm" ? 0.95 : 0.93;
+  const roughCandidate: DcnRankableCandidate = {
+    eligible: true,
+    clientYield: roughClientYield,
+    upsideProfitUsdt: null,
+    downsideProfitUsdt: null,
+    quoteAgeSeconds: null,
+    depth: { slippagePct: null },
+    dayCount,
+    strike: market.strike,
+    spotPrice: spot
+  };
+  const fit = getCandidateFitMetrics(request, roughCandidate);
+  const mode = request.selectorMode ?? "closest";
+  const targetBonus = fit.targetMet ? 1000 : 0;
 
-  const runwayPenalty = Math.abs(dayCount - runwayDays) / Math.max(runwayDays, 1);
-  const targetDenominator = Math.max(targetYield, 0.01);
-  const targetShortfallPenalty = targetYield > 0 ? Math.max(0, targetYield - roughClientYield) / targetDenominator : 0;
-  const targetOvershootPenalty = targetYield > 0 ? Math.max(0, roughClientYield - targetYield) / targetDenominator : 0;
-  const moneynessPenalty = Math.abs(moneyness - preferredMoneyness);
+  if (mode === "auto_yield") {
+    return 1000 + roughClientYield * 1000 - fit.normalizedRunwayGap * 200 - fit.strikeMoneynessGap * 200;
+  }
+
+  if (mode === "auto_strike") {
+    return (
+      1000 +
+      targetBonus -
+      fit.normalizedRunwayGap * 200 -
+      (fit.targetMet ? fit.strikeMoneyness * 25 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
+    );
+  }
+
+  if (mode === "auto_runway") {
+    return (
+      1000 +
+      targetBonus -
+      fit.strikeMoneynessGap * 200 -
+      (fit.targetMet ? (roughCandidate.dayCount ?? 0) / 10 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
+    );
+  }
 
   return (
-    100 +
-    roughUpsideProfitRate * 200 -
-    runwayPenalty * 25 -
-    targetShortfallPenalty * 80 -
-    targetOvershootPenalty * 5 -
-    moneynessPenalty * 100
+    1000 +
+    targetBonus -
+    fit.normalizedRunwayGap * 250 -
+    fit.strikeMoneynessGap * 250 -
+    (fit.targetMet ? fit.yieldExcess * 150 : fit.yieldShortfall * 1000)
   );
 }
 
@@ -530,35 +570,168 @@ export function compareDcnCandidatesForClientMandate(
 ): number {
   if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
 
-  const targetYield = (request.targetYieldBps ?? 0) / 10000;
-  const aYield = finiteOr(a.clientYield, -Infinity);
-  const bYield = finiteOr(b.clientYield, -Infinity);
-  const aMeetsTarget = targetYield <= 0 || aYield >= targetYield;
-  const bMeetsTarget = targetYield <= 0 || bYield >= targetYield;
+  const mode = request.selectorMode ?? "closest";
+  const af = getCandidateFitMetrics(request, a);
+  const bf = getCandidateFitMetrics(request, b);
 
-  if (aMeetsTarget !== bMeetsTarget) return aMeetsTarget ? -1 : 1;
-
-  if (aMeetsTarget && bMeetsTarget) {
-    const profitOrder = compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt);
-    if (profitOrder !== 0) return profitOrder;
-
-    const targetExcessOrder = compareAsc(aYield - targetYield, bYield - targetYield);
-    if (targetExcessOrder !== 0) return targetExcessOrder;
-  } else {
-    const yieldOrder = compareDesc(a.clientYield, b.clientYield);
-    if (yieldOrder !== 0) return yieldOrder;
-
-    const profitOrder = compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt);
-    if (profitOrder !== 0) return profitOrder;
+  if (mode === "auto_yield") {
+    return compareBy([
+      () => compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap),
+      () => compareAsc(af.strikeMoneynessGap, bf.strikeMoneynessGap),
+      () => compareDesc(a.clientYield, b.clientYield),
+      () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
+      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+      () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
+      () => compareDesc(a.score, b.score)
+    ]);
   }
 
-  const slippageOrder = compareAsc(a.depth.slippagePct, b.depth.slippagePct);
-  if (slippageOrder !== 0) return slippageOrder;
+  if (mode === "auto_strike") {
+    return compareBy([
+      () => compareBooleanDesc(af.targetMet, bf.targetMet),
+      () => (af.targetMet && bf.targetMet ? compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap) : 0),
+      () => (af.targetMet && bf.targetMet ? compareAsc(af.strikeMoneyness, bf.strikeMoneyness) : 0),
+      () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : compareAsc(af.yieldShortfall, bf.yieldShortfall)),
+      () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
+      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+      () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
+      () => compareDesc(a.score, b.score)
+    ]);
+  }
 
-  const quoteAgeOrder = compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds);
-  if (quoteAgeOrder !== 0) return quoteAgeOrder;
+  if (mode === "auto_runway") {
+    return compareBy([
+      () => compareBooleanDesc(af.targetMet, bf.targetMet),
+      () => compareAsc(af.strikeMoneynessGap, bf.strikeMoneynessGap),
+      () => (af.targetMet && bf.targetMet ? compareAsc(a.dayCount, b.dayCount) : compareAsc(af.yieldShortfall, bf.yieldShortfall)),
+      () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : 0),
+      () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
+      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+      () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
+      () => compareDesc(a.score, b.score)
+    ]);
+  }
 
-  return compareDesc(a.score, b.score);
+  return compareBy([
+    () => compareBooleanDesc(af.targetMet, bf.targetMet),
+    () => compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap),
+    () => compareAsc(af.strikeMoneynessGap, bf.strikeMoneynessGap),
+    () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : compareAsc(af.yieldShortfall, bf.yieldShortfall)),
+    () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
+    () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+    () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
+    () => compareDesc(a.score, b.score)
+  ]);
+}
+
+export function selectDcnCandidate<T extends DcnRankableCandidate>(
+  request: DcnPricingRequest,
+  candidates: T[]
+): { candidates: T[]; bestCandidate: T | null; recommendation: DcnRecommendation } {
+  const sorted = [...candidates].sort((a, b) => compareDcnCandidatesForClientMandate(request, a, b));
+  const bestCandidate = sorted[0] ?? null;
+  return {
+    candidates: sorted,
+    bestCandidate,
+    recommendation: buildRecommendation(request, bestCandidate)
+  };
+}
+
+interface CandidateFitMetrics {
+  targetMet: boolean;
+  targetYieldGap: number | null;
+  targetYieldGapBps: number | null;
+  yieldShortfall: number;
+  yieldExcess: number;
+  normalizedRunwayGap: number;
+  runwayGapDays: number | null;
+  strikeMoneyness: number;
+  strikeMoneynessGap: number;
+  strikeMoneynessGapBps: number | null;
+}
+
+function buildRecommendation(request: DcnPricingRequest, candidate: DcnRankableCandidate | null): DcnRecommendation {
+  const selectorMode = request.selectorMode ?? "closest";
+  const fit = candidate ? getCandidateFitMetrics(request, candidate) : null;
+  const recommendedLever: DcnRecommendedLever =
+    selectorMode === "auto_yield"
+      ? "yield"
+      : selectorMode === "auto_runway"
+        ? "runway"
+        : selectorMode === "auto_strike"
+          ? "strike"
+          : "none";
+  const reason =
+    selectorMode === "auto_yield"
+      ? "Highest executable client yield among products closest to the requested runway and strike buffer."
+      : selectorMode === "auto_runway"
+        ? "Shortest eligible runway that fits the requested target yield and strike buffer."
+        : selectorMode === "auto_strike"
+          ? "Safest eligible strike that fits the requested runway and target yield."
+          : "Closest eligible product to the requested target yield, runway, and strike buffer.";
+
+  return {
+    selectorMode,
+    recommendedLever,
+    reason,
+    targetYieldGapBps: fit?.targetYieldGapBps ?? null,
+    runwayGapDays: fit?.runwayGapDays ?? null,
+    strikeMoneynessGapBps: fit?.strikeMoneynessGapBps ?? null
+  };
+}
+
+function getCandidateFitMetrics(request: DcnPricingRequest, candidate: DcnRankableCandidate): CandidateFitMetrics {
+  const targetYield = (request.targetYieldBps ?? 0) / 10000;
+  const clientYield = finiteOr(candidate.clientYield, -Infinity);
+  const targetYieldGap = Number.isFinite(clientYield) && targetYield > 0 ? clientYield - targetYield : null;
+  const targetMet = targetYield <= 0 || clientYield >= targetYield;
+  const runwayDays = request.runwayDays ?? candidate.dayCount ?? 0;
+  const runwayGapDays =
+    typeof candidate.dayCount === "number" && Number.isFinite(candidate.dayCount)
+      ? Math.abs(candidate.dayCount - runwayDays)
+      : null;
+  const normalizedRunwayGap = runwayGapDays === null ? Infinity : runwayGapDays / Math.max(runwayDays, 1);
+  const preferredMoneyness = getPreferredMoneyness(request.strikePreference);
+  const strikeMoneyness =
+    typeof candidate.strike === "number" && typeof candidate.spotPrice === "number" && candidate.spotPrice > 0
+      ? candidate.strike / candidate.spotPrice
+      : Infinity;
+  const strikeMoneynessGap =
+    preferredMoneyness === null || !Number.isFinite(strikeMoneyness)
+      ? 0
+      : Math.abs(strikeMoneyness - preferredMoneyness);
+
+  return {
+    targetMet,
+    targetYieldGap,
+    targetYieldGapBps: targetYieldGap === null ? null : targetYieldGap * 10000,
+    yieldShortfall: targetYieldGap === null ? Infinity : Math.max(0, -targetYieldGap),
+    yieldExcess: targetYieldGap === null ? Infinity : Math.max(0, targetYieldGap),
+    normalizedRunwayGap,
+    runwayGapDays,
+    strikeMoneyness,
+    strikeMoneynessGap,
+    strikeMoneynessGapBps: preferredMoneyness === null ? null : strikeMoneynessGap * 10000
+  };
+}
+
+function getPreferredMoneyness(strikePreference: DcnPricingRequest["strikePreference"]): number | null {
+  if (strikePreference === "ten_otm") return 0.9;
+  if (strikePreference === "five_otm") return 0.95;
+  return null;
+}
+
+function compareBy(comparators: Array<() => number>): number {
+  for (const comparator of comparators) {
+    const result = comparator();
+    if (result !== 0) return result;
+  }
+  return 0;
+}
+
+function compareBooleanDesc(a: boolean, b: boolean): number {
+  if (a === b) return 0;
+  return a ? -1 : 1;
 }
 
 function compareAsc(a: number | null | undefined, b: number | null | undefined): number {

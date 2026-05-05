@@ -84,7 +84,7 @@ VALUES
   ('firm_margin_bps', '200', unixepoch() * 1000),
   ('quote_freshness_seconds', '10', unixepoch() * 1000),
   ('default_order_book_depth', '100', unixepoch() * 1000),
-  ('max_depth_candidates', '6', unixepoch() * 1000),
+  ('max_depth_candidates', '25', unixepoch() * 1000),
   ('max_slippage_bps', '500', unixepoch() * 1000);
 
 CREATE TABLE IF NOT EXISTS dcn_quote_audit (
