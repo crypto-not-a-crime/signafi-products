@@ -366,6 +366,7 @@ function RecommendationCard({
     recommendation.strikeMoneynessGapBps === null
       ? "-"
       : `${formatNumber(recommendation.strikeMoneynessGapBps, 0)} bps`;
+  const recommendationValue = formatRecommendationValue(recommendation, candidate);
 
   return (
     <div className="candidate-card">
@@ -374,7 +375,7 @@ function RecommendationCard({
           <div className="pc-label">Recommendation</div>
           <h3 className="card-title">{recommendation.recommendedLever === "none" ? "Closest product" : `Recommended ${recommendation.recommendedLever}`}</h3>
         </div>
-        <span className="status-badge status-live">{formatPct(candidate.clientYield, 1)}</span>
+        <span className="status-badge status-live">{recommendationValue}</span>
       </div>
       <p className="card-copy">{recommendation.reason}</p>
       <div className="metric-grid">
@@ -387,29 +388,73 @@ function RecommendationCard({
   );
 }
 
+function formatRecommendationValue(recommendation: DcnRecommendation, candidate: DcnCandidate) {
+  if (recommendation.recommendedLever === "runway") return `${formatNumber(candidate.dayCount, 0)} days`;
+  if (recommendation.recommendedLever === "strike") return formatUsd(candidate.strike);
+  return formatPct(candidate.clientYield, 1);
+}
+
+const DERIBIT_MONTHS: Record<string, string> = {
+  JAN: "Jan",
+  FEB: "Feb",
+  MAR: "Mar",
+  APR: "Apr",
+  MAY: "May",
+  JUN: "Jun",
+  JUL: "Jul",
+  AUG: "Aug",
+  SEP: "Sep",
+  OCT: "Oct",
+  NOV: "Nov",
+  DEC: "Dec"
+};
+
+function getInstrumentTerms(candidate: DcnCandidate) {
+  const [underlying = "BTC", expiryCode = "", , optionCode = "P"] = candidate.instrumentName.split("-");
+  const optionType = optionCode === "C" ? "Call" : "Put";
+  return {
+    underlying,
+    optionType,
+    expiryDate: formatDeribitExpiry(expiryCode)
+  };
+}
+
+function formatDeribitExpiry(expiryCode: string) {
+  const match = expiryCode.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
+  if (!match) return expiryCode || "-";
+  const [, day, monthCode, year] = match;
+  return `${Number(day)} ${DERIBIT_MONTHS[monthCode] ?? monthCode} 20${year}`;
+}
+
 function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; best?: boolean }) {
+  const terms = getInstrumentTerms(candidate);
+
   return (
     <div className={`candidate-card ${best ? "best" : ""}`}>
       <div className="row-between">
         <div>
           <div className="pc-label">{best ? "Best match" : "Alternative"}</div>
-          <h3 className="card-title">{candidate.instrumentName}</h3>
+          <h3 className="card-title">
+            {terms.underlying} {terms.optionType} Dual Currency Note
+          </h3>
         </div>
-        <span className={`status-badge ${candidate.eligible ? "status-live" : "status-warn"}`}>
-          {candidate.eligible ? "Eligible" : "Review"}
-        </span>
       </div>
-      <p className="card-copy">
-        Strike {formatUsd(candidate.strike)} - {candidate.dayCount} days - quote age{" "}
-        {candidate.quoteAgeSeconds === null ? "-" : `${candidate.quoteAgeSeconds.toFixed(1)}s`}
-      </p>
-      <div className="metric-grid">
-        <Metric label="Gross C17 yield" value={formatPct(candidate.grossReferenceYield)} />
+      <dl className="product-terms">
+        <div>
+          <dt>Underlying</dt>
+          <dd>{terms.underlying}</dd>
+        </div>
+        <div>
+          <dt>Expiry Date</dt>
+          <dd>{terms.expiryDate}</dd>
+        </div>
+        <div>
+          <dt>Strike Price</dt>
+          <dd>{formatUsd(candidate.strike)}</dd>
+        </div>
+      </dl>
+      <div className="metric-grid product-yield">
         <Metric label="Client yield" value={formatPct(candidate.clientYield, 1)} tone="ok" />
-        <Metric label="Effective C15 bid" value={formatNumber(candidate.effectivePutBidPrice, 5)} />
-        <Metric label="Top bid" value={formatNumber(candidate.depth.bestBidPrice, 5)} />
-        <Metric label="Slippage" value={formatPct(candidate.depth.slippagePct, 3)} />
-        <Metric label="Depth filled" value={`${formatNumber(candidate.depth.filledContracts, 1)} / ${formatNumber(candidate.depth.requiredContracts, 1)}`} />
       </div>
     </div>
   );

@@ -687,6 +687,10 @@ input:disabled {
   margin-top: 16px;
 }
 
+.metric-grid.product-yield {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .metric-card {
   padding: 14px;
 }
@@ -695,6 +699,37 @@ input:disabled {
   font-family: var(--font-dm-mono), monospace;
   font-size: 16px;
   margin-top: 4px;
+}
+
+.product-terms {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.product-terms div {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 0;
+}
+
+.product-terms dt {
+  color: var(--muted);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.product-terms dd {
+  color: var(--navy);
+  font-weight: 700;
+  margin: 0;
+  text-align: right;
 }
 
 .admin-page {
