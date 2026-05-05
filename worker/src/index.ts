@@ -225,15 +225,8 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
 
   for (const item of shortlisted) {
     const book = await client.getOrderBook(item.row.instrument_name, normalized.orderBookDepth ?? config.defaultOrderBookDepth);
-    const snapshotId = await insertOrderBookSnapshot(
-      env.DB,
-      book,
-      normalized.orderBookDepth ?? config.defaultOrderBookDepth,
-      "pricing",
-      Date.now()
-    );
     const calculation = priceCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
-    priced.push({ score: item.score, snapshotId, ...calculation });
+    priced.push({ score: item.score, snapshotId: null, ...calculation });
   }
 
   const selected = selectDcnCandidate(normalized, priced);
