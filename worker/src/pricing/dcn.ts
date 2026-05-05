@@ -352,7 +352,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const investmentUsdt = request.investmentUsdt;
   const spotPrice = market.underlyingPrice ?? 0;
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
-  const requiredContracts = roundContracts(investmentUsdt / spotPrice, market.minTradeAmount ?? 0.1);
+  const requiredContracts = roundContracts(investmentUsdt / market.strike, market.minTradeAmount ?? 0.1);
   const depth = modelSellIntoBidDepth(market.bids, requiredContracts, market.bidPrice, market.bidAmount);
   const effectivePutBidPrice = depth.effectivePutBidPrice;
   const quoteTime = market.deribitTimestamp ?? market.ingestedAt ?? null;
@@ -404,6 +404,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
 
   const checks = {
     spotPricePositive: spotPrice > 0,
+    strikePositive: market.strike > 0,
     strikeBelowSpot: market.strike < spotPrice,
     quoteFresh: quoteAgeSeconds !== null && quoteAgeSeconds <= quoteFreshnessSeconds,
     usableBid: effectivePutBidPrice !== null && effectivePutBidPrice > 0,
@@ -423,7 +424,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     { cell: "C5", label: "BTC Spot Price", formula: "Deribit BTC_USDC spot mid", value: spotPrice },
     { cell: "C7", label: "Strike Price", formula: "selected Deribit put strike", value: market.strike },
     { cell: "C11", label: "Day Count", formula: DCN_SELL_PUT_TEMPLATE.formulas.dayCount, value: dayCount },
-    { cell: "C14", label: "Contracts", formula: "ROUND(C4/C5, 1)", value: requiredContracts },
+    { cell: "C14", label: "Contracts", formula: DCN_SELL_PUT_TEMPLATE.formulas.contracts, value: requiredContracts },
     {
       cell: "C15",
       label: "Put Bid Price",

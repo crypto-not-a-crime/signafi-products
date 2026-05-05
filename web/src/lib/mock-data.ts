@@ -22,15 +22,15 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
     spotPrice: 78500,
     strike: 75000,
     dayCount: 92,
-    requiredContracts: 6.4,
+    requiredContracts: 6.7,
     effectivePutBidPrice: 0.0641,
     grossReferenceYield,
     firmMarginBps: 200,
     clientYield,
     clientInterestUsdt: 500000 * (clientYield * (92 / 365)),
-    tradingFeesBtc: -0.00192,
-    netOptionProceedsBtc: 0.40832,
-    netOptionProceedsUsdt: 32053.12,
+    tradingFeesBtc: -0.00201,
+    netOptionProceedsBtc: 0.42746,
+    netOptionProceedsUsdt: 33555.61,
     premiumCoversInterest: true,
     selectedScenario: undefined,
     downsideScenario: undefined,
@@ -65,19 +65,16 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
       { cell: "Selected Payout", label: "Client payout", formula: "scenario analysis", value: 522000 }
     ],
     depth: {
-      requiredContracts: 6.4,
-      filledContracts: 6.4,
-      grossProceedsBtc: 0.41024,
+      requiredContracts: 6.7,
+      filledContracts: 6.7,
+      grossProceedsBtc: 0.42947,
       effectivePutBidPrice: 0.0641,
-      bestBidPrice: 0.0645,
-      bestBidAmount: 3.1,
+      bestBidPrice: 0.0641,
+      bestBidAmount: 6.7,
       sufficientDepth: true,
       remainingContracts: 0,
-      slippagePct: 0.0062,
-      fills: [
-        { price: 0.0645, amount: 3.1, notionalBtc: 0.19995 },
-        { price: 0.0638, amount: 3.3, notionalBtc: 0.21054 }
-      ]
+      slippagePct: 0,
+      fills: [{ price: 0.0641, amount: 6.7, notionalBtc: 0.42947 }]
     }
   };
   const candidate = { ...base, ...overrides };
@@ -99,7 +96,7 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
       : "closest";
   const best = mockDcnCandidate({
     investmentUsdt,
-    requiredContracts: Math.round((investmentUsdt / 78500) * 10) / 10
+    requiredContracts: Math.round((investmentUsdt / 75000) * 10) / 10
   });
   const alternativeGrossYield = (0.044 / 92) * 365;
   const alternativeClientYield = roundYieldToOneDecimalPercent(alternativeGrossYield - 0.02);

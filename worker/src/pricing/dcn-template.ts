@@ -30,6 +30,7 @@ export const DCN_SELL_PUT_TEMPLATE = {
   },
   formulas: {
     dayCount: "calendar expiry date - calendar today date (exclusive today, inclusive expiry date)",
+    contracts: "ROUND(C4/C7, 1)",
     grossReferenceYield: "effectivePutBidPrice / dayCount * 365",
     clientYield: "ROUND(MAX(grossReferenceYield - firmMarginBps / 10000, 0) * 100, 1) / 100",
     clientPayoutBtc: "investmentUSDT / strike * (1 + clientYield * days / 365)",

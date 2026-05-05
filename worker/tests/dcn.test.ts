@@ -57,7 +57,7 @@ describe("DCN sell-put pricing", () => {
   });
 
   it("rounds contracts like the workbook model", () => {
-    expect(roundContracts(1000000 / 78493, 0.1)).toBe(12.7);
+    expect(roundContracts(1000000 / 75000, 0.1)).toBe(13.3);
   });
 
   it("matches workbook-style baseline premium when effective bid equals C15", () => {
@@ -83,13 +83,13 @@ describe("DCN sell-put pricing", () => {
     );
 
     expect(result.dayCount).toBe(92);
-    expect(result.requiredContracts).toBe(12.7);
+    expect(result.requiredContracts).toBe(13.3);
     expect(result.effectivePutBidPrice).toBeCloseTo(0.0645, 8);
     expect(result.grossReferenceYield).toBeCloseTo((0.0645 / 92) * 365, 8);
     expect(result.clientYield).toBe(roundYieldToOneDecimalPercent((0.0645 / 92) * 365 - 0.02));
     expect(result.clientInterestUsdt).toBeCloseTo(1000000 * result.clientYield! * (92 / 365), 8);
-    expect(result.tradingFeesBtc).toBeCloseTo(-0.00381, 8);
-    expect(result.netOptionProceedsBtc).toBeCloseTo(0.81534, 5);
+    expect(result.tradingFeesBtc).toBeCloseTo(-0.00399, 8);
+    expect(result.netOptionProceedsBtc).toBeCloseTo(0.85386, 5);
     expect(result.premiumCoversInterest).toBe(true);
   });
 
@@ -115,9 +115,11 @@ describe("DCN sell-put pricing", () => {
     );
 
     const c5 = result.formulaTrace.find((row) => row.cell === "C5");
+    const c14 = result.formulaTrace.find((row) => row.cell === "C14");
     expect(result.spotPrice).toBe(80258);
     expect(c5?.formula).toBe("Deribit BTC_USDC spot mid");
-    expect(result.requiredContracts).toBe(roundContracts(1000000 / 80258, 0.1));
+    expect(c14?.formula).toBe("ROUND(C4/C7, 1)");
+    expect(result.requiredContracts).toBe(roundContracts(1000000 / 75000, 0.1));
   });
 
   it("derives BTC/USDC spot from ticker midpoint with sensible fallbacks", () => {
@@ -162,19 +164,19 @@ describe("DCN sell-put pricing", () => {
         minTradeAmount: 0.1,
         underlyingPrice: 75500,
         bidPrice: 0.04358,
-        bidAmount: 6.6,
+        bidAmount: 7.2,
         markPrice: 0.0449,
         deribitTimestamp: NOW,
-        bids: [[0.04358, 6.6]]
+        bids: [[0.04358, 7.2]]
       }
     );
 
-    expect(result.requiredContracts).toBe(6.6);
+    expect(result.requiredContracts).toBe(7.2);
     expect(result.grossReferenceYield).toBeCloseTo(0.17289891304347826, 10);
     expect(result.clientYield).toBeCloseTo(workbookClientYield, 10);
-    expect(result.netOptionProceedsBtc).toBeCloseTo(0.285648, 10);
-    expect(result.downsideProfitUsdt).toBeCloseTo(15956.244574151351, 6);
-    expect(result.upsideProfitUsdt).toBeCloseTo(6678.183013698552, 6);
+    expect(result.netOptionProceedsBtc).toBeCloseTo(0.311616, 10);
+    expect(result.downsideProfitUsdt).toBeCloseTo(2724.8045741512324, 6);
+    expect(result.upsideProfitUsdt).toBeCloseTo(9015.303013698547, 6);
     expect(result.selectedScenario.clientPayoutAsset).toBe("BTC");
     expect(result.selectedScenario.clientPayoutAmount).toBeCloseTo(7.522175898352194, 10);
 
@@ -207,9 +209,9 @@ describe("DCN sell-put pricing", () => {
         minTradeAmount: 0.1,
         underlyingPrice: 75500,
         bidPrice: 0.04358,
-        bidAmount: 6.6,
+        bidAmount: 7.2,
         deribitTimestamp: NOW,
-        bids: [[0.04358, 6.6]]
+        bids: [[0.04358, 7.2]]
       }
     );
 
