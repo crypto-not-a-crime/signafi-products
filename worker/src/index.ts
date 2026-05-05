@@ -40,6 +40,7 @@ const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, adm
   ["POST", /^\/api\/admin\/dcn-audit$/, handleDcnAudit, true],
   ["POST", /^\/api\/admin\/verify-quote$/, handleVerifyQuote, true],
   ["POST", /^\/api\/admin\/deribit-margins$/, handleDeribitMargins, true],
+  ["POST", /^\/api\/admin\/refresh-selected-market$/, handleRefreshSelectedMarket, true],
   ["POST", /^\/api\/admin\/sync-market-data$/, handleSyncMarketData, true],
   ["GET", /^\/api\/admin\/stream-status$/, handleStreamStatus, true],
   ["POST", /^\/api\/admin\/stream-start$/, handleStreamStart, true]
@@ -336,6 +337,55 @@ async function handleDeribitMargins(request: Request, env: Env): Promise<Respons
     amount: payload.amount,
     price: payload.price,
     result
+  });
+}
+
+async function handleRefreshSelectedMarket(request: Request, env: Env): Promise<Response> {
+  const payload = await request.json<DcnPricingRequest & { instrumentName?: string }>();
+  if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
+
+  const config = await getPricingConfig(env.DB);
+  const normalized = normalizePricingRequest(payload, config);
+  const stored = await getInstrumentQuote(env.DB, payload.instrumentName);
+  if (!stored) return json({ error: "Instrument not found in D1" }, 404);
+
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
+  const [ticker, book, spotTicker] = await Promise.all([
+    client.ticker(payload.instrumentName),
+    client.getOrderBook(payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth),
+    client.btcUsdcSpotTicker()
+  ]);
+  const nowMs = Date.now();
+  await upsertTicker(env.DB, ticker, nowMs);
+  const refreshed = await getInstrumentQuote(env.DB, payload.instrumentName);
+  const spotPrice = spotPriceFromTicker(spotTicker);
+  const snapshotId = await insertOrderBookSnapshot(
+    env.DB,
+    book,
+    normalized.orderBookDepth ?? config.defaultOrderBookDepth,
+    "admin-refresh-selected-market",
+    nowMs
+  );
+  const calculation = calculateDcnSellPut(
+    normalized,
+    rowToMarket(refreshed ?? stored, book.bids, book.timestamp, spotPrice)
+  );
+  const auditId = await insertAudit(env.DB, payload, payload.instrumentName, snapshotId, calculation, calculation.checks, nowMs);
+
+  return json({
+    auditId,
+    snapshotId,
+    calculation,
+    refreshed: {
+      instrumentName: payload.instrumentName,
+      instrumentTickerTimestamp: ticker.timestamp ?? null,
+      instrumentIngestedAt: nowMs,
+      spotInstrumentName: spotTicker.instrument_name,
+      spotTickerTimestamp: spotTicker.timestamp ?? null,
+      spotPrice,
+      orderBookTimestamp: book.timestamp ?? null,
+      orderBookDepth: normalized.orderBookDepth ?? config.defaultOrderBookDepth
+    }
   });
 }
 

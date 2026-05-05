@@ -37,6 +37,7 @@ export function AdminConsole() {
   const [quoteVerification, setQuoteVerification] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [marginLoading, setMarginLoading] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshHealth();
@@ -116,6 +117,7 @@ export function AdminConsole() {
     setAudit(null);
     setMarginCheck(null);
     setQuoteVerification(null);
+    setRefreshError(null);
     setExpiryPrice(null);
   }, [instrumentName, investmentUsdt]);
 
@@ -160,11 +162,31 @@ export function AdminConsole() {
 
   async function refreshMarket() {
     setSyncingMarket(true);
+    setMarginCheck(null);
+    setQuoteVerification(null);
+    setRefreshError(null);
     try {
-      await fetch("/api/admin/sync-market-data", { method: "POST", cache: "no-store" });
+      const response = await fetch("/api/admin/refresh-selected-market", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          instrumentName,
+          investmentUsdt,
+          targetYieldBps: 1000,
+          runwayDays: 92,
+          firmMarginBps: 200,
+          orderBookDepth: 100,
+          scenarioExpiryPrice: expiryPrice ?? undefined
+        }),
+        cache: "no-store"
+      });
+      const payload = (await response.json()) as { calculation?: DcnCandidate; error?: string };
+      if (response.ok) {
+        setAudit(payload.calculation ?? null);
+      } else {
+        setRefreshError(payload.error ?? `Selected market refresh failed with HTTP ${response.status}`);
+      }
       await refreshHealth();
-      await loadExpiryOptions();
-      if (selectedExpiry) await loadOptions(selectedOptionType, selectedExpiry);
     } finally {
       setSyncingMarket(false);
     }
@@ -375,11 +397,16 @@ export function AdminConsole() {
               <button
                 className="btn-ghost"
                 onClick={() => void refreshMarket()}
-                disabled={busy || optionsLoading || syncingMarket}
+                disabled={busy || optionsLoading || syncingMarket || selectedOptionType !== "put" || !instrumentName}
               >
                 {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
             </div>
+            {refreshError ? (
+              <p className="card-copy" style={{ marginTop: 10 }}>
+                {refreshError}
+              </p>
+            ) : null}
 
             {audit ? (
               <>
