@@ -90,6 +90,18 @@ export interface DcnCandidate {
 
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
 
+export interface DcnPricingRequest {
+  investmentUsdt: number;
+  targetYieldBps?: number;
+  runwayDays?: number;
+  strikePreference?: "any" | "five_otm" | "ten_otm";
+  strikeBufferPct?: number;
+  selectorMode?: DcnSelectorMode;
+  maxSlippageBps?: number;
+  quoteFreshnessSeconds?: number;
+  orderBookDepth?: number;
+}
+
 export interface DcnRecommendation {
   selectorMode: DcnSelectorMode;
   recommendedLever: "none" | "yield" | "runway" | "strike";

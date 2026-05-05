@@ -525,6 +525,7 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     targetYieldBps: Number(request.targetYieldBps ?? 1000),
     runwayDays: Number(request.runwayDays ?? 92),
     strikePreference: request.strikePreference ?? "any",
+    strikeBufferPct: normalizeStrikeBufferPct(request.strikeBufferPct),
     selectorMode: normalizeSelectorMode(request.selectorMode),
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
     maxSlippageBps: Number(request.maxSlippageBps ?? config.maxSlippageBps),
@@ -539,6 +540,12 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
 
 function normalizeSelectorMode(mode: DcnPricingRequest["selectorMode"]): DcnPricingRequest["selectorMode"] {
   return mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike" ? mode : "closest";
+}
+
+function normalizeStrikeBufferPct(value: DcnPricingRequest["strikeBufferPct"]): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.min(99, Math.max(0, numeric)) : undefined;
 }
 
 function rowToMarket(

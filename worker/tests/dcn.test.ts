@@ -321,6 +321,28 @@ describe("DCN sell-put pricing", () => {
       .toBe(nearTargetTenOtm);
   });
 
+  it("uses custom strike buffer percentages before legacy strike preferences", () => {
+    const baseRequest = {
+      investmentUsdt: 500000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      selectorMode: "closest" as const
+    };
+    const fiveOtm = rankableCandidate("five-otm", { strike: 95000, spotPrice: 100000 });
+    const fifteenOtm = rankableCandidate("fifteen-otm", { strike: 85000, spotPrice: 100000 });
+
+    expect(
+      selectDcnCandidate({ ...baseRequest, strikePreference: "five_otm" as const }, [fifteenOtm, fiveOtm])
+        .bestCandidate
+    ).toBe(fiveOtm);
+    expect(
+      selectDcnCandidate(
+        { ...baseRequest, strikePreference: "five_otm" as const, strikeBufferPct: 15 },
+        [fiveOtm, fifteenOtm]
+      ).bestCandidate
+    ).toBe(fifteenOtm);
+  });
+
   it("auto selector modes optimize the missing lever", () => {
     const fixedRunwayStrike = {
       investmentUsdt: 500000,

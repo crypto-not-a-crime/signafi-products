@@ -9,6 +9,7 @@ export interface DcnPricingRequest {
   targetYieldBps?: number;
   runwayDays?: number;
   strikePreference?: "any" | "five_otm" | "ten_otm";
+  strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
   firmMarginBps?: number;
   maxSlippageBps?: number;
@@ -711,7 +712,7 @@ function getCandidateFitMetrics(request: DcnPricingRequest, candidate: DcnRankab
       ? Math.abs(candidate.dayCount - runwayDays)
       : null;
   const normalizedRunwayGap = runwayGapDays === null ? Infinity : runwayGapDays / Math.max(runwayDays, 1);
-  const preferredMoneyness = getPreferredMoneyness(request.strikePreference);
+  const preferredMoneyness = getPreferredMoneyness(request);
   const strikeMoneyness =
     typeof candidate.strike === "number" && typeof candidate.spotPrice === "number" && candidate.spotPrice > 0
       ? candidate.strike / candidate.spotPrice
@@ -735,9 +736,12 @@ function getCandidateFitMetrics(request: DcnPricingRequest, candidate: DcnRankab
   };
 }
 
-function getPreferredMoneyness(strikePreference: DcnPricingRequest["strikePreference"]): number | null {
-  if (strikePreference === "ten_otm") return 0.9;
-  if (strikePreference === "five_otm") return 0.95;
+function getPreferredMoneyness(request: Pick<DcnPricingRequest, "strikePreference" | "strikeBufferPct">): number | null {
+  if (typeof request.strikeBufferPct === "number" && Number.isFinite(request.strikeBufferPct)) {
+    return 1 - Math.min(99, Math.max(0, request.strikeBufferPct)) / 100;
+  }
+  if (request.strikePreference === "ten_otm") return 0.9;
+  if (request.strikePreference === "five_otm") return 0.95;
   return null;
 }
 

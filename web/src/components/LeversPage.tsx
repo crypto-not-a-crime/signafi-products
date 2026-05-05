@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, DcnPricingResponse, DcnRecommendation, DcnSelectorMode } from "@/types";
+import type { DcnCandidate, DcnPricingRequest, DcnPricingResponse, DcnRecommendation, DcnSelectorMode } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 import { SiteNav } from "./Logo";
@@ -13,12 +13,16 @@ const runwayOptions = [
   { id: "12m", label: "12 months", days: 365 }
 ];
 
+const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
+const strikeBufferOptions = [5, 10, 15, 20, 25, 30];
+
 export function LeversPage() {
   const [investmentUsdt, setInvestmentUsdt] = useState(500000);
   const [runway, setRunway] = useState("3m");
   const [targetYieldPct, setTargetYieldPct] = useState(10);
-  const [strikePreference, setStrikePreference] = useState<"any" | "five_otm" | "ten_otm">("five_otm");
-  const [selectorMode, setSelectorMode] = useState<DcnSelectorMode>("closest");
+  const [strikeBufferMode, setStrikeBufferMode] = useState<"target" | "any">("target");
+  const [strikeBufferPct, setStrikeBufferPct] = useState(5);
+  const [selectorMode, setSelectorMode] = useState<DcnSelectorMode>("auto_yield");
   const [data, setData] = useState<DcnPricingResponse | null>(null);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,7 +35,7 @@ export function LeversPage() {
       void fetchPricing();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [investmentUsdt, runwayDays, targetYieldPct, strikePreference, selectorMode]);
+  }, [investmentUsdt, runwayDays, targetYieldPct, strikeBufferMode, strikeBufferPct, selectorMode]);
 
   useEffect(() => {
     if (!data?.bestCandidate) return;
@@ -45,19 +49,21 @@ export function LeversPage() {
     setLoading(true);
     setError(null);
     try {
+      const pricingRequest: DcnPricingRequest = {
+        investmentUsdt,
+        targetYieldBps: Math.round(targetYieldPct * 100),
+        runwayDays,
+        strikePreference: strikeBufferMode === "any" ? "any" : undefined,
+        strikeBufferPct: strikeBufferMode === "target" ? strikeBufferPct : undefined,
+        selectorMode,
+        maxSlippageBps: 500,
+        quoteFreshnessSeconds: 10,
+        orderBookDepth: 100
+      };
       const response = await fetch("/api/products/dcn/sell-put/price", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          investmentUsdt,
-          targetYieldBps: Math.round(targetYieldPct * 100),
-          runwayDays,
-          strikePreference,
-          selectorMode,
-          maxSlippageBps: 500,
-          quoteFreshnessSeconds: 10,
-          orderBookDepth: 100
-        })
+        body: JSON.stringify(pricingRequest)
       });
       if (!response.ok) throw new Error(`Pricing failed with ${response.status}`);
       setData(await response.json());
@@ -112,10 +118,10 @@ export function LeversPage() {
                 </div>
                 <div className="pill-row">
                   {[
-                    ["closest", "Closest match"],
-                    ["auto_yield", "Auto return"],
-                    ["auto_runway", "Auto runway"],
-                    ["auto_strike", "Auto strike"]
+                    ["closest", "Closest Match"],
+                    ["auto_yield", "Auto Return"],
+                    ["auto_runway", "Auto Runway"],
+                    ["auto_strike", "Auto Strike"]
                   ].map(([id, label]) => (
                     <button
                       className={`choice-pill ${selectorMode === id ? "active" : ""}`}
@@ -139,13 +145,13 @@ export function LeversPage() {
                 <input
                   type="range"
                   min={50000}
-                  max={2000000}
+                  max={10000000}
                   step={50000}
                   value={investmentUsdt}
                   onChange={(event) => setInvestmentUsdt(Number(event.target.value))}
                 />
                 <div className="quick-btns">
-                  {[50000, 100000, 250000, 500000, 1000000, 2000000].map((amount) => (
+                  {investmentOptions.map((amount) => (
                     <button
                       className={`quick-btn ${amount === investmentUsdt ? "active" : ""}`}
                       key={amount}
@@ -204,22 +210,43 @@ export function LeversPage() {
                     <div className="field-label">Lever 3 - Strike buffer</div>
                     <strong>How far below spot should the put strike sit?</strong>
                   </div>
+                  <strong className="mono">
+                    {strikeBufferMode === "any" ? "Best available" : `Around ${strikeBufferPct}% below`}
+                  </strong>
                 </div>
+                <input
+                  type="range"
+                  min={5}
+                  max={30}
+                  step={1}
+                  value={strikeBufferPct}
+                  onChange={(event) => {
+                    setStrikeBufferMode("target");
+                    setStrikeBufferPct(Number(event.target.value));
+                  }}
+                  disabled={selectorMode === "auto_strike" || strikeBufferMode === "any"}
+                />
                 <div className="pill-row">
-                  {[
-                    ["five_otm", "Around 5% below"],
-                    ["ten_otm", "Around 10% below"],
-                    ["any", "Best available"]
-                  ].map(([id, label]) => (
+                  {strikeBufferOptions.map((pct) => (
                     <button
-                      className={`choice-pill ${strikePreference === id ? "active" : ""}`}
-                      key={id}
-                      onClick={() => setStrikePreference(id as typeof strikePreference)}
+                      className={`choice-pill ${strikeBufferMode === "target" && strikeBufferPct === pct ? "active" : ""}`}
+                      key={pct}
+                      onClick={() => {
+                        setStrikeBufferMode("target");
+                        setStrikeBufferPct(pct);
+                      }}
                       disabled={selectorMode === "auto_strike"}
                     >
-                      {label}
+                      {pct}%
                     </button>
                   ))}
+                  <button
+                    className={`choice-pill ${strikeBufferMode === "any" ? "active" : ""}`}
+                    onClick={() => setStrikeBufferMode("any")}
+                    disabled={selectorMode === "auto_strike"}
+                  >
+                    Best available
+                  </button>
                 </div>
               </div>
             </div>

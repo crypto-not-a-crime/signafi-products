@@ -90,6 +90,7 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
 
 export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPricingResponse {
   const investmentUsdt = Number(input.investmentUsdt ?? 500000);
+  const strikeBufferPct = typeof input.strikeBufferPct === "number" ? Number(input.strikeBufferPct) : null;
   const selectorMode =
     input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
       ? input.selectorMode
@@ -122,7 +123,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
       reason: "Mock recommendation generated without live worker data.",
       targetYieldGapBps: best.clientYield === null ? null : best.clientYield * 10000 - Number(input.targetYieldBps ?? 1000),
       runwayGapDays: 0,
-      strikeMoneynessGapBps: null
+      strikeMoneynessGapBps:
+        strikeBufferPct === null ? null : Math.abs(best.strike / best.spotPrice - (1 - strikeBufferPct / 100)) * 10000
     },
     mock: true
   };
