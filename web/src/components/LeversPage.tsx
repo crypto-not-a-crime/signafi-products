@@ -78,7 +78,6 @@ export function LeversPage() {
   const scenarioRange = best ? getScenarioRange(best) : null;
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const monthly = investmentUsdt * (targetYieldPct / 100) / 12;
-  const riskPct = best?.depth.slippagePct ? Math.min(25, 6 + best.depth.slippagePct * 100) : 8;
   const displayedRunwayDays = best?.dayCount ?? runwayDays;
 
   return (
@@ -268,8 +267,8 @@ export function LeversPage() {
                     <div className="metric-value">{displayedRunwayDays} days</div>
                   </div>
                   <div className="metric-card">
-                    <div className="sum-lbl">Risk signal</div>
-                    <div className="metric-value">{riskPct.toFixed(1)}%</div>
+                    <div className="sum-lbl">BTC spot</div>
+                    <div className="metric-value">{formatUsd(best?.spotPrice)}</div>
                   </div>
                   <div className="metric-card">
                     <div className="sum-lbl">Quote status</div>
@@ -455,6 +454,8 @@ function formatDeribitExpiry(expiryCode: string) {
 
 function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; best?: boolean }) {
   const terms = getInstrumentTerms(candidate);
+  const strikeDistance = formatStrikeDistanceFromSpot(candidate);
+  const expiryDistance = formatExpiryDistance(candidate.dayCount);
 
   return (
     <div className={`candidate-card ${best ? "best" : ""}`}>
@@ -473,11 +474,17 @@ function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; b
         </div>
         <div>
           <dt>Expiry Date</dt>
-          <dd>{terms.expiryDate}</dd>
+          <dd>
+            {terms.expiryDate}
+            <span>{expiryDistance}</span>
+          </dd>
         </div>
         <div>
           <dt>Strike Price</dt>
-          <dd>{formatUsd(candidate.strike)}</dd>
+          <dd>
+            {formatUsd(candidate.strike)}
+            <span>{strikeDistance}</span>
+          </dd>
         </div>
       </dl>
       <div className="metric-grid product-yield">
@@ -485,6 +492,22 @@ function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; b
       </div>
     </div>
   );
+}
+
+function formatStrikeDistanceFromSpot(candidate: DcnCandidate) {
+  if (!candidate.spotPrice || candidate.spotPrice <= 0) return "-";
+  const distancePct = Math.round(Math.abs((candidate.strike / candidate.spotPrice - 1) * 100));
+  if (distancePct === 0) return "At spot";
+  return candidate.strike < candidate.spotPrice ? `${distancePct}% below spot` : `${distancePct}% above spot`;
+}
+
+function formatExpiryDistance(dayCount: number) {
+  if (!Number.isFinite(dayCount) || dayCount < 0) return "-";
+  if (dayCount >= 60) {
+    const months = Math.max(1, Math.round(dayCount / 30));
+    return `${months} ${months === 1 ? "month" : "months"} away`;
+  }
+  return `${dayCount} ${dayCount === 1 ? "day" : "days"} away`;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "ok" | "fail" }) {
