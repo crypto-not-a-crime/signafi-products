@@ -246,6 +246,24 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
   };
 }
 
+export async function updatePricingConfig(
+  db: D1Database,
+  updates: Partial<Pick<PricingConfig, "firmMarginBps">>,
+  nowMs: number
+): Promise<PricingConfig> {
+  const statements: D1PreparedStatement[] = [];
+
+  if (typeof updates.firmMarginBps === "number") {
+    statements.push(upsertPricingConfigStatement(db, "firm_margin_bps", String(updates.firmMarginBps), nowMs));
+  }
+
+  if (statements.length > 0) {
+    await db.batch(statements);
+  }
+
+  return getPricingConfig(db);
+}
+
 export async function getPutCandidates(db: D1Database, nowMs: number): Promise<JoinedPutRow[]> {
   const result = await db
     .prepare(
@@ -334,6 +352,18 @@ export async function insertAudit(
     .bind(nowMs, JSON.stringify(request), instrumentName, snapshotId, JSON.stringify(calculation), JSON.stringify(checks))
     .run();
   return Number(result.meta.last_row_id ?? null);
+}
+
+function upsertPricingConfigStatement(db: D1Database, key: string, value: string, nowMs: number): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO pricing_config(key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at`
+    )
+    .bind(key, value, nowMs);
 }
 
 async function runInChunks(db: D1Database, statements: D1PreparedStatement[], chunkSize: number): Promise<void> {

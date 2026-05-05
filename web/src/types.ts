@@ -20,6 +20,14 @@ export interface FormulaTraceRow {
   value: number | string | boolean | null;
 }
 
+export interface PricingConfig {
+  firmMarginBps: number;
+  quoteFreshnessSeconds: number;
+  defaultOrderBookDepth: number;
+  maxDepthCandidates: number;
+  maxSlippageBps: number;
+}
+
 export interface DcnScenarioResult {
   expiryPrice: number;
   side: "downside" | "upside";

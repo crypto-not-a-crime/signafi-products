@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, DeribitMarginCheck, MarketExpirySummary, MarketOption } from "@/types";
+import type { DcnCandidate, DeribitMarginCheck, MarketExpirySummary, MarketOption, PricingConfig } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 
@@ -32,16 +32,20 @@ export function AdminConsole() {
   const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(500000);
   const [firmMarginPct, setFirmMarginPct] = useState(2);
+  const [savedFirmMarginPct, setSavedFirmMarginPct] = useState(2);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
   const [marginCheck, setMarginCheck] = useState<DeribitMarginCheck | null>(null);
   const [quoteVerification, setQuoteVerification] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [marginLoading, setMarginLoading] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshHealth();
+    void loadPricingConfig();
     void loadExpiryOptions();
   }, []);
 
@@ -118,6 +122,7 @@ export function AdminConsole() {
     setAudit(null);
     setMarginCheck(null);
     setQuoteVerification(null);
+    setConfigMessage(null);
     setRefreshError(null);
     setExpiryPrice(null);
   }, [instrumentName, investmentUsdt, firmMarginPct]);
@@ -133,6 +138,17 @@ export function AdminConsole() {
   async function refreshHealth() {
     const response = await fetch("/api/admin/market-health", { cache: "no-store" });
     setHealth(await response.json());
+  }
+
+  async function loadPricingConfig() {
+    const response = await fetch("/api/admin/pricing-config", { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = (await response.json()) as { pricingConfig?: PricingConfig };
+    const firmMarginBps = payload.pricingConfig?.firmMarginBps;
+    if (typeof firmMarginBps !== "number" || !Number.isFinite(firmMarginBps)) return;
+    const firmMargin = firmMarginBps / 100;
+    setFirmMarginPct(firmMargin);
+    setSavedFirmMarginPct(firmMargin);
   }
 
   async function loadExpiryOptions() {
@@ -162,6 +178,32 @@ export function AdminConsole() {
   }
 
   const firmMarginBps = Math.max(0, Math.round(firmMarginPct * 100));
+  const savedFirmMarginBps = Math.max(0, Math.round(savedFirmMarginPct * 100));
+  const firmMarginChanged = firmMarginBps !== savedFirmMarginBps;
+
+  async function savePricingConfig() {
+    setSavingConfig(true);
+    setConfigMessage(null);
+    try {
+      const response = await fetch("/api/admin/pricing-config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ firmMarginBps })
+      });
+      const payload = (await response.json()) as { pricingConfig?: PricingConfig; error?: string };
+      if (!response.ok) {
+        setConfigMessage(payload.error ?? `Save failed with HTTP ${response.status}`);
+        return;
+      }
+      const nextMarginBps = payload.pricingConfig?.firmMarginBps ?? firmMarginBps;
+      const nextMarginPct = nextMarginBps / 100;
+      setFirmMarginPct(nextMarginPct);
+      setSavedFirmMarginPct(nextMarginPct);
+      setConfigMessage("Firm margin saved.");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
 
   async function refreshMarket() {
     setSyncingMarket(true);
@@ -385,6 +427,10 @@ export function AdminConsole() {
               </label>
             </div>
             <div className="soft-row" style={{ marginTop: 12 }}>
+              <span>Saved firm margin</span>
+              <strong className="mono">{savedFirmMarginPct.toFixed(1)}% p.a.</strong>
+            </div>
+            <div className="soft-row" style={{ marginTop: 12 }}>
               <span>Selected instrument</span>
               <strong className="mono">{optionsLoading ? "Loading..." : instrumentName || "-"}</strong>
             </div>
@@ -397,28 +443,40 @@ export function AdminConsole() {
               <button
                 className="admin-button"
                 onClick={runAudit}
-                disabled={busy || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || savingConfig || selectedOptionType !== "put" || !instrumentName}
               >
                 Verify calculations
               </button>
               <button
                 className="btn-ghost"
+                onClick={() => void savePricingConfig()}
+                disabled={busy || savingConfig || !firmMarginChanged}
+              >
+                {savingConfig ? "Saving..." : "Save margin"}
+              </button>
+              <button
+                className="btn-ghost"
                 onClick={checkMargins}
-                disabled={busy || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || savingConfig || selectedOptionType !== "put" || !instrumentName}
               >
                 {marginLoading ? "Checking..." : "Check margins"}
               </button>
-              <button className="btn-ghost" onClick={verifyQuote} disabled={busy || !instrumentName}>
+              <button className="btn-ghost" onClick={verifyQuote} disabled={busy || savingConfig || !instrumentName}>
                 Verify Deribit quote
               </button>
               <button
                 className="btn-ghost"
                 onClick={() => void refreshMarket()}
-                disabled={busy || optionsLoading || syncingMarket || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || savingConfig || optionsLoading || syncingMarket || selectedOptionType !== "put" || !instrumentName}
               >
                 {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
             </div>
+            {configMessage ? (
+              <p className="card-copy" style={{ marginTop: 10 }}>
+                {configMessage}
+              </p>
+            ) : null}
             {refreshError ? (
               <p className="card-copy" style={{ marginTop: 10 }}>
                 {refreshError}

@@ -54,7 +54,6 @@ export function LeversPage() {
           runwayDays,
           strikePreference,
           selectorMode,
-          firmMarginBps: 200,
           maxSlippageBps: 500,
           quoteFreshnessSeconds: 10,
           orderBookDepth: 100
@@ -100,7 +99,7 @@ export function LeversPage() {
             <div className="lever-panel">
               <h2 className="lever-title">Set your 3 levers</h2>
               <p className="card-copy">
-                The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's 2.0% p.a.
+                The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured
                 firm margin.
               </p>
 

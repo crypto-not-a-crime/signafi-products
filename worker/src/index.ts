@@ -5,6 +5,7 @@ import {
   type JoinedPutRow,
   insertAudit,
   insertOrderBookSnapshot,
+  updatePricingConfig,
   upsertBookSummaries,
   upsertInstruments,
   upsertTicker
@@ -40,6 +41,8 @@ const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, adm
   ["POST", /^\/api\/admin\/dcn-audit$/, handleDcnAudit, true],
   ["POST", /^\/api\/admin\/verify-quote$/, handleVerifyQuote, true],
   ["POST", /^\/api\/admin\/deribit-margins$/, handleDeribitMargins, true],
+  ["GET", /^\/api\/admin\/pricing-config$/, handleGetPricingConfig, true],
+  ["POST", /^\/api\/admin\/pricing-config$/, handleUpdatePricingConfig, true],
   ["POST", /^\/api\/admin\/refresh-selected-market$/, handleRefreshSelectedMarket, true],
   ["POST", /^\/api\/admin\/sync-market-data$/, handleSyncMarketData, true],
   ["GET", /^\/api\/admin\/stream-status$/, handleStreamStatus, true],
@@ -340,6 +343,27 @@ async function handleDeribitMargins(request: Request, env: Env): Promise<Respons
   });
 }
 
+async function handleGetPricingConfig(_request: Request, env: Env): Promise<Response> {
+  return json({ pricingConfig: await getPricingConfig(env.DB) });
+}
+
+async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Response> {
+  const payload = await request.json<{ firmMarginBps?: number }>();
+  if (!isNonNegativeFinite(payload.firmMarginBps)) {
+    return json({ error: "firmMarginBps must be a non-negative number" }, 400);
+  }
+  if (payload.firmMarginBps > 10_000) {
+    return json({ error: "firmMarginBps must be less than or equal to 10000" }, 400);
+  }
+
+  const pricingConfig = await updatePricingConfig(
+    env.DB,
+    { firmMarginBps: Math.round(payload.firmMarginBps) },
+    Date.now()
+  );
+  return json({ pricingConfig });
+}
+
 async function handleRefreshSelectedMarket(request: Request, env: Env): Promise<Response> {
   const payload = await request.json<DcnPricingRequest & { instrumentName?: string }>();
   if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
@@ -568,6 +592,10 @@ function isAuthorized(request: Request, env: Env): boolean {
 
 function isPositiveFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function json(data: unknown, status = 200): Response {
