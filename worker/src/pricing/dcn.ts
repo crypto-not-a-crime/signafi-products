@@ -144,10 +144,10 @@ export interface DcnRecommendation {
 
 export function roundContracts(rawContracts: number, minTradeAmount = 0.1): number {
   if (!Number.isFinite(rawContracts) || rawContracts <= 0) {
-    return minTradeAmount;
+    return 0;
   }
-  const rounded = Math.round(rawContracts * 10) / 10;
-  return Math.max(rounded, minTradeAmount);
+  const roundedDown = Math.floor(rawContracts * 10) / 10;
+  return Math.max(roundedDown, minTradeAmount);
 }
 
 export function roundYieldToOneDecimalPercent(yieldDecimal: number): number {
@@ -353,7 +353,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const investmentUsdt = request.investmentUsdt;
   const spotPrice = market.underlyingPrice ?? 0;
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
-  const requiredContracts = roundContracts(investmentUsdt / market.strike, market.minTradeAmount ?? 0.1);
+  const requiredContracts = market.strike > 0 ? roundContracts(investmentUsdt / market.strike, market.minTradeAmount ?? 0.1) : 0;
   const depth = modelSellIntoBidDepth(market.bids, requiredContracts, market.bidPrice, market.bidAmount);
   const effectivePutBidPrice = depth.effectivePutBidPrice;
   const quoteTime = market.deribitTimestamp ?? market.ingestedAt ?? null;
@@ -380,7 +380,9 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const scenarioUpsidePrice = request.scenarioUpsidePrice ?? spotPrice;
   const scenarioDownsidePrice = request.scenarioDownsidePrice ?? market.strike * (2 / 3);
   const clientPrincipalInterestBtc =
-    clientYield === null ? null : (investmentUsdt / market.strike) * (1 + clientYield * (dayCount / 365));
+    clientYield === null || market.strike <= 0
+      ? null
+      : (investmentUsdt / market.strike) * (1 + clientYield * (dayCount / 365));
 
   const baseScenarioInput = {
     investmentUsdt,

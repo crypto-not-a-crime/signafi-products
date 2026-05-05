@@ -22,15 +22,15 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
     spotPrice: 78500,
     strike: 75000,
     dayCount: 92,
-    requiredContracts: 6.7,
+    requiredContracts: 6.6,
     effectivePutBidPrice: 0.0641,
     grossReferenceYield,
     firmMarginBps: 200,
     clientYield,
     clientInterestUsdt: 500000 * (clientYield * (92 / 365)),
-    tradingFeesBtc: -0.00201,
-    netOptionProceedsBtc: 0.42746,
-    netOptionProceedsUsdt: 33555.61,
+    tradingFeesBtc: -0.00198,
+    netOptionProceedsBtc: 0.42108,
+    netOptionProceedsUsdt: 33054.78,
     premiumCoversInterest: true,
     selectedScenario: undefined,
     downsideScenario: undefined,
@@ -65,16 +65,16 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
       { cell: "Selected Payout", label: "Client payout", formula: "scenario analysis", value: 522000 }
     ],
     depth: {
-      requiredContracts: 6.7,
-      filledContracts: 6.7,
-      grossProceedsBtc: 0.42947,
+      requiredContracts: 6.6,
+      filledContracts: 6.6,
+      grossProceedsBtc: 0.42306,
       effectivePutBidPrice: 0.0641,
       bestBidPrice: 0.0641,
-      bestBidAmount: 6.7,
+      bestBidAmount: 6.6,
       sufficientDepth: true,
       remainingContracts: 0,
       slippagePct: 0,
-      fills: [{ price: 0.0641, amount: 6.7, notionalBtc: 0.42947 }]
+      fills: [{ price: 0.0641, amount: 6.6, notionalBtc: 0.42306 }]
     }
   };
   const candidate = { ...base, ...overrides };
@@ -97,7 +97,7 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
       : "closest";
   const best = mockDcnCandidate({
     investmentUsdt,
-    requiredContracts: Math.round((investmentUsdt / 75000) * 10) / 10
+    requiredContracts: Math.floor((investmentUsdt / 75000) * 10) / 10
   });
   const alternativeGrossYield = (0.044 / 92) * 365;
   const alternativeClientYield = roundYieldToOneDecimalPercent(alternativeGrossYield - 0.02);

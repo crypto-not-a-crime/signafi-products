@@ -56,8 +56,11 @@ describe("DCN sell-put pricing", () => {
     expect(dayCountFromExpiry(sameDateExpiry, nowIntraday)).toBe(0);
   });
 
-  it("rounds contracts like the workbook model", () => {
+  it("rounds down contracts like the workbook model", () => {
     expect(roundContracts(1000000 / 75000, 0.1)).toBe(13.3);
+    expect(roundContracts(500000 / 69000, 0.1)).toBe(7.2);
+    expect(roundContracts(799999 / 75000, 0.1)).toBe(10.6);
+    expect(roundContracts(Number.NaN, 0.1)).toBe(0);
   });
 
   it("matches workbook-style baseline premium when effective bid equals C15", () => {
@@ -118,7 +121,7 @@ describe("DCN sell-put pricing", () => {
     const c14 = result.formulaTrace.find((row) => row.cell === "C14");
     expect(result.spotPrice).toBe(80258);
     expect(c5?.formula).toBe("Deribit BTC_USDC spot mid");
-    expect(c14?.formula).toBe("ROUND(C4/C7, 1)");
+    expect(c14?.formula).toBe("ROUNDDOWN(C4/C7, 1)");
     expect(result.requiredContracts).toBe(roundContracts(1000000 / 75000, 0.1));
   });
 
