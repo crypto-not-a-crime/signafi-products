@@ -15,8 +15,9 @@ const runwayOptions = [
 
 const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
 const strikeBufferOptions = [5, 10, 15, 20, 25, 30];
+type LeversLayoutVariant = "classic" | "rail";
 
-export function LeversPage() {
+export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant } = {}) {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [runway, setRunway] = useState("3m");
   const [targetYieldPct, setTargetYieldPct] = useState(10);
@@ -79,11 +80,250 @@ export function LeversPage() {
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const monthly = investmentUsdt * (targetYieldPct / 100) / 12;
   const displayedRunwayDays = best?.dayCount ?? runwayDays;
+  const projectedMonthlyYield = formatUsd(best?.clientInterestUsdt ? best.clientInterestUsdt / (best.dayCount / 30) : monthly);
+  const recommendationCandidates = useMemo(() => getRecommendationCandidates(best, data?.candidates), [best, data?.candidates]);
+
+  const controlsPanel = (
+    <div className="lever-panel">
+      <h2 className="lever-title">Set your 3 levers</h2>
+      <p className="card-copy">
+        The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured firm
+        margin.
+      </p>
+
+      <div className="control-block">
+        <div className="row-between">
+          <div>
+            <div className="field-label">Selector</div>
+            <strong>What should the engine solve for?</strong>
+          </div>
+        </div>
+        <div className="pill-row">
+          {[
+            ["closest", "Closest Match"],
+            ["auto_yield", "Auto Return"],
+            ["auto_runway", "Auto Runway"],
+            ["auto_strike", "Auto Strike"]
+          ].map(([id, label]) => (
+            <button
+              className={`choice-pill ${selectorMode === id ? "active" : ""}`}
+              key={id}
+              onClick={() => setSelectorMode(id as DcnSelectorMode)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="control-block">
+        <div className="row-between">
+          <div>
+            <div className="field-label">Investment</div>
+            <strong>How much are you investing?</strong>
+          </div>
+          <strong className="mono">{formatUsd(investmentUsdt)}</strong>
+        </div>
+        <input
+          type="range"
+          min={50000}
+          max={10000000}
+          step={50000}
+          value={investmentUsdt}
+          onChange={(event) => setInvestmentUsdt(Number(event.target.value))}
+        />
+        <div className="quick-btns">
+          {investmentOptions.map((amount) => (
+            <button
+              className={`quick-btn ${amount === investmentUsdt ? "active" : ""}`}
+              key={amount}
+              onClick={() => setInvestmentUsdt(amount)}
+            >
+              {amount >= 1000000 ? `$${amount / 1000000}M` : `$${amount / 1000}k`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="control-block">
+        <div className="row-between">
+          <div>
+            <div className="field-label">Lever 1 - Runway</div>
+            <strong>How long can the product run?</strong>
+          </div>
+          <strong className="mono">{runwayOptions.find((item) => item.id === runway)?.label}</strong>
+        </div>
+        <div className="pill-row">
+          {runwayOptions.map((item) => (
+            <button
+              className={`choice-pill ${runway === item.id ? "active" : ""}`}
+              key={item.id}
+              onClick={() => setRunway(item.id)}
+              disabled={selectorMode === "auto_runway"}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="control-block">
+        <div className="row-between">
+          <div>
+            <div className="field-label">Lever 2 - Returns</div>
+            <strong>What annual return are you targeting?</strong>
+          </div>
+          <strong className="mono">{targetYieldPct}% p.a.</strong>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={40}
+          step={1}
+          value={targetYieldPct}
+          onChange={(event) => setTargetYieldPct(Number(event.target.value))}
+          disabled={selectorMode === "auto_yield"}
+        />
+      </div>
+
+      <div className="control-block">
+        <div className="row-between">
+          <div>
+            <div className="field-label">Lever 3 - Strike buffer</div>
+            <strong>How far below spot should the put strike sit?</strong>
+          </div>
+          <strong className="mono">
+            {strikeBufferMode === "any" ? "Best available" : `Around ${strikeBufferPct}% below`}
+          </strong>
+        </div>
+        <input
+          type="range"
+          min={5}
+          max={30}
+          step={1}
+          value={strikeBufferPct}
+          onChange={(event) => {
+            setStrikeBufferMode("target");
+            setStrikeBufferPct(Number(event.target.value));
+          }}
+          disabled={selectorMode === "auto_strike" || strikeBufferMode === "any"}
+        />
+        <div className="pill-row">
+          {strikeBufferOptions.map((pct) => (
+            <button
+              className={`choice-pill ${strikeBufferMode === "target" && strikeBufferPct === pct ? "active" : ""}`}
+              key={pct}
+              onClick={() => {
+                setStrikeBufferMode("target");
+                setStrikeBufferPct(pct);
+              }}
+              disabled={selectorMode === "auto_strike"}
+            >
+              {pct}%
+            </button>
+          ))}
+          <button
+            className={`choice-pill ${strikeBufferMode === "any" ? "active" : ""}`}
+            onClick={() => setStrikeBufferMode("any")}
+            disabled={selectorMode === "auto_strike"}
+          >
+            Best available
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const summaryCard = (
+    <div className="result-card">
+      <div className="sum-lbl">Your projected monthly yield</div>
+      <div className="result-figure">{projectedMonthlyYield}</div>
+      <p className="small-muted">
+        on {formatUsd(investmentUsdt)} - target {targetYieldPct}% p.a.
+      </p>
+      <div className="metric-grid">
+        <div className="metric-card">
+          <div className="sum-lbl">Client yield</div>
+          <div className="metric-value green">{formatPct(best?.clientYield, 1)}</div>
+        </div>
+        <div className="metric-card">
+          <div className="sum-lbl">Runway</div>
+          <div className="metric-value">{displayedRunwayDays} days</div>
+        </div>
+        <div className="metric-card">
+          <div className="sum-lbl">BTC spot</div>
+          <div className="metric-value">{formatUsd(best?.spotPrice)}</div>
+        </div>
+        <div className="metric-card">
+          <div className="sum-lbl">Quote status</div>
+          <div className="metric-value">{best?.checks.quoteFresh ? "Live" : "Checking"}</div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const statusCards = (
+    <>
+      {loading ? <div className="candidate-card">Refreshing Deribit depth and pricing...</div> : null}
+      {error ? (
+        <div className="candidate-card">
+          <span className="status-badge status-fail">{error}</span>
+        </div>
+      ) : null}
+      {data?.mock ? (
+        <div className="candidate-card">
+          <span className="status-badge status-warn">Local mock mode</span>
+          <p className="card-copy">Configure `WORKER_API_BASE_URL` to use Cloudflare D1 and live Deribit data.</p>
+        </div>
+      ) : null}
+
+      {data && !loading && !best ? (
+        <div className="candidate-card">
+          <span className="status-badge status-warn">No eligible match</span>
+          <p className="card-copy">
+            No live put passed the depth, freshness, below-spot strike, slippage, and profitability checks for this
+            combination.
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+
+  const guidanceCards = (
+    <>
+      {best && scenarioRange && selectedExpiryPrice !== null ? (
+        <ClientPayoutSimulator
+          candidate={best}
+          expiryPrice={selectedExpiryPrice}
+          range={scenarioRange}
+          onChange={setExpiryPrice}
+        />
+      ) : null}
+
+      {best && data?.recommendation ? <RecommendationCard recommendation={data.recommendation} candidate={best} /> : null}
+    </>
+  );
+
+  const productCards = (
+    <>
+      {best ? <CandidateCard candidate={best} best /> : null}
+      {data?.candidates?.slice(1, 3).map((candidate) => (
+        <CandidateCard candidate={candidate} key={candidate.instrumentName} />
+      ))}
+    </>
+  );
+
+  const detailCards = (
+    <>
+      {guidanceCards}
+      {productCards}
+    </>
+  );
 
   return (
     <>
       <SiteNav active="levers" />
-      <main className="levers-page">
+      <main className={`levers-page ${variant === "rail" ? "levers-page-rail" : ""}`}>
         <section className="hero" style={{ minHeight: "auto", paddingBottom: 46 }}>
           <div className="hero-inner" style={{ maxWidth: 720 }}>
             <div className="hero-tag">Yield Platform - Interactive</div>
@@ -100,221 +340,140 @@ export function LeversPage() {
         </section>
 
         <section className="page-shell">
-          <div className="levers-wrap">
-            <div className="lever-panel">
-              <h2 className="lever-title">Set your 3 levers</h2>
-              <p className="card-copy">
-                The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured
-                firm margin.
-              </p>
-
-              <div className="control-block">
-                <div className="row-between">
-                  <div>
-                    <div className="field-label">Selector</div>
-                    <strong>What should the engine solve for?</strong>
-                  </div>
-                </div>
-                <div className="pill-row">
-                  {[
-                    ["closest", "Closest Match"],
-                    ["auto_yield", "Auto Return"],
-                    ["auto_runway", "Auto Runway"],
-                    ["auto_strike", "Auto Strike"]
-                  ].map(([id, label]) => (
-                    <button
-                      className={`choice-pill ${selectorMode === id ? "active" : ""}`}
-                      key={id}
-                      onClick={() => setSelectorMode(id as DcnSelectorMode)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="control-block">
-                <div className="row-between">
-                  <div>
-                    <div className="field-label">Investment</div>
-                    <strong>How much are you investing?</strong>
-                  </div>
-                  <strong className="mono">{formatUsd(investmentUsdt)}</strong>
-                </div>
-                <input
-                  type="range"
-                  min={50000}
-                  max={10000000}
-                  step={50000}
-                  value={investmentUsdt}
-                  onChange={(event) => setInvestmentUsdt(Number(event.target.value))}
-                />
-                <div className="quick-btns">
-                  {investmentOptions.map((amount) => (
-                    <button
-                      className={`quick-btn ${amount === investmentUsdt ? "active" : ""}`}
-                      key={amount}
-                      onClick={() => setInvestmentUsdt(amount)}
-                    >
-                      {amount >= 1000000 ? `$${amount / 1000000}M` : `$${amount / 1000}k`}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="control-block">
-                <div className="row-between">
-                  <div>
-                    <div className="field-label">Lever 1 - Runway</div>
-                    <strong>How long can the product run?</strong>
-                  </div>
-                  <strong className="mono">{runwayOptions.find((item) => item.id === runway)?.label}</strong>
-                </div>
-                <div className="pill-row">
-                  {runwayOptions.map((item) => (
-                    <button
-                      className={`choice-pill ${runway === item.id ? "active" : ""}`}
-                      key={item.id}
-                      onClick={() => setRunway(item.id)}
-                      disabled={selectorMode === "auto_runway"}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="control-block">
-                <div className="row-between">
-                  <div>
-                    <div className="field-label">Lever 2 - Returns</div>
-                    <strong>What annual return are you targeting?</strong>
-                  </div>
-                  <strong className="mono">{targetYieldPct}% p.a.</strong>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={40}
-                  step={1}
-                  value={targetYieldPct}
-                  onChange={(event) => setTargetYieldPct(Number(event.target.value))}
-                  disabled={selectorMode === "auto_yield"}
+          {variant === "rail" ? (
+            <>
+              <div className="levers-rail-wrap">
+                {controlsPanel}
+                <RecommendationRail
+                  candidates={recommendationCandidates}
+                  hasData={Boolean(data)}
+                  loading={loading}
+                  error={error}
+                  mock={Boolean(data?.mock)}
                 />
               </div>
-
-              <div className="control-block">
-                <div className="row-between">
-                  <div>
-                    <div className="field-label">Lever 3 - Strike buffer</div>
-                    <strong>How far below spot should the put strike sit?</strong>
-                  </div>
-                  <strong className="mono">
-                    {strikeBufferMode === "any" ? "Best available" : `Around ${strikeBufferPct}% below`}
-                  </strong>
-                </div>
-                <input
-                  type="range"
-                  min={5}
-                  max={30}
-                  step={1}
-                  value={strikeBufferPct}
-                  onChange={(event) => {
-                    setStrikeBufferMode("target");
-                    setStrikeBufferPct(Number(event.target.value));
-                  }}
-                  disabled={selectorMode === "auto_strike" || strikeBufferMode === "any"}
-                />
-                <div className="pill-row">
-                  {strikeBufferOptions.map((pct) => (
-                    <button
-                      className={`choice-pill ${strikeBufferMode === "target" && strikeBufferPct === pct ? "active" : ""}`}
-                      key={pct}
-                      onClick={() => {
-                        setStrikeBufferMode("target");
-                        setStrikeBufferPct(pct);
-                      }}
-                      disabled={selectorMode === "auto_strike"}
-                    >
-                      {pct}%
-                    </button>
-                  ))}
-                  <button
-                    className={`choice-pill ${strikeBufferMode === "any" ? "active" : ""}`}
-                    onClick={() => setStrikeBufferMode("any")}
-                    disabled={selectorMode === "auto_strike"}
-                  >
-                    Best available
-                  </button>
-                </div>
+              <div className="rail-detail-grid">
+                <aside className="result-panel rail-summary-panel">
+                  {summaryCard}
+                  {statusCards}
+                </aside>
+                <section className="rail-detail-panel" aria-label="Product details">
+                  {guidanceCards}
+                </section>
               </div>
+            </>
+          ) : (
+            <div className="levers-wrap">
+              {controlsPanel}
+              <aside className="result-panel">
+                {summaryCard}
+                {statusCards}
+                {detailCards}
+              </aside>
             </div>
-
-            <aside className="result-panel">
-              <div className="result-card">
-                <div className="sum-lbl">Your projected monthly yield</div>
-                <div className="result-figure">{formatUsd(best?.clientInterestUsdt ? best.clientInterestUsdt / (best.dayCount / 30) : monthly)}</div>
-                <p className="small-muted">
-                  on {formatUsd(investmentUsdt)} - target {targetYieldPct}% p.a.
-                </p>
-                <div className="metric-grid">
-                  <div className="metric-card">
-                    <div className="sum-lbl">Client yield</div>
-                    <div className="metric-value green">{formatPct(best?.clientYield, 1)}</div>
-                  </div>
-                  <div className="metric-card">
-                    <div className="sum-lbl">Runway</div>
-                    <div className="metric-value">{displayedRunwayDays} days</div>
-                  </div>
-                  <div className="metric-card">
-                    <div className="sum-lbl">BTC spot</div>
-                    <div className="metric-value">{formatUsd(best?.spotPrice)}</div>
-                  </div>
-                  <div className="metric-card">
-                    <div className="sum-lbl">Quote status</div>
-                    <div className="metric-value">{best?.checks.quoteFresh ? "Live" : "Checking"}</div>
-                  </div>
-                </div>
-              </div>
-
-              {loading ? <div className="candidate-card">Refreshing Deribit depth and pricing...</div> : null}
-              {error ? <div className="candidate-card"><span className="status-badge status-fail">{error}</span></div> : null}
-              {data?.mock ? (
-                <div className="candidate-card">
-                  <span className="status-badge status-warn">Local mock mode</span>
-                  <p className="card-copy">Configure `WORKER_API_BASE_URL` to use Cloudflare D1 and live Deribit data.</p>
-                </div>
-              ) : null}
-
-              {data && !loading && !best ? (
-                <div className="candidate-card">
-                  <span className="status-badge status-warn">No eligible match</span>
-                  <p className="card-copy">
-                    No live put passed the depth, freshness, below-spot strike, slippage, and profitability checks for
-                    this combination.
-                  </p>
-                </div>
-              ) : null}
-
-              {best && scenarioRange && selectedExpiryPrice !== null ? (
-                <ClientPayoutSimulator
-                  candidate={best}
-                  expiryPrice={selectedExpiryPrice}
-                  range={scenarioRange}
-                  onChange={setExpiryPrice}
-                />
-              ) : null}
-
-              {best && data?.recommendation ? <RecommendationCard recommendation={data.recommendation} candidate={best} /> : null}
-              {best ? <CandidateCard candidate={best} best /> : null}
-              {data?.candidates?.slice(1, 3).map((candidate) => (
-                <CandidateCard candidate={candidate} key={candidate.instrumentName} />
-              ))}
-            </aside>
-          </div>
+          )}
         </section>
       </main>
     </>
+  );
+}
+
+function getRecommendationCandidates(best: DcnCandidate | null, candidates: DcnCandidate[] | undefined) {
+  const seen = new Set<string>();
+  return [best, ...(candidates ?? [])].filter((candidate): candidate is DcnCandidate => {
+    if (!candidate || seen.has(candidate.instrumentName)) return false;
+    seen.add(candidate.instrumentName);
+    return true;
+  }).slice(0, 3);
+}
+
+function RecommendationRail({
+  candidates,
+  hasData,
+  loading,
+  error,
+  mock
+}: {
+  candidates: DcnCandidate[];
+  hasData: boolean;
+  loading: boolean;
+  error: string | null;
+  mock: boolean;
+}) {
+  const statusLabel = !hasData ? "Checking" : mock ? "Mock" : "Live";
+  const statusClassName = !hasData || mock ? "status-warn" : "status-live";
+
+  return (
+    <aside className="recommendation-rail" aria-label="Top product recommendations">
+      <div className="rail-header">
+        <div>
+          <div className="pc-label">Top matches</div>
+          <h2 className="rail-title">Product recommendations</h2>
+        </div>
+        <span className={`status-badge ${statusClassName}`}>{statusLabel}</span>
+      </div>
+      <p className="card-copy rail-copy">The best fit stays in view while you adjust the levers.</p>
+      {loading ? <div className="rail-state">Refreshing Deribit depth and pricing...</div> : null}
+      {error ? <div className="rail-state rail-error">{error}</div> : null}
+      {!hasData && !loading && !error ? <div className="rail-state">Calculating recommendations...</div> : null}
+      {hasData && !loading && candidates.length === 0 ? (
+        <div className="rail-state">No eligible product passed the current checks.</div>
+      ) : null}
+      <div className="rail-list">
+        {candidates.map((candidate, index) => (
+          <RecommendationRailCard
+            candidate={candidate}
+            best={index === 0}
+            key={candidate.instrumentName}
+          />
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function RecommendationRailCard({
+  candidate,
+  best = false
+}: {
+  candidate: DcnCandidate;
+  best?: boolean;
+}) {
+  const terms = getInstrumentTerms(candidate);
+  const strikeDistance = formatStrikeDistanceFromSpot(candidate);
+  const expiryDistance = formatExpiryDistance(candidate.dayCount);
+
+  return (
+    <article className={`recommendation-card ${best ? "best" : ""}`}>
+      <div className="recommendation-card-top">
+        <span className={`status-badge ${best ? "status-live" : "status-warn"}`}>
+          {best ? "Best match" : "Alternative"}
+        </span>
+      </div>
+      <h3 className="recommendation-name">
+        {terms.underlying} {terms.optionType} Dual Currency Note
+      </h3>
+      <div className="recommendation-yield-row">
+        <span>Yield</span>
+        <strong>{formatPct(candidate.clientYield, 1)}</strong>
+      </div>
+      <dl className="recommendation-terms">
+        <div>
+          <dt>Expiry</dt>
+          <dd>
+            {terms.expiryDate}
+            <span>{expiryDistance}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Strike</dt>
+          <dd>
+            {formatUsd(candidate.strike)}
+            <span>{strikeDistance}</span>
+          </dd>
+        </div>
+      </dl>
+    </article>
   );
 }
 

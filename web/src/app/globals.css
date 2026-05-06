@@ -741,6 +741,171 @@ input:disabled {
   margin-top: 3px;
 }
 
+.levers-page-rail .page-shell {
+  max-width: 1340px;
+}
+
+.levers-rail-wrap {
+  align-items: start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) 390px;
+}
+
+.recommendation-rail {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+  position: sticky;
+  top: 88px;
+}
+
+.rail-header,
+.recommendation-card-top,
+.recommendation-yield-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.rail-title {
+  color: var(--navy);
+  font-family: var(--font-dm-serif), serif;
+  font-size: 25px;
+  font-weight: 400;
+  line-height: 1.1;
+  margin: 4px 0 0;
+}
+
+.rail-copy {
+  margin: 12px 0 0;
+}
+
+.rail-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.rail-state {
+  background: var(--off-white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 14px;
+  padding: 14px;
+}
+
+.rail-error {
+  background: var(--red-bg);
+  border-color: rgba(229, 57, 53, 0.2);
+  color: var(--red);
+}
+
+.recommendation-card {
+  background: var(--off-white);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 15px;
+}
+
+.recommendation-card.best {
+  background: var(--white);
+  border-color: var(--navy);
+  border-width: 1.5px;
+}
+
+.recommendation-name {
+  color: var(--navy);
+  font-size: 15px;
+  line-height: 1.25;
+  margin: 12px 0;
+}
+
+.recommendation-yield-row {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 11px 12px;
+}
+
+.recommendation-card.best .recommendation-yield-row {
+  background: var(--green-bg);
+  border-color: rgba(0, 179, 126, 0.2);
+}
+
+.recommendation-yield-row span {
+  color: var(--muted);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.recommendation-yield-row strong {
+  color: var(--green);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 18px;
+}
+
+.recommendation-terms {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.recommendation-terms div {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.recommendation-terms dt {
+  color: var(--muted);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.recommendation-terms dd {
+  color: var(--navy);
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+  text-align: right;
+}
+
+.recommendation-terms dd span {
+  color: var(--muted);
+  display: block;
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  font-weight: 500;
+  margin-top: 3px;
+}
+
+.rail-detail-grid {
+  align-items: start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(320px, 0.75fr) minmax(0, 1.25fr);
+  margin-top: 24px;
+}
+
+.rail-detail-panel .candidate-card:first-child {
+  margin-top: 0;
+}
+
+.rail-summary-panel {
+  position: sticky;
+  top: 88px;
+}
+
 .admin-page {
   background: #f4f6ff;
   min-height: 100vh;
@@ -854,8 +1019,15 @@ input:disabled {
 
   .hero,
   .levers-wrap,
+  .levers-rail-wrap,
+  .rail-detail-grid,
   .audit-grid {
     grid-template-columns: 1fr;
+  }
+
+  .recommendation-rail,
+  .rail-summary-panel {
+    position: static;
   }
 
   .hero {

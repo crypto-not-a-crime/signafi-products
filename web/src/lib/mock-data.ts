@@ -101,6 +101,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
   });
   const alternativeGrossYield = (0.044 / 92) * 365;
   const alternativeClientYield = roundYieldToOneDecimalPercent(alternativeGrossYield - 0.02);
+  const thirdGrossYield = (0.035 / 150) * 365;
+  const thirdClientYield = roundYieldToOneDecimalPercent(thirdGrossYield - 0.02);
   return {
     generatedAt: Date.now(),
     input,
@@ -114,6 +116,17 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
         grossReferenceYield: alternativeGrossYield,
         upsideProfitUsdt: 9700,
         downsideProfitUsdt: 8400
+      }),
+      mockDcnCandidate({
+        instrumentName: "BTC-25SEP26-65000-P",
+        strike: 65000,
+        dayCount: 150,
+        effectivePutBidPrice: 0.035,
+        clientYield: thirdClientYield,
+        grossReferenceYield: thirdGrossYield,
+        clientInterestUsdt: investmentUsdt * (thirdClientYield * (150 / 365)),
+        upsideProfitUsdt: 7200,
+        downsideProfitUsdt: 6900
       })
     ],
     bestCandidate: best,
