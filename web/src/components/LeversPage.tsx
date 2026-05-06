@@ -25,11 +25,21 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
   const [strikeBufferPct, setStrikeBufferPct] = useState(5);
   const [selectorMode, setSelectorMode] = useState<DcnSelectorMode>("auto_yield");
   const [data, setData] = useState<DcnPricingResponse | null>(null);
+  const [selectedInstrumentName, setSelectedInstrumentName] = useState<string | null>(null);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const runwayDays = useMemo(() => runwayOptions.find((item) => item.id === runway)?.days ?? 92, [runway]);
+  const best = data?.bestCandidate ?? null;
+  const allCandidates = useMemo(() => getUniqueCandidates(best, data?.candidates), [best, data?.candidates]);
+  const selectedCandidate = useMemo(
+    () =>
+      selectedInstrumentName
+        ? allCandidates.find((candidate) => candidate.instrumentName === selectedInstrumentName) ?? best
+        : best,
+    [allCandidates, best, selectedInstrumentName]
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -39,12 +49,24 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
   }, [investmentUsdt, runwayDays, targetYieldPct, strikeBufferMode, strikeBufferPct, selectorMode]);
 
   useEffect(() => {
-    if (!data?.bestCandidate) return;
-    const range = getScenarioRange(data.bestCandidate);
+    if (!data) {
+      setSelectedInstrumentName(null);
+      return;
+    }
+
+    setSelectedInstrumentName((current) => {
+      if (current && allCandidates.some((candidate) => candidate.instrumentName === current)) return current;
+      return data.bestCandidate?.instrumentName ?? null;
+    });
+  }, [allCandidates, data]);
+
+  useEffect(() => {
+    if (!selectedCandidate) return;
+    const range = getScenarioRange(selectedCandidate);
     setExpiryPrice((current) =>
       current === null || current < range.min || current > range.max ? range.defaultPrice : current
     );
-  }, [data?.bestCandidate?.instrumentName, data?.bestCandidate?.strike]);
+  }, [selectedCandidate?.instrumentName, selectedCandidate?.spotPrice, selectedCandidate?.strike]);
 
   async function fetchPricing() {
     setLoading(true);
@@ -75,13 +97,49 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
     }
   }
 
-  const best = data?.bestCandidate ?? null;
-  const scenarioRange = best ? getScenarioRange(best) : null;
+  const scenarioRange = selectedCandidate ? getScenarioRange(selectedCandidate) : null;
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
   const monthly = investmentUsdt * (targetYieldPct / 100) / 12;
-  const displayedRunwayDays = best?.dayCount ?? runwayDays;
-  const projectedMonthlyYield = formatUsd(best?.clientInterestUsdt ? best.clientInterestUsdt / (best.dayCount / 30) : monthly);
-  const recommendationCandidates = useMemo(() => getRecommendationCandidates(best, data?.candidates), [best, data?.candidates]);
+  const displayedRunwayDays = selectedCandidate?.dayCount ?? runwayDays;
+  const selectedMonthlyYield =
+    selectedCandidate?.clientInterestUsdt !== null &&
+    selectedCandidate?.clientInterestUsdt !== undefined &&
+    selectedCandidate.dayCount > 0
+      ? selectedCandidate.clientInterestUsdt / (selectedCandidate.dayCount / 30)
+      : monthly;
+  const projectedMonthlyYield = formatUsd(selectedMonthlyYield);
+  const recommendationCandidates = useMemo(
+    () => getRecommendationCandidates(best, data?.candidates, selectedCandidate?.instrumentName ?? selectedInstrumentName),
+    [best, data?.candidates, selectedCandidate?.instrumentName, selectedInstrumentName]
+  );
+  const selectedRecommendation = useMemo(
+    () =>
+      selectedCandidate
+        ? buildSelectedRecommendation({
+            baseRecommendation: data?.recommendation,
+            candidate: selectedCandidate,
+            bestInstrumentName: best?.instrumentName ?? null,
+            runwayDays,
+            selectorMode,
+            strikeBufferMode,
+            strikeBufferPct,
+            targetYieldPct
+          })
+        : null,
+    [
+      best?.instrumentName,
+      data?.recommendation,
+      runwayDays,
+      selectedCandidate,
+      selectorMode,
+      strikeBufferMode,
+      strikeBufferPct,
+      targetYieldPct
+    ]
+  );
+  const selectedIsAlternative = Boolean(
+    selectedCandidate && best && selectedCandidate.instrumentName !== best.instrumentName
+  );
 
   const controlsPanel = (
     <div className="lever-panel">
@@ -244,7 +302,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
       <div className="metric-grid">
         <div className="metric-card">
           <div className="sum-lbl">Client yield</div>
-          <div className="metric-value green">{formatPct(best?.clientYield, 1)}</div>
+          <div className="metric-value green">{formatPct(selectedCandidate?.clientYield, 1)}</div>
         </div>
         <div className="metric-card">
           <div className="sum-lbl">Runway</div>
@@ -252,11 +310,11 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
         </div>
         <div className="metric-card">
           <div className="sum-lbl">BTC spot</div>
-          <div className="metric-value">{formatUsd(best?.spotPrice)}</div>
+          <div className="metric-value">{formatUsd(selectedCandidate?.spotPrice)}</div>
         </div>
         <div className="metric-card">
           <div className="sum-lbl">Quote status</div>
-          <div className="metric-value">{best?.checks.quoteFresh ? "Live" : "Checking"}</div>
+          <div className="metric-value">{selectedCandidate?.checks.quoteFresh ? "Live" : "Checking"}</div>
         </div>
       </div>
     </div>
@@ -291,16 +349,22 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
 
   const guidanceCards = (
     <>
-      {best && scenarioRange && selectedExpiryPrice !== null ? (
+      {selectedCandidate && scenarioRange && selectedExpiryPrice !== null ? (
         <ClientPayoutSimulator
-          candidate={best}
+          candidate={selectedCandidate}
           expiryPrice={selectedExpiryPrice}
           range={scenarioRange}
           onChange={setExpiryPrice}
         />
       ) : null}
 
-      {best && data?.recommendation ? <RecommendationCard recommendation={data.recommendation} candidate={best} /> : null}
+      {selectedCandidate && selectedRecommendation ? (
+        <RecommendationCard
+          candidate={selectedCandidate}
+          recommendation={selectedRecommendation}
+          selectedAlternative={selectedIsAlternative}
+        />
+      ) : null}
     </>
   );
 
@@ -345,11 +409,14 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
               <div className="levers-rail-wrap">
                 {controlsPanel}
                 <RecommendationRail
+                  bestInstrumentName={best?.instrumentName ?? null}
                   candidates={recommendationCandidates}
                   hasData={Boolean(data)}
                   loading={loading}
                   error={error}
                   mock={Boolean(data?.mock)}
+                  onSelect={setSelectedInstrumentName}
+                  selectedInstrumentName={selectedCandidate?.instrumentName ?? null}
                 />
               </div>
               <div className="rail-detail-grid">
@@ -378,27 +445,43 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
   );
 }
 
-function getRecommendationCandidates(best: DcnCandidate | null, candidates: DcnCandidate[] | undefined) {
+function getUniqueCandidates(best: DcnCandidate | null, candidates: DcnCandidate[] | undefined) {
   const seen = new Set<string>();
   return [best, ...(candidates ?? [])].filter((candidate): candidate is DcnCandidate => {
     if (!candidate || seen.has(candidate.instrumentName)) return false;
     seen.add(candidate.instrumentName);
     return true;
-  }).slice(0, 3);
+  });
+}
+
+function getRecommendationCandidates(
+  best: DcnCandidate | null,
+  candidates: DcnCandidate[] | undefined,
+  selectedInstrumentName: string | null | undefined
+) {
+  return getUniqueCandidates(best, candidates).filter(
+    (candidate, index) => index < 3 || candidate.instrumentName === selectedInstrumentName
+  );
 }
 
 function RecommendationRail({
+  bestInstrumentName,
   candidates,
   hasData,
   loading,
   error,
-  mock
+  mock,
+  onSelect,
+  selectedInstrumentName
 }: {
+  bestInstrumentName: string | null;
   candidates: DcnCandidate[];
   hasData: boolean;
   loading: boolean;
   error: string | null;
   mock: boolean;
+  onSelect: (instrumentName: string) => void;
+  selectedInstrumentName: string | null;
 }) {
   const statusLabel = !hasData ? "Checking" : mock ? "Mock" : "Live";
   const statusClassName = !hasData || mock ? "status-warn" : "status-live";
@@ -420,11 +503,13 @@ function RecommendationRail({
         <div className="rail-state">No eligible product passed the current checks.</div>
       ) : null}
       <div className="rail-list">
-        {candidates.map((candidate, index) => (
+        {candidates.map((candidate) => (
           <RecommendationRailCard
+            best={candidate.instrumentName === bestInstrumentName}
             candidate={candidate}
-            best={index === 0}
             key={candidate.instrumentName}
+            onSelect={onSelect}
+            selected={candidate.instrumentName === selectedInstrumentName}
           />
         ))}
       </div>
@@ -434,21 +519,32 @@ function RecommendationRail({
 
 function RecommendationRailCard({
   candidate,
-  best = false
+  best = false,
+  onSelect,
+  selected
 }: {
   candidate: DcnCandidate;
   best?: boolean;
+  onSelect: (instrumentName: string) => void;
+  selected: boolean;
 }) {
   const terms = getInstrumentTerms(candidate);
   const strikeDistance = formatStrikeDistanceFromSpot(candidate);
   const expiryDistance = formatExpiryDistance(candidate.dayCount);
 
   return (
-    <article className={`recommendation-card ${best ? "best" : ""}`}>
+    <button
+      aria-label={`Select ${terms.underlying} ${terms.optionType} Dual Currency Note expiring ${terms.expiryDate}`}
+      aria-pressed={selected}
+      className={`recommendation-card ${best ? "best" : ""} ${selected ? "selected" : ""}`}
+      onClick={() => onSelect(candidate.instrumentName)}
+      type="button"
+    >
       <div className="recommendation-card-top">
         <span className={`status-badge ${best ? "status-live" : "status-warn"}`}>
           {best ? "Best match" : "Alternative"}
         </span>
+        {selected ? <span className="status-badge status-live">Selected</span> : null}
       </div>
       <h3 className="recommendation-name">
         {terms.underlying} {terms.optionType} Dual Currency Note
@@ -473,7 +569,7 @@ function RecommendationRailCard({
           </dd>
         </div>
       </dl>
-    </article>
+    </button>
   );
 }
 
@@ -537,10 +633,12 @@ function ClientPayoutSimulator({
 
 function RecommendationCard({
   recommendation,
-  candidate
+  candidate,
+  selectedAlternative = false
 }: {
   recommendation: DcnRecommendation;
   candidate: DcnCandidate;
+  selectedAlternative?: boolean;
 }) {
   const gap =
     recommendation.targetYieldGapBps === null
@@ -558,7 +656,13 @@ function RecommendationCard({
       <div className="row-between">
         <div>
           <div className="pc-label">Recommendation</div>
-          <h3 className="card-title">{recommendation.recommendedLever === "none" ? "Closest product" : `Recommended ${recommendation.recommendedLever}`}</h3>
+          <h3 className="card-title">
+            {selectedAlternative
+              ? "Selected product"
+              : recommendation.recommendedLever === "none"
+                ? "Closest product"
+                : `Recommended ${recommendation.recommendedLever}`}
+          </h3>
         </div>
         <span className="status-badge status-live">{recommendationValue}</span>
       </div>
@@ -571,6 +675,55 @@ function RecommendationCard({
       </div>
     </div>
   );
+}
+
+function buildSelectedRecommendation({
+  baseRecommendation,
+  candidate,
+  bestInstrumentName,
+  runwayDays,
+  selectorMode,
+  strikeBufferMode,
+  strikeBufferPct,
+  targetYieldPct
+}: {
+  baseRecommendation: DcnRecommendation | undefined;
+  candidate: DcnCandidate;
+  bestInstrumentName: string | null;
+  runwayDays: number;
+  selectorMode: DcnSelectorMode;
+  strikeBufferMode: "target" | "any";
+  strikeBufferPct: number;
+  targetYieldPct: number;
+}): DcnRecommendation {
+  if (candidate.instrumentName === bestInstrumentName && baseRecommendation) return baseRecommendation;
+
+  const targetYield = targetYieldPct / 100;
+  const targetYieldGapBps = candidate.clientYield === null ? null : (candidate.clientYield - targetYield) * 10000;
+  const runwayGapDays = Number.isFinite(candidate.dayCount) ? Math.abs(candidate.dayCount - runwayDays) : null;
+  const preferredMoneyness = strikeBufferMode === "target" ? 1 - strikeBufferPct / 100 : null;
+  const strikeMoneyness =
+    candidate.spotPrice > 0 && Number.isFinite(candidate.strike) ? candidate.strike / candidate.spotPrice : null;
+  const strikeMoneynessGapBps =
+    preferredMoneyness === null || strikeMoneyness === null
+      ? null
+      : Math.abs(strikeMoneyness - preferredMoneyness) * 10000;
+
+  return {
+    selectorMode,
+    recommendedLever: getRecommendedLever(selectorMode),
+    reason: "This selected product is compared against your current levers.",
+    targetYieldGapBps,
+    runwayGapDays,
+    strikeMoneynessGapBps
+  };
+}
+
+function getRecommendedLever(selectorMode: DcnSelectorMode): DcnRecommendation["recommendedLever"] {
+  if (selectorMode === "auto_yield") return "yield";
+  if (selectorMode === "auto_runway") return "runway";
+  if (selectorMode === "auto_strike") return "strike";
+  return "none";
 }
 
 function formatRecommendationValue(recommendation: DcnRecommendation, candidate: DcnCandidate) {

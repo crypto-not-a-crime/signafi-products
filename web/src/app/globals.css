@@ -766,7 +766,12 @@ input:disabled {
 .recommendation-yield-row {
   align-items: center;
   display: flex;
+  gap: 8px;
   justify-content: space-between;
+}
+
+.recommendation-card-top .status-badge {
+  flex-shrink: 0;
 }
 
 .rail-title {
@@ -806,16 +811,46 @@ input:disabled {
 }
 
 .recommendation-card {
+  appearance: none;
   background: var(--off-white);
   border: 1px solid var(--border);
   border-radius: 14px;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
   padding: 15px;
+  text-align: left;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+  width: 100%;
 }
 
 .recommendation-card.best {
   background: var(--white);
   border-color: var(--navy);
   border-width: 1.5px;
+}
+
+.recommendation-card:hover,
+.recommendation-card:focus-visible {
+  border-color: var(--navy);
+  box-shadow: 0 10px 28px rgba(16, 35, 60, 0.1);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.recommendation-card.selected {
+  background: var(--white);
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(0, 179, 126, 0.13);
+}
+
+.recommendation-card.selected .recommendation-yield-row {
+  background: var(--green-bg);
+  border-color: rgba(0, 179, 126, 0.22);
 }
 
 .recommendation-name {
