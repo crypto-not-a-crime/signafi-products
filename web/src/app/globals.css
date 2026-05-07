@@ -974,6 +974,32 @@ input:disabled {
   padding: 22px;
 }
 
+.admin-tabs {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 24px;
+  padding: 4px;
+}
+
+.admin-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 11px 18px;
+}
+
+.admin-tabs button.active {
+  background: var(--navy);
+  color: var(--white);
+}
+
 .audit-grid {
   grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
 }
@@ -1034,6 +1060,132 @@ input:disabled {
   padding: 16px;
 }
 
+.yield-surface-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.yield-surface-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 22px;
+}
+
+.yield-surface-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.yield-metrics {
+  border-top: 1px solid var(--border);
+  padding: 16px 22px 0;
+}
+
+.yield-filter-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding: 16px 22px 0;
+}
+
+.yield-filter-head {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.yield-filter-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.yield-range-control {
+  background: var(--off-white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+}
+
+.yield-range-control strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.yield-chart-wrap {
+  min-height: 520px;
+  padding: 18px 22px 22px;
+  position: relative;
+}
+
+.yield-chart-stage {
+  background: #111442;
+  border-radius: 14px;
+  height: 520px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.yield-chart-canvas {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.yield-chart-state {
+  align-items: center;
+  background: #111442;
+  border-radius: 14px;
+  color: #d9e1ff;
+  display: flex;
+  font-size: 14px;
+  inset: 18px 22px 22px;
+  justify-content: center;
+  position: absolute;
+  z-index: 2;
+}
+
+.yield-tooltip {
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(217, 225, 255, 0.8);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(16, 18, 63, 0.22);
+  color: var(--navy);
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  max-width: 280px;
+  padding: 10px 12px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 4;
+}
+
+.yield-tooltip span {
+  color: var(--muted);
+}
+
+.yield-detail-grid {
+  margin-top: 16px;
+}
+
+.yield-error {
+  background: var(--red-bg);
+  border-top: 1px solid rgba(229, 57, 53, 0.16);
+  color: var(--red);
+  margin: 0;
+  padding: 14px 22px 18px;
+}
+
 .footer {
   border-top: 1px solid var(--border);
   color: var(--muted);
@@ -1087,6 +1239,41 @@ input:disabled {
   .amount-row,
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-tabs,
+  .yield-surface-toolbar,
+  .yield-surface-actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .admin-tabs {
+    display: flex;
+  }
+
+  .yield-chart-wrap {
+    min-height: 420px;
+    padding: 14px;
+  }
+
+  .yield-filter-head,
+  .yield-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .yield-filter-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .yield-chart-stage {
+    height: 420px;
+  }
+
+  .yield-chart-state {
+    inset: 14px;
   }
 
   .footer {

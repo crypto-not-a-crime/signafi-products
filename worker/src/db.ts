@@ -1,4 +1,5 @@
 import type { DeribitBookSummary, DeribitInstrument, DeribitOrderBook, DeribitTicker } from "./deribit";
+import type { YieldSurfaceOptionType, YieldSurfaceSourceRow } from "./pricing/yield-surface";
 
 export interface PricingConfig {
   firmMarginBps: number;
@@ -332,6 +333,47 @@ export async function getInstrumentQuote(db: D1Database, instrumentName: string)
     .bind(instrumentName)
     .first<JoinedPutRow>();
   return row ?? null;
+}
+
+export async function getYieldSurfaceRows(
+  db: D1Database,
+  optionType: YieldSurfaceOptionType,
+  nowMs: number,
+  limit: number
+): Promise<YieldSurfaceSourceRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT
+        i.instrument_name,
+        i.base_currency,
+        i.option_type,
+        i.strike,
+        i.expiration_timestamp,
+        q.bid_price,
+        q.bid_amount,
+        q.ask_price,
+        q.ask_amount,
+        q.mark_price,
+        q.last_price,
+        q.mark_iv,
+        q.open_interest,
+        q.underlying_price,
+        q.deribit_timestamp,
+        q.ingested_at
+      FROM option_instruments i
+      JOIN option_quotes_latest q ON q.instrument_name = i.instrument_name
+      WHERE i.base_currency = 'BTC'
+        AND i.option_type = ?
+        AND i.is_active = 1
+        AND i.expiration_timestamp > ?
+        AND q.bid_price IS NOT NULL
+        AND q.bid_price > 0
+      ORDER BY i.expiration_timestamp ASC, i.strike ASC
+      LIMIT ?`
+    )
+    .bind(optionType, nowMs, limit)
+    .all<YieldSurfaceSourceRow>();
+  return result.results;
 }
 
 export async function insertAudit(

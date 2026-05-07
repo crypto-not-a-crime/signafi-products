@@ -159,3 +159,58 @@ export interface MarketExpirySummary {
   expiration_timestamp: number;
   instrument_count: number;
 }
+
+export interface YieldSurfacePoint {
+  instrumentName: string;
+  optionType: "call" | "put";
+  strike: number;
+  expirationTimestamp: number;
+  expiryLabel: string;
+  daysToExpiry: number;
+  bidPrice: number;
+  bidAmount: number | null;
+  askPrice: number | null;
+  askAmount: number | null;
+  markPrice: number | null;
+  lastPrice: number | null;
+  markIv: number | null;
+  openInterest: number | null;
+  underlyingPrice: number | null;
+  deribitTimestamp: number | null;
+  ingestedAt: number | null;
+  annualizedYield: number;
+}
+
+export interface YieldSurfaceExpiry {
+  expirationTimestamp: number;
+  label: string;
+  daysToExpiry: number;
+  pointCount: number;
+}
+
+export interface YieldSurfaceResponse {
+  generatedAt: number;
+  optionType: "call" | "put";
+  source: "d1_latest" | "deribit_public" | "mock";
+  formula: {
+    label: string;
+    expression: string;
+    annualizationDays: number;
+    dayCount: string;
+  };
+  filters: {
+    minDte: number;
+    maxDte: number;
+    minStrike: number;
+    maxStrike: number;
+  };
+  latestQuoteAt: number | null;
+  latestQuoteAgeSeconds: number | null;
+  minAnnualizedYield: number | null;
+  maxAnnualizedYield: number | null;
+  strikes: number[];
+  expiries: YieldSurfaceExpiry[];
+  points: YieldSurfacePoint[];
+  mock?: boolean;
+  fallbackReason?: string;
+}

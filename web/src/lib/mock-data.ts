@@ -1,4 +1,4 @@
-import type { DcnCandidate, DcnPricingResponse } from "@/types";
+import type { DcnCandidate, DcnPricingResponse, YieldSurfaceResponse } from "@/types";
 import { calculateScenario } from "./dcn-scenario";
 
 function roundYieldToOneDecimalPercent(value: number): number {
@@ -141,4 +141,87 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
     },
     mock: true
   };
+}
+
+export function mockYieldSurface(optionType: "call" | "put" = "put"): YieldSurfaceResponse {
+  const generatedAt = Date.now();
+  const dtes = [35, 85, 140, 220];
+  const strikes = [62000, 68000, 73000, 78000, 84000, 90000, 98000];
+  const latestQuoteAt = generatedAt - 4000;
+  const points = dtes.flatMap((daysToExpiry, expiryIndex) => {
+    const expirationTimestamp = expiryTimestampFromDte(generatedAt, daysToExpiry);
+    return strikes
+      .filter((strike) => !(expiryIndex === 2 && strike === 62000))
+      .map((strike, strikeIndex) => {
+        const moneyness = strike / 80000;
+        const skew = optionType === "put" ? Math.max(0, 1.08 - moneyness) : Math.max(0, moneyness - 0.92);
+        const annualizedYield = 0.055 + skew * 0.18 + expiryIndex * 0.018 + strikeIndex * 0.002;
+        const bidPrice = annualizedYield * daysToExpiry / 365;
+        return {
+          instrumentName: `BTC-${formatMockExpiry(expirationTimestamp)}-${strike}-${optionType === "put" ? "P" : "C"}`,
+          optionType,
+          strike,
+          expirationTimestamp,
+          expiryLabel: formatMockExpiry(expirationTimestamp),
+          daysToExpiry,
+          bidPrice,
+          bidAmount: 8 + strikeIndex * 3,
+          askPrice: bidPrice + 0.001,
+          askAmount: 12 + strikeIndex * 2,
+          markPrice: bidPrice + 0.0005,
+          lastPrice: null,
+          markIv: 38 + expiryIndex * 3 + strikeIndex,
+          openInterest: 20 + strikeIndex * 4,
+          underlyingPrice: 80000,
+          deribitTimestamp: latestQuoteAt,
+          ingestedAt: latestQuoteAt,
+          annualizedYield
+        };
+      });
+  });
+
+  return {
+    generatedAt,
+    optionType,
+    source: "mock",
+    formula: {
+      label: "Annualized Premium Yield",
+      expression: "bidPrice / daysToExpiry * 365",
+      annualizationDays: 365,
+      dayCount: "UTC calendar days from today to expiry date"
+    },
+    filters: {
+      minDte: 1,
+      maxDte: Number.MAX_SAFE_INTEGER,
+      minStrike: 0,
+      maxStrike: Number.MAX_SAFE_INTEGER
+    },
+    latestQuoteAt,
+    latestQuoteAgeSeconds: 4,
+    minAnnualizedYield: Math.min(...points.map((point) => point.annualizedYield)),
+    maxAnnualizedYield: Math.max(...points.map((point) => point.annualizedYield)),
+    strikes,
+    expiries: dtes.map((daysToExpiry) => {
+      const expirationTimestamp = expiryTimestampFromDte(generatedAt, daysToExpiry);
+      return {
+        expirationTimestamp,
+        label: formatMockExpiry(expirationTimestamp),
+        daysToExpiry,
+        pointCount: points.filter((point) => point.expirationTimestamp === expirationTimestamp).length
+      };
+    }),
+    points,
+    mock: true
+  };
+}
+
+function expiryTimestampFromDte(nowMs: number, daysToExpiry: number): number {
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysToExpiry, 8, 0);
+}
+
+function formatMockExpiry(timestamp: number): string {
+  const date = new Date(timestamp);
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  return `${String(date.getUTCDate()).padStart(2, "0")}${months[date.getUTCMonth()]}${String(date.getUTCFullYear()).slice(-2)}`;
 }

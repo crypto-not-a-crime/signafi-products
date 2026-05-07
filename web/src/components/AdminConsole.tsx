@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { DcnCandidate, DeribitMarginCheck, MarketExpirySummary, MarketOption, PricingConfig } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
+import { AdminYieldSurface } from "@/components/AdminYieldSurface";
 
 interface Health {
   activeInstrumentCount?: number;
@@ -21,6 +22,7 @@ interface Health {
 }
 
 export function AdminConsole() {
+  const [activeTab, setActiveTab] = useState<"audit" | "yield-surface">("audit");
   const [health, setHealth] = useState<Health | null>(null);
   const [options, setOptions] = useState<MarketOption[]>([]);
   const [expirySummaries, setExpirySummaries] = useState<MarketExpirySummary[]>([]);
@@ -356,6 +358,24 @@ export function AdminConsole() {
           <Metric label="Catalog age" value={formatAge(health?.catalogSyncAgeSeconds)} tone={(health?.catalogSyncAgeSeconds ?? 0) > 180 ? "warn" : "ok"} />
         </div>
 
+        <div className="admin-tabs" role="tablist" aria-label="Admin sections">
+          <button
+            className={activeTab === "audit" ? "active" : ""}
+            onClick={() => setActiveTab("audit")}
+            type="button"
+          >
+            Pricing audit
+          </button>
+          <button
+            className={activeTab === "yield-surface" ? "active" : ""}
+            onClick={() => setActiveTab("yield-surface")}
+            type="button"
+          >
+            Yield Surface
+          </button>
+        </div>
+
+        {activeTab === "audit" ? (
         <div className="audit-grid" style={{ marginTop: 24 }}>
           <div className="admin-card">
             <h2 className="card-title">Run verification</h2>
@@ -665,6 +685,11 @@ export function AdminConsole() {
             </div>
           </div>
         </div>
+        ) : (
+          <div style={{ marginTop: 24 }}>
+            <AdminYieldSurface />
+          </div>
+        )}
       </section>
     </main>
   );

@@ -2,6 +2,7 @@ import {
   getInstrumentQuote,
   getPricingConfig,
   getPutCandidates,
+  getYieldSurfaceRows,
   type JoinedPutRow,
   insertAudit,
   insertOrderBookSnapshot,
@@ -20,6 +21,7 @@ import {
   type DcnPricingRequest,
   type PutMarketInput
 } from "./pricing/dcn";
+import { buildYieldSurface, type YieldSurfaceOptionType } from "./pricing/yield-surface";
 
 export interface Env {
   DB: D1Database;
@@ -38,6 +40,7 @@ const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, adm
   ["GET", /^\/api\/market\/options$/, handleOptions],
   ["POST", /^\/api\/products\/dcn\/sell-put\/price$/, handleSellPutPrice],
   ["GET", /^\/api\/admin\/market-health$/, handleMarketHealth, true],
+  ["GET", /^\/api\/admin\/yield-surface$/, handleYieldSurface, true],
   ["POST", /^\/api\/admin\/dcn-audit$/, handleDcnAudit, true],
   ["POST", /^\/api\/admin\/verify-quote$/, handleVerifyQuote, true],
   ["POST", /^\/api\/admin\/deribit-margins$/, handleDeribitMargins, true],
@@ -205,6 +208,45 @@ async function handleOptions(request: Request, env: Env): Promise<Response> {
     .bind(optionType, optionType, expiryTimestamp, expiryTimestamp, limit)
     .all();
   return json({ options: rows.results });
+}
+
+async function handleYieldSurface(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const rawType = url.searchParams.get("type") ?? "put";
+  if (rawType !== "put" && rawType !== "call") {
+    return json({ error: "type must be either 'put' or 'call'" }, 400);
+  }
+
+  const minDte = optionalNonNegativeParam(url, ["minDte", "min_dte"]);
+  const maxDte = optionalNonNegativeParam(url, ["maxDte", "max_dte"]);
+  const minStrike = optionalNonNegativeParam(url, ["minStrike", "min_strike"]);
+  const maxStrike = optionalNonNegativeParam(url, ["maxStrike", "max_strike"]);
+  const limitParam = optionalNonNegativeParam(url, ["limit"]);
+  if (minDte === null || maxDte === null || minStrike === null || maxStrike === null || limitParam === null) {
+    return json({ error: "yield surface filters must be non-negative numbers" }, 400);
+  }
+  if (minDte !== undefined && maxDte !== undefined && minDte > maxDte) {
+    return json({ error: "minDte must be less than or equal to maxDte" }, 400);
+  }
+  if (minStrike !== undefined && maxStrike !== undefined && minStrike > maxStrike) {
+    return json({ error: "minStrike must be less than or equal to maxStrike" }, 400);
+  }
+
+  const nowMs = Date.now();
+  const limit = Math.min(Math.max(Math.floor(limitParam ?? 5000), 1), 10000);
+  const rows = await getYieldSurfaceRows(env.DB, rawType as YieldSurfaceOptionType, nowMs, limit);
+  return json(
+    buildYieldSurface(rows, {
+      nowMs,
+      optionType: rawType as YieldSurfaceOptionType,
+      filters: {
+        minDte,
+        maxDte,
+        minStrike,
+        maxStrike
+      }
+    })
+  );
 }
 
 async function handleSellPutPrice(request: Request, env: Env): Promise<Response> {
@@ -603,6 +645,16 @@ function isPositiveFinite(value: unknown): value is number {
 
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function optionalNonNegativeParam(url: URL, names: string[]): number | undefined | null {
+  for (const name of names) {
+    const raw = url.searchParams.get(name);
+    if (raw === null || raw === "") continue;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+  return undefined;
 }
 
 function json(data: unknown, status = 200): Response {
