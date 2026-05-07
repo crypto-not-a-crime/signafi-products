@@ -1,5 +1,5 @@
-import { LeversPage } from "@/components/LeversPage";
+import { redirect } from "next/navigation";
 
-export default function ThreeLeversPage() {
-  return <LeversPage />;
+export default function ThreeLeversRedirectPage() {
+  redirect("/DCN-put");
 }

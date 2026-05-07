@@ -1,12 +1,13 @@
 import type { NextRequest } from "next/server";
-import { mockDcnCandidate } from "@/lib/mock-data";
-import { proxyToWorker } from "@/lib/server/backend";
+import { mockDcnCallCandidate, mockDcnCandidate } from "@/lib/mock-data";
+import { proxyToWorker, readJson } from "@/lib/server/backend";
 import { requireAdminApi } from "@/lib/server/admin";
 
 export async function POST(request: NextRequest) {
   const auth = await requireAdminApi();
   if (auth) return auth;
-  const candidate = mockDcnCandidate();
+  const body = (await readJson(request.clone())) as { productType?: string };
+  const candidate = body.productType === "sell_call" ? mockDcnCallCandidate() : mockDcnCandidate();
   return proxyToWorker(request, "/api/admin/refresh-selected-market", () => ({
     mock: true,
     auditId: 1,

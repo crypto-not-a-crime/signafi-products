@@ -9,7 +9,7 @@ export function Logo() {
   );
 }
 
-export function SiteNav({ active = "home" }: { active?: "home" | "levers" | "admin" }) {
+export function SiteNav({ active = "home" }: { active?: "home" | "dcn-put" | "dcn-call" | "admin" }) {
   return (
     <nav className="site-nav">
       <Logo />
@@ -17,8 +17,11 @@ export function SiteNav({ active = "home" }: { active?: "home" | "levers" | "adm
         <Link className={`nav-link ${active === "home" ? "active" : ""}`} href="/">
           Yield Platform
         </Link>
-        <Link className={`nav-link ${active === "levers" ? "active" : ""}`} href="/3-levers">
-          3 Levers
+        <Link className={`nav-link ${active === "dcn-put" ? "active" : ""}`} href="/DCN-put">
+          DCN Put
+        </Link>
+        <Link className={`nav-link ${active === "dcn-call" ? "active" : ""}`} href="/DCN-call">
+          DCN Call
         </Link>
         <Link className="nav-link" href="/#products">
           Products
@@ -27,7 +30,7 @@ export function SiteNav({ active = "home" }: { active?: "home" | "levers" | "adm
           Admin
         </Link>
       </div>
-      <Link className="nav-login" href="/3-levers">
+      <Link className="nav-login" href="/DCN-put">
         Get quote
       </Link>
     </nav>

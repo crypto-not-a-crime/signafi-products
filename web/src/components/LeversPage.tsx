@@ -14,11 +14,47 @@ const runwayOptions = [
 ];
 
 const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
+const btcInvestmentOptions = [1, 2, 5, 10, 25, 50, 100];
 const strikeBufferOptions = [5, 10, 15, 20, 25, 30];
 type LeversLayoutVariant = "classic" | "rail";
+type DcnProductType = "sell_put" | "sell_call";
 
-export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant } = {}) {
+const putCopy = {
+  navActive: "dcn-put" as const,
+  engineDescription:
+    "The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured firm margin.",
+  investmentLabel: "Investment",
+  investmentPrompt: "How much are you investing?",
+  returnPrompt: "What annual return are you targeting?",
+  strikePrompt: "How far below spot should the put strike sit?",
+  strikeSummary: (pct: number) => `Around ${pct}% below`,
+  heroBody:
+    "Choose how long your capital can run, what return you want, and how far below spot you are willing to buy BTC. The DCN engine checks Deribit depth before proposing a yield.",
+  noMatch:
+    "No live put passed the depth, freshness, below-spot strike, slippage, and profitability checks for this combination."
+};
+
+const callCopy = {
+  navActive: "dcn-call" as const,
+  engineDescription:
+    "The matching engine uses live BTC call options, depth-weighted executable bids, and the Sell Call workbook yield formula.",
+  investmentLabel: "Investment BTC",
+  investmentPrompt: "How much BTC are you investing?",
+  returnPrompt: "What annual return are you targeting?",
+  strikePrompt: "How far above spot should the call strike sit?",
+  strikeSummary: (pct: number) => `Around ${pct}% above`,
+  heroBody:
+    "Choose how long your BTC can run, what return you want, and how far above spot you are willing to sell. The DCN engine checks Deribit depth before proposing a yield.",
+  noMatch:
+    "No live call passed the depth, freshness, above-spot strike, slippage, and profitability checks for this combination."
+};
+
+export function LeversPage({
+  productType = "sell_put",
+  variant = "rail"
+}: { productType?: DcnProductType; variant?: LeversLayoutVariant } = {}) {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
+  const [investmentBtc, setInvestmentBtc] = useState(10);
   const [runway, setRunway] = useState("3m");
   const [targetYieldPct, setTargetYieldPct] = useState(10);
   const [strikeBufferMode, setStrikeBufferMode] = useState<"target" | "any">("target");
@@ -30,6 +66,8 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isCall = productType === "sell_call";
+  const copy = isCall ? callCopy : putCopy;
   const runwayDays = useMemo(() => runwayOptions.find((item) => item.id === runway)?.days ?? 92, [runway]);
   const best = data?.bestCandidate ?? null;
   const allCandidates = useMemo(() => getUniqueCandidates(best, data?.candidates), [best, data?.candidates]);
@@ -46,7 +84,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
       void fetchPricing();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [investmentUsdt, runwayDays, targetYieldPct, strikeBufferMode, strikeBufferPct, selectorMode]);
+  }, [investmentUsdt, investmentBtc, runwayDays, targetYieldPct, strikeBufferMode, strikeBufferPct, selectorMode, productType]);
 
   useEffect(() => {
     if (!data) {
@@ -73,7 +111,9 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
     setError(null);
     try {
       const pricingRequest: DcnPricingRequest = {
-        investmentUsdt,
+        productType,
+        investmentUsdt: isCall ? undefined : investmentUsdt,
+        investmentBtc: isCall ? investmentBtc : undefined,
         targetYieldBps: Math.round(targetYieldPct * 100),
         runwayDays,
         strikePreference: strikeBufferMode === "any" ? "any" : undefined,
@@ -83,7 +123,8 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
         quoteFreshnessSeconds: 10,
         orderBookDepth: 100
       };
-      const response = await fetch("/api/products/dcn/sell-put/price", {
+      const endpoint = isCall ? "/api/products/dcn/sell-call/price" : "/api/products/dcn/sell-put/price";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(pricingRequest)
@@ -99,15 +140,21 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
 
   const scenarioRange = selectedCandidate ? getScenarioRange(selectedCandidate) : null;
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
-  const monthly = investmentUsdt * (targetYieldPct / 100) / 12;
+  const monthly = isCall ? investmentBtc * (targetYieldPct / 100) / 12 : investmentUsdt * (targetYieldPct / 100) / 12;
   const displayedRunwayDays = selectedCandidate?.dayCount ?? runwayDays;
   const selectedMonthlyYield =
-    selectedCandidate?.clientInterestUsdt !== null &&
-    selectedCandidate?.clientInterestUsdt !== undefined &&
-    selectedCandidate.dayCount > 0
-      ? selectedCandidate.clientInterestUsdt / (selectedCandidate.dayCount / 30)
-      : monthly;
-  const projectedMonthlyYield = formatUsd(selectedMonthlyYield);
+    isCall
+      ? selectedCandidate?.clientInterestBtc !== null &&
+        selectedCandidate?.clientInterestBtc !== undefined &&
+        selectedCandidate.dayCount > 0
+        ? selectedCandidate.clientInterestBtc / (selectedCandidate.dayCount / 30)
+        : monthly
+      : selectedCandidate?.clientInterestUsdt !== null &&
+          selectedCandidate?.clientInterestUsdt !== undefined &&
+          selectedCandidate.dayCount > 0
+        ? selectedCandidate.clientInterestUsdt / (selectedCandidate.dayCount / 30)
+        : monthly;
+  const projectedMonthlyYield = isCall ? `${formatNumber(selectedMonthlyYield, 6)} BTC` : formatUsd(selectedMonthlyYield);
   const recommendationCandidates = useMemo(
     () => getRecommendationCandidates(best, data?.candidates, selectedCandidate?.instrumentName ?? selectedInstrumentName),
     [best, data?.candidates, selectedCandidate?.instrumentName, selectedInstrumentName]
@@ -144,10 +191,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
   const controlsPanel = (
     <div className="lever-panel">
       <h2 className="lever-title">Set your 3 levers</h2>
-      <p className="card-copy">
-        The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured firm
-        margin.
-      </p>
+      <p className="card-copy">{copy.engineDescription}</p>
 
       <div className="control-block">
         <div className="row-between">
@@ -178,26 +222,35 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
         <div className="row-between">
           <div>
             <div className="field-label">Investment</div>
-            <strong>How much are you investing?</strong>
+            <strong>{copy.investmentPrompt}</strong>
           </div>
-          <strong className="mono">{formatUsd(investmentUsdt)}</strong>
+          <strong className="mono">
+            {isCall ? `${formatNumber(investmentBtc, 2)} BTC` : formatUsd(investmentUsdt)}
+          </strong>
         </div>
         <input
           type="range"
-          min={50000}
-          max={10000000}
-          step={50000}
-          value={investmentUsdt}
-          onChange={(event) => setInvestmentUsdt(Number(event.target.value))}
+          min={isCall ? 1 : 50000}
+          max={isCall ? 100 : 10000000}
+          step={isCall ? 0.1 : 50000}
+          value={isCall ? investmentBtc : investmentUsdt}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (isCall) setInvestmentBtc(next);
+            else setInvestmentUsdt(next);
+          }}
         />
         <div className="quick-btns">
-          {investmentOptions.map((amount) => (
+          {(isCall ? btcInvestmentOptions : investmentOptions).map((amount) => (
             <button
-              className={`quick-btn ${amount === investmentUsdt ? "active" : ""}`}
+              className={`quick-btn ${amount === (isCall ? investmentBtc : investmentUsdt) ? "active" : ""}`}
               key={amount}
-              onClick={() => setInvestmentUsdt(amount)}
+              onClick={() => {
+                if (isCall) setInvestmentBtc(amount);
+                else setInvestmentUsdt(amount);
+              }}
             >
-              {amount >= 1000000 ? `$${amount / 1000000}M` : `$${amount / 1000}k`}
+              {isCall ? `${amount} BTC` : amount >= 1000000 ? `$${amount / 1000000}M` : `$${amount / 1000}k`}
             </button>
           ))}
         </div>
@@ -229,7 +282,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
         <div className="row-between">
           <div>
             <div className="field-label">Lever 2 - Returns</div>
-            <strong>What annual return are you targeting?</strong>
+            <strong>{copy.returnPrompt}</strong>
           </div>
           <strong className="mono">{targetYieldPct}% p.a.</strong>
         </div>
@@ -248,10 +301,10 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
         <div className="row-between">
           <div>
             <div className="field-label">Lever 3 - Strike buffer</div>
-            <strong>How far below spot should the put strike sit?</strong>
+            <strong>{copy.strikePrompt}</strong>
           </div>
           <strong className="mono">
-            {strikeBufferMode === "any" ? "Best available" : `Around ${strikeBufferPct}% below`}
+            {strikeBufferMode === "any" ? "Best available" : copy.strikeSummary(strikeBufferPct)}
           </strong>
         </div>
         <input
@@ -297,7 +350,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
       <div className="sum-lbl">Your projected monthly yield</div>
       <div className="result-figure">{projectedMonthlyYield}</div>
       <p className="small-muted">
-        on {formatUsd(investmentUsdt)} - target {targetYieldPct}% p.a.
+        on {isCall ? `${formatNumber(investmentBtc, 2)} BTC` : formatUsd(investmentUsdt)} - target {targetYieldPct}% p.a.
       </p>
       <div className="metric-grid">
         <div className="metric-card">
@@ -339,8 +392,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
         <div className="candidate-card">
           <span className="status-badge status-warn">No eligible match</span>
           <p className="card-copy">
-            No live put passed the depth, freshness, below-spot strike, slippage, and profitability checks for this
-            combination.
+            {copy.noMatch}
           </p>
         </div>
       ) : null}
@@ -386,7 +438,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
 
   return (
     <>
-      <SiteNav active="levers" />
+      <SiteNav active={copy.navActive} />
       <main className={`levers-page ${variant === "rail" ? "levers-page-rail" : ""}`}>
         <section className="hero" style={{ minHeight: "auto", paddingBottom: 46 }}>
           <div className="hero-inner" style={{ maxWidth: 720 }}>
@@ -397,8 +449,7 @@ export function LeversPage({ variant = "rail" }: { variant?: LeversLayoutVariant
               <em>We find the product.</em>
             </h1>
             <p className="hero-sub">
-              Choose how long your capital can run, what return you want, and how far below spot you are willing to buy
-              BTC. The DCN engine checks Deribit depth before proposing a yield.
+              {copy.heroBody}
             </p>
           </div>
         </section>
@@ -585,6 +636,7 @@ function ClientPayoutSimulator({
   onChange: (value: number) => void;
 }) {
   const scenario = calculateScenario(candidate, expiryPrice);
+  const isCall = candidate.productType === "sell_call";
   const payout =
     scenario.clientPayoutAsset === "BTC"
       ? `${formatNumber(scenario.clientPayoutAmount, 6)} BTC`
@@ -595,7 +647,7 @@ function ClientPayoutSimulator({
       <div className="row-between">
         <div>
           <div className="pc-label">Client payout simulator</div>
-          <h3 className="card-title">{scenario.side === "downside" ? "BTC delivery" : "USDT redemption"}</h3>
+          <h3 className="card-title">{scenario.clientPayoutAsset === "BTC" ? "BTC delivery" : "USDT redemption"}</h3>
         </div>
         <span className="status-badge status-live">{scenario.clientPayoutAsset}</span>
       </div>
@@ -620,12 +672,25 @@ function ClientPayoutSimulator({
       </div>
       <div className="metric-grid">
         <Metric label="Client receives" value={payout} tone="ok" />
-        <Metric label="Scenario" value={scenario.side === "downside" ? "Below strike" : "At/above strike"} />
+        <Metric
+          label="Scenario"
+          value={
+            isCall
+              ? scenario.side === "upside"
+                ? "Above strike"
+                : "At/below strike"
+              : scenario.side === "downside"
+                ? "Below strike"
+                : "At/above strike"
+          }
+        />
         <Metric label="Client yield" value={formatPct(candidate.clientYield, 1)} tone="ok" />
         <Metric label="Strike" value={formatUsd(candidate.strike)} />
       </div>
       <p className="card-copy">
-        Below strike, payout is BTC. At or above strike, payout is USDT principal plus fixed product interest.
+        {isCall
+          ? "At or below strike, payout is BTC. Above strike, payout is USDT principal plus fixed product interest."
+          : "Below strike, payout is BTC. At or above strike, payout is USDT principal plus fixed product interest."}
       </p>
     </div>
   );
@@ -701,7 +766,12 @@ function buildSelectedRecommendation({
   const targetYield = targetYieldPct / 100;
   const targetYieldGapBps = candidate.clientYield === null ? null : (candidate.clientYield - targetYield) * 10000;
   const runwayGapDays = Number.isFinite(candidate.dayCount) ? Math.abs(candidate.dayCount - runwayDays) : null;
-  const preferredMoneyness = strikeBufferMode === "target" ? 1 - strikeBufferPct / 100 : null;
+  const preferredMoneyness =
+    strikeBufferMode === "target"
+      ? candidate.productType === "sell_call"
+        ? 1 + strikeBufferPct / 100
+        : 1 - strikeBufferPct / 100
+      : null;
   const strikeMoneyness =
     candidate.spotPrice > 0 && Number.isFinite(candidate.strike) ? candidate.strike / candidate.spotPrice : null;
   const strikeMoneynessGapBps =

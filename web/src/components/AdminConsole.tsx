@@ -23,6 +23,7 @@ interface Health {
 
 export function AdminConsole() {
   const [activeTab, setActiveTab] = useState<"audit" | "yield-surface">("audit");
+  const [selectedProductType, setSelectedProductType] = useState<"sell_put" | "sell_call">("sell_put");
   const [health, setHealth] = useState<Health | null>(null);
   const [options, setOptions] = useState<MarketOption[]>([]);
   const [expirySummaries, setExpirySummaries] = useState<MarketExpirySummary[]>([]);
@@ -33,8 +34,11 @@ export function AdminConsole() {
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
+  const [investmentBtc, setInvestmentBtc] = useState(10);
   const [firmMarginPct, setFirmMarginPct] = useState(2);
   const [savedFirmMarginPct, setSavedFirmMarginPct] = useState(2);
+  const [sellCallTargetFirmProfitPct, setSellCallTargetFirmProfitPct] = useState(5);
+  const [savedSellCallTargetFirmProfitPct, setSavedSellCallTargetFirmProfitPct] = useState(5);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
   const [marginCheck, setMarginCheck] = useState<DeribitMarginCheck | null>(null);
@@ -52,17 +56,24 @@ export function AdminConsole() {
   }, []);
 
   useEffect(() => {
+    setSelectedOptionType(selectedProductType === "sell_call" ? "call" : "put");
+    setSelectedExpiry("");
+    setSelectedStrike("");
+    setOptions([]);
+  }, [selectedProductType]);
+
+  useEffect(() => {
     if (options.length === 0 || selectedExpiry) return;
     const preferred =
       options.find((option) => option.instrument_name === instrumentName) ??
-      options.find((option) => option.option_type === "put" && (option.bid_price ?? 0) > 0) ??
-      options.find((option) => option.option_type === "put") ??
+      options.find((option) => option.option_type === selectedOptionType && (option.bid_price ?? 0) > 0) ??
+      options.find((option) => option.option_type === selectedOptionType) ??
       options[0];
     if (!preferred) return;
     setSelectedOptionType(preferred.option_type);
     setSelectedExpiry(String(preferred.expiration_timestamp));
     setSelectedStrike(String(preferred.strike));
-  }, [instrumentName, options, selectedExpiry]);
+  }, [instrumentName, options, selectedExpiry, selectedOptionType]);
 
   const expiryOptions = useMemo(
     () =>
@@ -127,7 +138,7 @@ export function AdminConsole() {
     setConfigMessage(null);
     setRefreshError(null);
     setExpiryPrice(null);
-  }, [instrumentName, investmentUsdt, firmMarginPct]);
+  }, [instrumentName, investmentUsdt, investmentBtc, firmMarginPct, sellCallTargetFirmProfitPct, selectedProductType]);
 
   useEffect(() => {
     if (!audit) return;
@@ -151,6 +162,12 @@ export function AdminConsole() {
     const firmMargin = firmMarginBps / 100;
     setFirmMarginPct(firmMargin);
     setSavedFirmMarginPct(firmMargin);
+    const callTargetBps = payload.pricingConfig?.sellCallTargetFirmProfitBps;
+    if (typeof callTargetBps === "number" && Number.isFinite(callTargetBps)) {
+      const callTarget = callTargetBps / 100;
+      setSellCallTargetFirmProfitPct(callTarget);
+      setSavedSellCallTargetFirmProfitPct(callTarget);
+    }
   }
 
   async function loadExpiryOptions() {
@@ -181,7 +198,11 @@ export function AdminConsole() {
 
   const firmMarginBps = Math.max(0, Math.round(firmMarginPct * 100));
   const savedFirmMarginBps = Math.max(0, Math.round(savedFirmMarginPct * 100));
-  const firmMarginChanged = firmMarginBps !== savedFirmMarginBps;
+  const sellCallTargetFirmProfitBps = Math.max(0, Math.round(sellCallTargetFirmProfitPct * 100));
+  const savedSellCallTargetFirmProfitBps = Math.max(0, Math.round(savedSellCallTargetFirmProfitPct * 100));
+  const pricingConfigChanged =
+    firmMarginBps !== savedFirmMarginBps ||
+    sellCallTargetFirmProfitBps !== savedSellCallTargetFirmProfitBps;
 
   async function savePricingConfig() {
     setSavingConfig(true);
@@ -190,7 +211,7 @@ export function AdminConsole() {
       const response = await fetch("/api/admin/pricing-config", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ firmMarginBps })
+        body: JSON.stringify({ firmMarginBps, sellCallTargetFirmProfitBps })
       });
       const payload = (await response.json()) as { pricingConfig?: PricingConfig; error?: string };
       if (!response.ok) {
@@ -201,7 +222,11 @@ export function AdminConsole() {
       const nextMarginPct = nextMarginBps / 100;
       setFirmMarginPct(nextMarginPct);
       setSavedFirmMarginPct(nextMarginPct);
-      setConfigMessage("Firm margin saved.");
+      const nextCallTargetBps = payload.pricingConfig?.sellCallTargetFirmProfitBps ?? sellCallTargetFirmProfitBps;
+      const nextCallTargetPct = nextCallTargetBps / 100;
+      setSellCallTargetFirmProfitPct(nextCallTargetPct);
+      setSavedSellCallTargetFirmProfitPct(nextCallTargetPct);
+      setConfigMessage("Pricing configuration saved.");
     } finally {
       setSavingConfig(false);
     }
@@ -217,11 +242,14 @@ export function AdminConsole() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          productType: selectedProductType,
           instrumentName,
-          investmentUsdt,
+          investmentUsdt: selectedProductType === "sell_put" ? investmentUsdt : undefined,
+          investmentBtc: selectedProductType === "sell_call" ? investmentBtc : undefined,
           targetYieldBps: 1000,
           runwayDays: 92,
           firmMarginBps,
+          sellCallTargetFirmProfitBps,
           orderBookDepth: 100,
           scenarioExpiryPrice: expiryPrice ?? undefined
         }),
@@ -244,11 +272,14 @@ export function AdminConsole() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        productType: selectedProductType,
         instrumentName,
-        investmentUsdt,
+        investmentUsdt: selectedProductType === "sell_put" ? investmentUsdt : undefined,
+        investmentBtc: selectedProductType === "sell_call" ? investmentBtc : undefined,
         targetYieldBps: 1000,
         runwayDays: 92,
         firmMarginBps,
+        sellCallTargetFirmProfitBps,
         orderBookDepth: 100,
         scenarioExpiryPrice: expiryPrice ?? undefined
       })
@@ -275,13 +306,13 @@ export function AdminConsole() {
     try {
       const calculation = audit ?? (await requestAuditCalculation());
       const amount = calculation?.requiredContracts ?? 0;
-      const price = calculation?.effectivePutBidPrice ?? 0;
+      const price = calculation?.effectiveOptionBidPrice ?? calculation?.effectivePutBidPrice ?? 0;
       if (!calculation || amount <= 0 || price <= 0) {
         setMarginCheck({
           instrumentName,
           amount,
           price,
-          error: "Calculation audit did not produce positive C14 contracts and C15 price values."
+          error: "Calculation audit did not produce positive contract amount and option bid price values."
         });
         return;
       }
@@ -381,6 +412,18 @@ export function AdminConsole() {
             <h2 className="card-title">Run verification</h2>
             <div className="form-grid">
               <label>
+                <span className="field-label">Product</span>
+                <select
+                  className="admin-input"
+                  value={selectedProductType}
+                  onChange={(event) => setSelectedProductType(event.target.value as "sell_put" | "sell_call")}
+                  disabled={optionsLoading}
+                >
+                  <option value="sell_put">DCN Put</option>
+                  <option value="sell_call">DCN Call</option>
+                </select>
+              </label>
+              <label>
                 <span className="field-label">Expiry date</span>
                 <select
                   className="admin-input"
@@ -393,18 +436,6 @@ export function AdminConsole() {
                       {formatExpiry(expiry)}
                     </option>
                   ))}
-                </select>
-              </label>
-              <label>
-                <span className="field-label">Call / Put</span>
-                <select
-                  className="admin-input"
-                  value={selectedOptionType}
-                  onChange={(event) => setSelectedOptionType(event.target.value as "call" | "put")}
-                  disabled={optionsLoading}
-                >
-                  <option value="put">Put</option>
-                  <option value="call">Call</option>
                 </select>
               </label>
               <label>
@@ -423,61 +454,70 @@ export function AdminConsole() {
                 </select>
               </label>
               <label>
-                <span className="field-label">Investment USDT</span>
+                <span className="field-label">{selectedProductType === "sell_call" ? "Investment BTC" : "Investment USDT"}</span>
                 <input
                   className="admin-input"
                   type="number"
-                  value={investmentUsdt}
-                  onChange={(event) => setInvestmentUsdt(Number(event.target.value))}
+                  min={0}
+                  step={selectedProductType === "sell_call" ? 0.1 : 1000}
+                  value={selectedProductType === "sell_call" ? investmentBtc : investmentUsdt}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (selectedProductType === "sell_call") setInvestmentBtc(next);
+                    else setInvestmentUsdt(next);
+                  }}
                 />
               </label>
               <label>
-                <span className="field-label">Firm margin % p.a.</span>
+                <span className="field-label">
+                  {selectedProductType === "sell_call" ? "Call target firm profit % p.a." : "Firm margin % p.a."}
+                </span>
                 <input
                   className="admin-input"
                   type="number"
                   min={0}
                   step={0.1}
-                  value={firmMarginPct}
+                  value={selectedProductType === "sell_call" ? sellCallTargetFirmProfitPct : firmMarginPct}
                   onChange={(event) => {
                     const next = Number(event.target.value);
-                    setFirmMarginPct(Number.isFinite(next) ? next : 0);
+                    if (selectedProductType === "sell_call") setSellCallTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
+                    else setFirmMarginPct(Number.isFinite(next) ? next : 0);
                   }}
                 />
               </label>
             </div>
             <div className="soft-row" style={{ marginTop: 12 }}>
-              <span>Saved firm margin</span>
-              <strong className="mono">{savedFirmMarginPct.toFixed(1)}% p.a.</strong>
+              <span>{selectedProductType === "sell_call" ? "Saved call target firm profit" : "Saved firm margin"}</span>
+              <strong className="mono">
+                {selectedProductType === "sell_call"
+                  ? savedSellCallTargetFirmProfitPct.toFixed(1)
+                  : savedFirmMarginPct.toFixed(1)}
+                % p.a.
+              </strong>
             </div>
             <div className="soft-row" style={{ marginTop: 12 }}>
               <span>Selected instrument</span>
               <strong className="mono">{optionsLoading ? "Loading..." : instrumentName || "-"}</strong>
             </div>
-            {selectedOptionType === "call" ? (
-              <p className="card-copy" style={{ marginTop: 10 }}>
-                Quote verification works for calls. DCN sell-put calculation audit is available for put instruments only.
-              </p>
-            ) : null}
             <div className="quick-btns">
               <button
                 className="admin-button"
                 onClick={runAudit}
-                disabled={busy || savingConfig || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || savingConfig || !instrumentName}
               >
                 Verify calculations
               </button>
               <button
                 className="btn-ghost"
                 onClick={() => void savePricingConfig()}
-                disabled={busy || savingConfig || !firmMarginChanged}
+                disabled={busy || savingConfig || !pricingConfigChanged}
               >
-                {savingConfig ? "Saving..." : "Save margin"}
+                {savingConfig ? "Saving..." : "Save config"}
               </button>
               <button
                 className="btn-ghost"
                 onClick={checkMargins}
-                disabled={busy || savingConfig || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || savingConfig || !instrumentName}
               >
                 {marginLoading ? "Checking..." : "Check margins"}
               </button>
@@ -487,7 +527,7 @@ export function AdminConsole() {
               <button
                 className="btn-ghost"
                 onClick={() => void refreshMarket()}
-                disabled={busy || savingConfig || optionsLoading || syncingMarket || selectedOptionType !== "put" || !instrumentName}
+                disabled={busy || savingConfig || optionsLoading || syncingMarket || !instrumentName}
               >
                 {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
@@ -507,7 +547,7 @@ export function AdminConsole() {
               <>
                 <div className="metric-grid">
                   <Metric label="Client yield" value={formatPct(audit.clientYield, 1)} tone={audit.eligible ? "ok" : "warn"} />
-                  <Metric label="Effective C15 bid" value={formatNumber(audit.effectivePutBidPrice, 5)} />
+                  <Metric label="Effective bid" value={formatNumber(audit.effectiveOptionBidPrice ?? audit.effectivePutBidPrice, 5)} />
                   <Metric
                     label="Selected firm P&L"
                     value={formatUsd(selectedScenario?.firmProfitUsdt)}
@@ -549,7 +589,14 @@ export function AdminConsole() {
                       <Metric label="Annualized firm P&L" value={formatPct(selectedScenario.annualizedFirmProfit)} />
                       <Metric label="Option settlement BTC" value={formatNumber(selectedScenario.optionSettlementBtc, 6)} />
                       <Metric label="Net hedge BTC" value={formatNumber(selectedScenario.netHedgeBtc, 6)} />
-                      <Metric label="BTC to purchase" value={formatNumber(selectedScenario.btcToPurchase, 6)} />
+                      <Metric
+                        label={selectedProductType === "sell_call" ? "Client interest BTC" : "BTC to purchase"}
+                        value={
+                          selectedProductType === "sell_call"
+                            ? formatNumber(audit.clientInterestBtc, 6)
+                            : formatNumber(selectedScenario.btcToPurchase, 6)
+                        }
+                      />
                     </div>
                   </div>
                 ) : null}
@@ -598,7 +645,9 @@ export function AdminConsole() {
                   </div>
                   <div className="soft-row">
                     <span>Avg executable bid</span>
-                    <strong className="mono">{formatNumber(audit.depth.effectivePutBidPrice, 5)}</strong>
+                    <strong className="mono">
+                      {formatNumber(audit.depth.effectiveOptionBidPrice ?? audit.depth.effectivePutBidPrice, 5)}
+                    </strong>
                   </div>
                   <div className="soft-row">
                     <span>Slippage</span>
@@ -639,7 +688,14 @@ export function AdminConsole() {
                   <CheckRow label="Quote fresh" ok={audit.checks.quoteFresh} />
                   <CheckRow label="Sufficient depth" ok={audit.checks.sufficientDepth} />
                   <CheckRow label="Slippage within limit" ok={audit.checks.slippageWithinLimit ?? true} />
-                  <CheckRow label="Premium covers interest" ok={audit.checks.premiumCoversInterest} />
+                  <CheckRow
+                    label={selectedProductType === "sell_call" ? "Call C9 yield valid" : "Premium covers interest"}
+                    ok={
+                      selectedProductType === "sell_call"
+                        ? audit.checks.clientYieldFormulaValid ?? false
+                        : audit.checks.premiumCoversInterest
+                    }
+                  />
                   <CheckRow label="Selected firm P&L positive" ok={(selectedScenario.firmProfitUsdt ?? 0) > 0} />
                 </>
               ) : (
@@ -659,11 +715,11 @@ export function AdminConsole() {
                       <strong className="mono">{marginCheck.instrumentName}</strong>
                     </div>
                     <div className="soft-row">
-                      <span>C14 amount</span>
+                      <span>Contract amount</span>
                       <strong className="mono">{formatNumber(marginCheck.amount, 1)}</strong>
                     </div>
                     <div className="soft-row">
-                      <span>C15 price</span>
+                      <span>Bid price</span>
                       <strong className="mono">{formatNumber(marginCheck.price, 5)}</strong>
                     </div>
                     <div className="metric-grid">

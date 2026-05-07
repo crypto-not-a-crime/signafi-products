@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateDcnScenario,
+  calculateDcnSellCall,
   calculateDcnSellPut,
+  calculateSellCallClientYield,
   compareDcnCandidatesForClientMandate,
   dayCountFromExpiry,
   modelSellIntoBidDepth,
   roundContracts,
   roundYieldToOneDecimalPercent,
+  scoreCallCandidate,
   scorePutCandidate,
   selectDcnCandidate
 } from "../src/pricing/dcn";
@@ -466,6 +469,102 @@ describe("DCN sell-put pricing", () => {
     });
 
     expect(selectDcnCandidate(request, [ineligible]).bestCandidate).toBeNull();
+  });
+});
+
+describe("DCN sell-call pricing", () => {
+  it("matches the Sell Call dashboard C9 yield formula", () => {
+    const result = calculateDcnSellCall(
+      {
+        productType: "sell_call",
+        investmentBtc: 10,
+        sellCallTargetFirmProfitBps: 500,
+        scenarioUpsidePrice: 120000,
+        quoteFreshnessSeconds: 10,
+        nowMs: Date.UTC(2026, 4, 2)
+      },
+      {
+        instrumentName: "BTC-26JUN26-92000-C",
+        optionType: "call",
+        strike: 92000,
+        expirationTimestamp: Date.UTC(2026, 5, 26, 8, 0),
+        minTradeAmount: 0.1,
+        underlyingPrice: 81000,
+        bidPrice: 0.0145,
+        bidAmount: 10,
+        markPrice: 0.015,
+        deribitTimestamp: Date.UTC(2026, 4, 2),
+        bids: [[0.0145, 10]]
+      }
+    );
+
+    const expected = calculateSellCallClientYield({
+      upsidePrice: 120000,
+      strike: 92000,
+      investmentBtc: 10,
+      spotPrice: 81000,
+      dayCount: result.dayCount,
+      requiredContracts: 10,
+      premiumUsdt: result.netOptionProceedsUsdt!,
+      targetFirmAnnualizedProfit: 0.05
+    });
+
+    expect(result.productType).toBe("sell_call");
+    expect(result.dayCount).toBe(55);
+    expect(result.requiredContracts).toBe(10);
+    expect(result.effectiveCallBidPrice).toBeCloseTo(0.0145, 10);
+    expect(result.netOptionProceedsBtc).toBeCloseTo(0.142, 10);
+    expect(result.netOptionProceedsUsdt).toBeCloseTo(11502, 8);
+    expect(result.clientYield).toBe(expected);
+    expect(result.clientYield).toBeCloseTo(0.0389, 10);
+  });
+
+  it("uses strike times 1.30 as the live upside reference when none is supplied", () => {
+    const result = calculateDcnSellCall(
+      {
+        productType: "sell_call",
+        investmentBtc: 10,
+        sellCallTargetFirmProfitBps: 500,
+        quoteFreshnessSeconds: 10,
+        nowMs: NOW
+      },
+      {
+        instrumentName: "BTC-30JUL26-92000-C",
+        optionType: "call",
+        strike: 92000,
+        expirationTimestamp: EXPIRY_92_DAYS,
+        minTradeAmount: 0.1,
+        underlyingPrice: 81000,
+        bidPrice: 0.0145,
+        bidAmount: 10,
+        deribitTimestamp: NOW,
+        bids: [[0.0145, 10]]
+      }
+    );
+
+    expect(result.upsideReferencePrice).toBeCloseTo(119600, 8);
+  });
+
+  it("does not shortlist calls with strikes at or below spot", () => {
+    const request = {
+      productType: "sell_call" as const,
+      investmentBtc: 10,
+      runwayDays: 180,
+      strikePreference: "five_otm" as const,
+      selectorMode: "auto_yield" as const,
+      nowMs: NOW
+    };
+
+    expect(
+      scoreCallCandidate(request, {
+        instrumentName: "BTC-180D-76000-C",
+        optionType: "call",
+        strike: 76000,
+        expirationTimestamp: NOW + 180 * 24 * 60 * 60 * 1000,
+        underlyingPrice: 80000,
+        bidPrice: 0.1
+      })
+    ).toBe(-Infinity);
   });
 });
 

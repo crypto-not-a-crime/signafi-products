@@ -1,4 +1,5 @@
 import {
+  getCallCandidates,
   getInstrumentQuote,
   getPricingConfig,
   getPutCandidates,
@@ -13,8 +14,11 @@ import {
 } from "./db";
 import { DeribitClient, spotPriceFromTicker, type DeribitTicker } from "./deribit";
 import {
+  calculateDcnSellCall,
   calculateDcnSellPut,
+  priceCallCandidateAtSize,
   priceCandidateAtSize,
+  scoreCallCandidate,
   scorePutCandidate,
   selectDcnCandidate,
   type BidAskLevel,
@@ -39,6 +43,7 @@ type RouteHandler = (request: Request, env: Env, ctx: ExecutionContext) => Promi
 const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, admin?: boolean]> = [
   ["GET", /^\/api\/market\/options$/, handleOptions],
   ["POST", /^\/api\/products\/dcn\/sell-put\/price$/, handleSellPutPrice],
+  ["POST", /^\/api\/products\/dcn\/sell-call\/price$/, handleSellCallPrice],
   ["GET", /^\/api\/admin\/market-health$/, handleMarketHealth, true],
   ["GET", /^\/api\/admin\/yield-surface$/, handleYieldSurface, true],
   ["POST", /^\/api\/admin\/dcn-audit$/, handleDcnAudit, true],
@@ -289,14 +294,55 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
   });
 }
 
+async function handleSellCallPrice(request: Request, env: Env): Promise<Response> {
+  const payload = await request.json<DcnPricingRequest>();
+  const nowMs = Date.now();
+  const config = await getPricingConfig(env.DB);
+  const normalized = normalizePricingRequest({ ...payload, productType: "sell_call" }, config);
+  let candidates = await getCallCandidates(env.DB, nowMs);
+
+  if (candidates.length === 0) {
+    await syncMarketData(env);
+    candidates = await getCallCandidates(env.DB, nowMs);
+  }
+
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
+  const spotPrice = await getBtcUsdcSpotPrice(client);
+  const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 6), 12);
+  const shortlisted = candidates
+    .map((row) => ({ row, score: scoreCallCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
+    .filter((item) => Number.isFinite(item.score))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, depthCandidateCount);
+
+  const priced = [];
+
+  for (const item of shortlisted) {
+    const book = await client.getOrderBook(item.row.instrument_name, normalized.orderBookDepth ?? config.defaultOrderBookDepth);
+    const calculation = priceCallCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
+    priced.push({ score: item.score, snapshotId: null, ...calculation });
+  }
+
+  const selected = selectDcnCandidate(normalized, priced);
+
+  return json({
+    generatedAt: nowMs,
+    input: normalized,
+    candidates: selected.candidates,
+    bestCandidate: selected.bestCandidate,
+    recommendation: selected.recommendation
+  });
+}
+
 async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
   const payload = await request.json<DcnPricingRequest & { instrumentName?: string }>();
   if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
 
   const config = await getPricingConfig(env.DB);
-  const normalized = normalizePricingRequest(payload, config);
   const stored = await getInstrumentQuote(env.DB, payload.instrumentName);
   if (!stored) return json({ error: "Instrument not found in D1" }, 404);
+  const productType = payload.productType ?? (stored.option_type === "call" ? "sell_call" : "sell_put");
+  const normalized = normalizePricingRequest({ ...payload, productType }, config);
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const [book, spotPrice] = await Promise.all([
@@ -310,7 +356,9 @@ async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
     "admin-audit",
     Date.now()
   );
-  const calculation = calculateDcnSellPut(normalized, rowToMarket(stored, book.bids, book.timestamp, spotPrice));
+  const market = rowToMarket(stored, book.bids, book.timestamp, spotPrice);
+  const calculation =
+    productType === "sell_call" ? calculateDcnSellCall(normalized, market) : calculateDcnSellPut(normalized, market);
   const auditId = await insertAudit(env.DB, payload, payload.instrumentName, snapshotId, calculation, calculation.checks, Date.now());
 
   return json({ auditId, snapshotId, calculation });
@@ -390,17 +438,33 @@ async function handleGetPricingConfig(_request: Request, env: Env): Promise<Resp
 }
 
 async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Response> {
-  const payload = await request.json<{ firmMarginBps?: number }>();
-  if (!isNonNegativeFinite(payload.firmMarginBps)) {
+  const payload = await request.json<{ firmMarginBps?: number; sellCallTargetFirmProfitBps?: number }>();
+  if (payload.firmMarginBps !== undefined && !isNonNegativeFinite(payload.firmMarginBps)) {
     return json({ error: "firmMarginBps must be a non-negative number" }, 400);
   }
-  if (payload.firmMarginBps > 10_000) {
+  if (payload.firmMarginBps !== undefined && payload.firmMarginBps > 10_000) {
     return json({ error: "firmMarginBps must be less than or equal to 10000" }, 400);
+  }
+  if (
+    payload.sellCallTargetFirmProfitBps !== undefined &&
+    !isNonNegativeFinite(payload.sellCallTargetFirmProfitBps)
+  ) {
+    return json({ error: "sellCallTargetFirmProfitBps must be a non-negative number" }, 400);
+  }
+  if (payload.sellCallTargetFirmProfitBps !== undefined && payload.sellCallTargetFirmProfitBps > 10_000) {
+    return json({ error: "sellCallTargetFirmProfitBps must be less than or equal to 10000" }, 400);
   }
 
   const pricingConfig = await updatePricingConfig(
     env.DB,
-    { firmMarginBps: Math.round(payload.firmMarginBps) },
+    {
+      firmMarginBps:
+        payload.firmMarginBps === undefined ? undefined : Math.round(payload.firmMarginBps),
+      sellCallTargetFirmProfitBps:
+        payload.sellCallTargetFirmProfitBps === undefined
+          ? undefined
+          : Math.round(payload.sellCallTargetFirmProfitBps)
+    },
     Date.now()
   );
   return json({ pricingConfig });
@@ -411,9 +475,10 @@ async function handleRefreshSelectedMarket(request: Request, env: Env): Promise<
   if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
 
   const config = await getPricingConfig(env.DB);
-  const normalized = normalizePricingRequest(payload, config);
   const stored = await getInstrumentQuote(env.DB, payload.instrumentName);
   if (!stored) return json({ error: "Instrument not found in D1" }, 404);
+  const productType = payload.productType ?? (stored.option_type === "call" ? "sell_call" : "sell_put");
+  const normalized = normalizePricingRequest({ ...payload, productType }, config);
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const [ticker, book, spotTicker] = await Promise.all([
@@ -432,10 +497,9 @@ async function handleRefreshSelectedMarket(request: Request, env: Env): Promise<
     "admin-refresh-selected-market",
     nowMs
   );
-  const calculation = calculateDcnSellPut(
-    normalized,
-    rowToMarket(refreshed ?? stored, book.bids, book.timestamp, spotPrice)
-  );
+  const market = rowToMarket(refreshed ?? stored, book.bids, book.timestamp, spotPrice);
+  const calculation =
+    productType === "sell_call" ? calculateDcnSellCall(normalized, market) : calculateDcnSellPut(normalized, market);
   const auditId = await insertAudit(env.DB, payload, payload.instrumentName, snapshotId, calculation, calculation.checks, nowMs);
 
   return json({
@@ -527,8 +591,8 @@ async function ensurePricingStream(env: Env): Promise<unknown> {
 
 async function getPricingStreamInstruments(env: Env): Promise<string[]> {
   const nowMs = Date.now();
-  const rows = await getPutCandidates(env.DB, nowMs);
-  return rows
+  const [putRows, callRows] = await Promise.all([getPutCandidates(env.DB, nowMs), getCallCandidates(env.DB, nowMs)]);
+  const puts = putRows
     .filter((row) => row.underlying_price && row.strike < row.underlying_price && row.strike > row.underlying_price * 0.75)
     .sort((a, b) => {
       const aSpot = a.underlying_price ?? 1;
@@ -538,8 +602,19 @@ async function getPricingStreamInstruments(env: Env): Promise<string[]> {
       if (aMoneynessGap !== bMoneynessGap) return aMoneynessGap - bMoneynessGap;
       return a.expiration_timestamp - b.expiration_timestamp;
     })
-    .slice(0, 500)
-    .map((row) => row.instrument_name);
+    .slice(0, 300);
+  const calls = callRows
+    .filter((row) => row.underlying_price && row.strike > row.underlying_price && row.strike < row.underlying_price * 1.35)
+    .sort((a, b) => {
+      const aSpot = a.underlying_price ?? 1;
+      const bSpot = b.underlying_price ?? 1;
+      const aMoneynessGap = Math.abs(a.strike / aSpot - 1.1);
+      const bMoneynessGap = Math.abs(b.strike / bSpot - 1.1);
+      if (aMoneynessGap !== bMoneynessGap) return aMoneynessGap - bMoneynessGap;
+      return a.expiration_timestamp - b.expiration_timestamp;
+    })
+    .slice(0, 200);
+  return Array.from(new Set([...puts, ...calls].map((row) => row.instrument_name))).slice(0, 500);
 }
 
 async function getBtcUsdcSpotPrice(client: DeribitClient): Promise<number | null> {
@@ -562,14 +637,20 @@ async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: 
 }
 
 function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<ReturnType<typeof getPricingConfig>>): DcnPricingRequest {
+  const productType = request.productType === "sell_call" ? "sell_call" : "sell_put";
   return {
-    investmentUsdt: Number(request.investmentUsdt || 500000),
+    productType,
+    investmentUsdt: Number(request.investmentUsdt ?? 500000),
+    investmentBtc: Number(request.investmentBtc ?? 10),
     targetYieldBps: Number(request.targetYieldBps ?? 1000),
     runwayDays: Number(request.runwayDays ?? 92),
     strikePreference: request.strikePreference ?? "any",
     strikeBufferPct: normalizeStrikeBufferPct(request.strikeBufferPct),
     selectorMode: normalizeSelectorMode(request.selectorMode),
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
+    sellCallTargetFirmProfitBps: Number(
+      request.sellCallTargetFirmProfitBps ?? config.sellCallTargetFirmProfitBps
+    ),
     maxSlippageBps: Number(request.maxSlippageBps ?? config.maxSlippageBps),
     quoteFreshnessSeconds: Number(request.quoteFreshnessSeconds ?? config.quoteFreshnessSeconds),
     orderBookDepth: Number(request.orderBookDepth ?? config.defaultOrderBookDepth),
@@ -598,6 +679,7 @@ function rowToMarket(
 ): PutMarketInput {
   return {
     instrumentName: row.instrument_name,
+    optionType: row.option_type,
     strike: row.strike,
     expirationTimestamp: row.expiration_timestamp,
     minTradeAmount: row.min_trade_amount,

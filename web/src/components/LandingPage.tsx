@@ -73,8 +73,8 @@ export function LandingPage() {
               <a className="btn-primary" href="#menu">
                 See your yield
               </a>
-              <Link className="btn-ghost" href="/3-levers">
-                Open 3 levers
+              <Link className="btn-ghost" href="/DCN-put">
+                Open DCN Put
               </Link>
             </div>
           </div>
@@ -201,12 +201,12 @@ export function LandingPage() {
 
           <div className="explorer-band" id="products">
             <div className="section-tag">Product Explorer</div>
-            <h2 className="section-title">Depth-aware DCN pricing is live in the 3 Levers page.</h2>
+            <h2 className="section-title">Depth-aware DCN pricing is live in the DCN Put and Call pages.</h2>
             <p className="section-sub">
               The DCN sell-put flow uses Deribit option data, depth-weighted bid modelling, Signafi margin, and issuer
               profit checks before showing a proposed client yield.
             </p>
-            <Link className="btn-light" href="/3-levers">
+            <Link className="btn-light" href="/DCN-put">
               Explore live DCN pricing
             </Link>
           </div>

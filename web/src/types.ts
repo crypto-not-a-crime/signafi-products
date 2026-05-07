@@ -10,7 +10,9 @@ export interface FormulaTemplateSummary {
   label: string;
   sourceWorkbook: string;
   sourceSheets: string[];
-  firmMarginBps: number;
+  firmMarginBps?: number;
+  sellCallTargetFirmProfitBps?: number;
+  upsideReferenceMultiplier?: number;
 }
 
 export interface FormulaTraceRow {
@@ -22,6 +24,7 @@ export interface FormulaTraceRow {
 
 export interface PricingConfig {
   firmMarginBps: number;
+  sellCallTargetFirmProfitBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
   maxDepthCandidates: number;
@@ -48,17 +51,24 @@ export interface DcnScenarioResult {
 
 export interface DcnCandidate {
   formulaTemplate?: FormulaTemplateSummary;
+  productType?: "sell_put" | "sell_call";
   instrumentName: string;
   investmentUsdt: number;
+  investmentBtc?: number;
   spotPrice: number;
   strike: number;
   dayCount: number;
   requiredContracts: number;
+  effectiveOptionBidPrice?: number | null;
+  effectiveCallBidPrice?: number | null;
   effectivePutBidPrice: number | null;
   grossReferenceYield: number | null;
   firmMarginBps: number;
+  sellCallTargetFirmProfitBps?: number;
+  upsideReferencePrice?: number;
   clientYield: number | null;
   clientInterestUsdt: number | null;
+  clientInterestBtc?: number | null;
   tradingFeesBtc: number | null;
   netOptionProceedsBtc: number | null;
   netOptionProceedsUsdt: number | null;
@@ -78,6 +88,7 @@ export interface DcnCandidate {
     requiredContracts: number;
     filledContracts: number;
     grossProceedsBtc: number;
+    effectiveOptionBidPrice?: number | null;
     effectivePutBidPrice: number | null;
     bestBidPrice: number | null;
     bestBidAmount: number | null;
@@ -91,12 +102,15 @@ export interface DcnCandidate {
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
 
 export interface DcnPricingRequest {
-  investmentUsdt: number;
+  productType?: "sell_put" | "sell_call";
+  investmentUsdt?: number;
+  investmentBtc?: number;
   targetYieldBps?: number;
   runwayDays?: number;
   strikePreference?: "any" | "five_otm" | "ten_otm";
   strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
+  sellCallTargetFirmProfitBps?: number;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;

@@ -88,7 +88,105 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
   return { ...candidate, ...overrides };
 }
 
+export function mockDcnCallCandidate(overrides: Partial<DcnCandidate> = {}): DcnCandidate {
+  const clientYield = 0.096;
+  const investmentBtc = 10;
+  const spotPrice = 78500;
+  const strike = 88000;
+  const dayCount = 92;
+  const clientInterestBtc = investmentBtc * clientYield * (dayCount / 365);
+  const base: DcnCandidate = {
+    formulaTemplate: {
+      id: "dcn-sell-call-workbook-v1",
+      version: "2026-05-07",
+      label: "DCN Sell Call workbook template",
+      sourceWorkbook: "DCN Calcs.xlsx",
+      sourceSheets: ["Input Dashboard - Sell Call", "DCN - Sell Call", "Scenario Analysis - Sell Call"],
+      sellCallTargetFirmProfitBps: 500,
+      upsideReferenceMultiplier: 1.3
+    },
+    productType: "sell_call",
+    instrumentName: "BTC-31JUL26-88000-C",
+    investmentUsdt: investmentBtc * spotPrice,
+    investmentBtc,
+    spotPrice,
+    strike,
+    dayCount,
+    requiredContracts: 10,
+    effectiveOptionBidPrice: 0.026,
+    effectiveCallBidPrice: 0.026,
+    effectivePutBidPrice: 0.026,
+    grossReferenceYield: (0.026 / dayCount) * 365,
+    firmMarginBps: 0,
+    sellCallTargetFirmProfitBps: 500,
+    upsideReferencePrice: strike * 1.3,
+    clientYield,
+    clientInterestUsdt: clientInterestBtc * strike,
+    clientInterestBtc,
+    tradingFeesBtc: -0.003,
+    netOptionProceedsBtc: 0.257,
+    netOptionProceedsUsdt: 20174.5,
+    premiumCoversInterest: true,
+    selectedScenario: undefined,
+    downsideScenario: undefined,
+    upsideScenario: undefined,
+    upsideProfitUsdt: 21000,
+    upsideAnnualizedProfit: 0.106,
+    downsideProfitUsdt: 14000,
+    downsideAnnualizedProfit: 0.071,
+    quoteAgeSeconds: 3,
+    eligible: true,
+    checks: {
+      quoteFresh: true,
+      usableBid: true,
+      sufficientDepth: true,
+      clientYieldFormulaValid: true,
+      clientYieldPositive: true,
+      targetFirmProfitNonNegative: true,
+      upsideProfitPositive: true,
+      downsideProfitPositive: true
+    },
+    formulaTrace: [
+      { cell: "C4", label: "Initial Investment (BTC)", formula: "user input", value: investmentBtc },
+      { cell: "C17", label: "Call Bid Price", formula: "depth-weighted bid", value: 0.026 },
+      { cell: "C25", label: "Net Call Proceeds (USDT)", formula: "C24*C5", value: 20174.5 },
+      {
+        cell: "Input Dashboard - Sell Call!C9",
+        label: "Client target yield",
+        formula: "Sell Call workbook C9 formula",
+        value: clientYield
+      }
+    ],
+    depth: {
+      requiredContracts: 10,
+      filledContracts: 10,
+      grossProceedsBtc: 0.26,
+      effectiveOptionBidPrice: 0.026,
+      effectivePutBidPrice: 0.026,
+      bestBidPrice: 0.026,
+      bestBidAmount: 10,
+      sufficientDepth: true,
+      remainingContracts: 0,
+      slippagePct: 0,
+      fills: [{ price: 0.026, amount: 10, notionalBtc: 0.26 }]
+    }
+  };
+  const candidate = { ...base, ...overrides };
+  candidate.selectedScenario = candidate.selectedScenario ?? calculateScenario(candidate, candidate.strike);
+  candidate.downsideScenario = candidate.downsideScenario ?? calculateScenario(candidate, candidate.strike * 0.8);
+  candidate.upsideScenario = candidate.upsideScenario ?? calculateScenario(candidate, candidate.strike * 1.3);
+  candidate.downsideProfitUsdt = candidate.downsideScenario.firmProfitUsdt;
+  candidate.downsideAnnualizedProfit = candidate.downsideScenario.annualizedFirmProfit;
+  candidate.upsideProfitUsdt = candidate.upsideScenario.firmProfitUsdt;
+  candidate.upsideAnnualizedProfit = candidate.upsideScenario.annualizedFirmProfit;
+  return { ...candidate, ...overrides };
+}
+
 export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPricingResponse {
+  if (input.productType === "sell_call") {
+    return mockCallPricingResponse(input);
+  }
+
   const investmentUsdt = Number(input.investmentUsdt ?? 500000);
   const strikeBufferPct = typeof input.strikeBufferPct === "number" ? Number(input.strikeBufferPct) : null;
   const selectorMode =
@@ -138,6 +236,52 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
       runwayGapDays: 0,
       strikeMoneynessGapBps:
         strikeBufferPct === null ? null : Math.abs(best.strike / best.spotPrice - (1 - strikeBufferPct / 100)) * 10000
+    },
+    mock: true
+  };
+}
+
+function mockCallPricingResponse(input: Record<string, unknown> = {}): DcnPricingResponse {
+  const investmentBtc = Number(input.investmentBtc ?? 10);
+  const strikeBufferPct = typeof input.strikeBufferPct === "number" ? Number(input.strikeBufferPct) : null;
+  const selectorMode =
+    input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
+      ? input.selectorMode
+      : "closest";
+  const best = mockDcnCallCandidate({ investmentBtc, investmentUsdt: investmentBtc * 78500, requiredContracts: Math.floor(investmentBtc * 10) / 10 });
+  return {
+    generatedAt: Date.now(),
+    input,
+    candidates: [
+      best,
+      mockDcnCallCandidate({
+        instrumentName: "BTC-31JUL26-92000-C",
+        strike: 92000,
+        effectiveOptionBidPrice: 0.019,
+        effectiveCallBidPrice: 0.019,
+        effectivePutBidPrice: 0.019,
+        clientYield: 0.074
+      }),
+      mockDcnCallCandidate({
+        instrumentName: "BTC-25SEP26-98000-C",
+        strike: 98000,
+        dayCount: 150,
+        effectiveOptionBidPrice: 0.024,
+        effectiveCallBidPrice: 0.024,
+        effectivePutBidPrice: 0.024,
+        clientYield: 0.082
+      })
+    ],
+    bestCandidate: best,
+    recommendation: {
+      selectorMode,
+      recommendedLever:
+        selectorMode === "auto_yield" ? "yield" : selectorMode === "auto_runway" ? "runway" : selectorMode === "auto_strike" ? "strike" : "none",
+      reason: "Mock call recommendation generated without live worker data.",
+      targetYieldGapBps: best.clientYield === null ? null : best.clientYield * 10000 - Number(input.targetYieldBps ?? 1000),
+      runwayGapDays: 0,
+      strikeMoneynessGapBps:
+        strikeBufferPct === null ? null : Math.abs(best.strike / best.spotPrice - (1 + strikeBufferPct / 100)) * 10000
     },
     mock: true
   };

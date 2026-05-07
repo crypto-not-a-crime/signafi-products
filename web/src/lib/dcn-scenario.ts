@@ -15,6 +15,10 @@ export function getScenarioRange(candidate: DcnCandidate, options: ScenarioRange
 }
 
 export function calculateScenario(candidate: DcnCandidate, expiryPrice: number): DcnScenarioResult {
+  if (candidate.productType === "sell_call") {
+    return calculateCallScenario(candidate, expiryPrice);
+  }
+
   const side = expiryPrice < candidate.strike ? "downside" : "upside";
   const clientPrincipalInterestUsdt =
     candidate.clientYield === null
@@ -87,6 +91,69 @@ export function calculateScenario(candidate: DcnCandidate, expiryPrice: number):
   };
 }
 
+function calculateCallScenario(candidate: DcnCandidate, expiryPrice: number): DcnScenarioResult {
+  const side = expiryPrice > candidate.strike ? "upside" : "downside";
+  const investmentBtc =
+    typeof candidate.investmentBtc === "number" && Number.isFinite(candidate.investmentBtc)
+      ? candidate.investmentBtc
+      : candidate.spotPrice > 0
+        ? candidate.investmentUsdt / candidate.spotPrice
+        : 0;
+  const investmentNotionalUsdt = candidate.spotPrice > 0 ? investmentBtc * candidate.spotPrice : candidate.investmentUsdt;
+  const clientPrincipalInterestBtc =
+    candidate.clientYield === null
+      ? null
+      : investmentBtc * (1 + candidate.clientYield * (candidate.dayCount / 365));
+  const clientPrincipalInterestUsdt =
+    clientPrincipalInterestBtc === null ? null : clientPrincipalInterestBtc * candidate.strike;
+  const clientPayoutBtc = side === "downside" ? clientPrincipalInterestBtc : null;
+  const clientPayoutUsdt = side === "upside" ? clientPrincipalInterestUsdt : null;
+  const clientPayoutAsset = side === "downside" ? "BTC" : "USDT";
+  const clientPayoutAmount = side === "downside" ? clientPayoutBtc : clientPayoutUsdt;
+  const optionSettlementBtc =
+    side === "upside" && expiryPrice > 0
+      ? -((expiryPrice - candidate.strike) / expiryPrice) * candidate.requiredContracts
+      : 0;
+  const netHedgeBtc =
+    candidate.netOptionProceedsBtc === null
+      ? null
+      : investmentBtc + candidate.netOptionProceedsBtc + optionSettlementBtc;
+  const sellBtcProceedsUsdt =
+    side === "upside" && netHedgeBtc !== null ? (investmentBtc + optionSettlementBtc) * expiryPrice : null;
+  const firmProfitUsdt =
+    netHedgeBtc === null || clientPrincipalInterestBtc === null || clientPrincipalInterestUsdt === null
+      ? null
+      : side === "downside"
+        ? (candidate.netOptionProceedsBtc ?? 0) * candidate.spotPrice +
+          (investmentBtc - clientPrincipalInterestBtc) * expiryPrice
+        : (candidate.netOptionProceedsBtc ?? 0) * candidate.spotPrice +
+          (investmentBtc + optionSettlementBtc) * expiryPrice -
+          clientPrincipalInterestUsdt;
+  const annualizedFirmProfit =
+    firmProfitUsdt === null || investmentNotionalUsdt <= 0
+      ? null
+      : (firmProfitUsdt / investmentNotionalUsdt / candidate.dayCount) * 365;
+  const formulaTrace = buildCallScenarioTrace(side, expiryPrice, optionSettlementBtc, clientPayoutBtc, clientPayoutUsdt, firmProfitUsdt);
+
+  return {
+    expiryPrice,
+    side,
+    clientPayoutAsset,
+    clientPayoutAmount,
+    clientPayoutBtc,
+    clientPayoutUsdt,
+    clientPrincipalInterestBtc,
+    clientPrincipalInterestUsdt,
+    optionSettlementBtc,
+    netHedgeBtc,
+    btcToPurchase: null,
+    sellBtcProceedsUsdt,
+    firmProfitUsdt,
+    annualizedFirmProfit,
+    formulaTrace
+  };
+}
+
 function buildScenarioTrace(
   side: "downside" | "upside",
   expiryPrice: number,
@@ -142,6 +209,55 @@ function buildScenarioTrace(
       cell: "C72",
       label: "Upside firm profit USDT",
       formula: "investmentUSDT + sellBTCProceedsUSDT - clientPayoutUSDT",
+      value: firmProfitUsdt
+    }
+  ];
+}
+
+function buildCallScenarioTrace(
+  side: "downside" | "upside",
+  expiryPrice: number,
+  optionSettlementBtc: number | null,
+  clientPayoutBtc: number | null,
+  clientPayoutUsdt: number | null,
+  firmProfitUsdt: number | null
+): FormulaTraceRow[] {
+  if (side === "downside") {
+    return [
+      { cell: "C28", label: "Final BTC level", formula: "scenario expiry price", value: expiryPrice },
+      {
+        cell: "C12",
+        label: "Client payout BTC",
+        formula: "initialBTC * (1 + clientYield * days / 365)",
+        value: clientPayoutBtc
+      },
+      {
+        cell: "C35",
+        label: "Downside firm profit USDT",
+        formula: "netPremiumUSDT + (initialBTC - clientPayoutBTC) * expiryPrice",
+        value: firmProfitUsdt
+      }
+    ];
+  }
+
+  return [
+    { cell: "C55", label: "Final BTC level", formula: "scenario expiry price", value: expiryPrice },
+    {
+      cell: "Call Settlement",
+      label: "Option settlement BTC",
+      formula: "IF(expiryPrice > strike, -((expiryPrice - strike) / expiryPrice * contracts), 0)",
+      value: optionSettlementBtc
+    },
+    {
+      cell: "C60",
+      label: "Client payout USDT",
+      formula: "clientPayoutBTC * strike",
+      value: clientPayoutUsdt
+    },
+    {
+      cell: "C63",
+      label: "Upside firm profit USDT",
+      formula: "netPremiumUSDT + (initialBTC - callSettlementBTC) * expiryPrice - clientPayoutUSDT",
       value: firmProfitUsdt
     }
   ];

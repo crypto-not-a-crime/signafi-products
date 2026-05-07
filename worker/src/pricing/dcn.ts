@@ -1,17 +1,26 @@
-import { DCN_SELL_PUT_TEMPLATE, getDcnTemplateSummary, type DcnTemplateSummary } from "./dcn-template";
+import {
+  DCN_SELL_CALL_TEMPLATE,
+  DCN_SELL_PUT_TEMPLATE,
+  getDcnTemplateSummary,
+  type DcnTemplateSummary
+} from "./dcn-template";
 
 export type BidAskLevel = [price: number, amount: number];
+export type DcnProductType = "sell_put" | "sell_call";
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
 export type DcnRecommendedLever = "none" | "yield" | "runway" | "strike";
 
 export interface DcnPricingRequest {
-  investmentUsdt: number;
+  productType?: DcnProductType;
+  investmentUsdt?: number;
+  investmentBtc?: number;
   targetYieldBps?: number;
   runwayDays?: number;
   strikePreference?: "any" | "five_otm" | "ten_otm";
   strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
   firmMarginBps?: number;
+  sellCallTargetFirmProfitBps?: number;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;
@@ -23,6 +32,7 @@ export interface DcnPricingRequest {
 
 export interface PutMarketInput {
   instrumentName: string;
+  optionType?: "call" | "put";
   strike: number;
   expirationTimestamp: number;
   minTradeAmount?: number | null;
@@ -52,6 +62,7 @@ export interface DepthModel {
   requiredContracts: number;
   filledContracts: number;
   grossProceedsBtc: number;
+  effectiveOptionBidPrice: number | null;
   effectivePutBidPrice: number | null;
   bestBidPrice: number | null;
   bestBidAmount: number | null;
@@ -91,17 +102,24 @@ export interface DcnScenarioResult {
 
 export interface DcnCalculation {
   formulaTemplate: DcnTemplateSummary;
+  productType: DcnProductType;
   instrumentName: string;
   investmentUsdt: number;
+  investmentBtc?: number;
   spotPrice: number;
   strike: number;
   dayCount: number;
   requiredContracts: number;
+  effectiveOptionBidPrice: number | null;
+  effectiveCallBidPrice?: number | null;
   effectivePutBidPrice: number | null;
   grossReferenceYield: number | null;
   firmMarginBps: number;
+  sellCallTargetFirmProfitBps?: number;
+  upsideReferencePrice?: number;
   clientYield: number | null;
   clientInterestUsdt: number | null;
+  clientInterestBtc?: number | null;
   tradingFeesBtc: number | null;
   netOptionProceedsBtc: number | null;
   netOptionProceedsUsdt: number | null;
@@ -203,6 +221,7 @@ export function modelSellIntoBidDepth(
     requiredContracts,
     filledContracts: filled,
     grossProceedsBtc: proceeds,
+    effectiveOptionBidPrice: effectivePutBidPrice,
     effectivePutBidPrice,
     bestBidPrice,
     bestBidAmount,
@@ -214,7 +233,10 @@ export function modelSellIntoBidDepth(
 }
 
 interface DcnScenarioInput {
+  productType?: DcnProductType;
   investmentUsdt: number;
+  investmentBtc?: number;
+  spotPrice?: number;
   strike: number;
   dayCount: number;
   requiredContracts: number;
@@ -225,6 +247,10 @@ interface DcnScenarioInput {
 }
 
 export function calculateDcnScenario(expiryPrice: number, input: DcnScenarioInput): DcnScenarioResult {
+  if (input.productType === "sell_call") {
+    return calculateDcnSellCallScenario(expiryPrice, input);
+  }
+
   const side: DcnScenarioSide = expiryPrice < input.strike ? "downside" : "upside";
   const clientPayoutBtc = side === "downside" ? input.clientPrincipalInterestBtc : null;
   const clientPayoutUsdt = side === "upside" ? input.clientPrincipalInterestUsdt : null;
@@ -345,12 +371,110 @@ export function calculateDcnScenario(expiryPrice: number, input: DcnScenarioInpu
   };
 }
 
+function calculateDcnSellCallScenario(expiryPrice: number, input: DcnScenarioInput): DcnScenarioResult {
+  const side: DcnScenarioSide = expiryPrice > input.strike ? "upside" : "downside";
+  const investmentBtc =
+    typeof input.investmentBtc === "number" && Number.isFinite(input.investmentBtc)
+      ? input.investmentBtc
+      : input.spotPrice && input.spotPrice > 0
+        ? input.investmentUsdt / input.spotPrice
+        : 0;
+  const investmentNotionalUsdt = input.spotPrice && input.spotPrice > 0 ? investmentBtc * input.spotPrice : input.investmentUsdt;
+  const clientPrincipalInterestBtc =
+    input.clientYield === null ? null : investmentBtc * (1 + input.clientYield * (input.dayCount / 365));
+  const clientPrincipalInterestUsdt =
+    clientPrincipalInterestBtc === null ? null : clientPrincipalInterestBtc * input.strike;
+  const clientPayoutBtc = side === "downside" ? clientPrincipalInterestBtc : null;
+  const clientPayoutUsdt = side === "upside" ? clientPrincipalInterestUsdt : null;
+  const clientPayoutAsset: DcnPayoutAsset = side === "downside" ? "BTC" : "USDT";
+  const clientPayoutAmount = side === "downside" ? clientPayoutBtc : clientPayoutUsdt;
+  const optionSettlementBtc =
+    side === "upside" && expiryPrice > 0
+      ? -((expiryPrice - input.strike) / expiryPrice) * input.requiredContracts
+      : 0;
+  const netHedgeBtc =
+    input.netOptionProceedsBtc === null
+      ? null
+      : investmentBtc + input.netOptionProceedsBtc + optionSettlementBtc;
+  const sellBtcProceedsUsdt =
+    side === "upside" && netHedgeBtc !== null ? (investmentBtc + optionSettlementBtc) * expiryPrice : null;
+  const firmProfitUsdt =
+    netHedgeBtc === null || clientPrincipalInterestBtc === null || clientPrincipalInterestUsdt === null
+      ? null
+      : side === "downside"
+        ? input.netOptionProceedsBtc! * (input.spotPrice ?? expiryPrice) + (investmentBtc - clientPrincipalInterestBtc) * expiryPrice
+        : input.netOptionProceedsBtc! * (input.spotPrice ?? expiryPrice) +
+          (investmentBtc + optionSettlementBtc) * expiryPrice -
+          clientPrincipalInterestUsdt;
+  const annualizedFirmProfit =
+    firmProfitUsdt === null || input.dayCount <= 0 || investmentNotionalUsdt <= 0
+      ? null
+      : (firmProfitUsdt / investmentNotionalUsdt / input.dayCount) * 365;
+
+  const formulaTrace: FormulaTraceRow[] =
+    side === "downside"
+      ? [
+          { cell: DCN_SELL_CALL_TEMPLATE.cells.downsideExpiryPrice, label: "Final BTC level", formula: "scenario expiry price", value: expiryPrice },
+          {
+            cell: DCN_SELL_CALL_TEMPLATE.cells.clientBtcPayout,
+            label: "Client payout BTC",
+            formula: DCN_SELL_CALL_TEMPLATE.formulas.clientBtcPayout,
+            value: clientPayoutBtc
+          },
+          {
+            cell: DCN_SELL_CALL_TEMPLATE.cells.downsideProfitUsdt,
+            label: "Downside firm profit USDT",
+            formula: "net premium USDT + (initialBTC - clientPayoutBTC) * expiryPrice",
+            value: firmProfitUsdt
+          }
+        ]
+      : [
+          { cell: DCN_SELL_CALL_TEMPLATE.cells.upsideExpiryPrice, label: "Final BTC level", formula: "scenario expiry price", value: expiryPrice },
+          {
+            cell: "Call Settlement",
+            label: "Option settlement BTC",
+            formula: DCN_SELL_CALL_TEMPLATE.formulas.upsideOptionSettlementBtc,
+            value: optionSettlementBtc
+          },
+          {
+            cell: DCN_SELL_CALL_TEMPLATE.cells.clientBtcPayout,
+            label: "Client payout USDT",
+            formula: DCN_SELL_CALL_TEMPLATE.formulas.clientUsdtPayout,
+            value: clientPayoutUsdt
+          },
+          {
+            cell: DCN_SELL_CALL_TEMPLATE.cells.upsideProfitUsdt,
+            label: "Upside firm profit USDT",
+            formula: "net premium USDT + (initialBTC - callSettlementBTC) * expiryPrice - clientPayoutUSDT",
+            value: firmProfitUsdt
+          }
+        ];
+
+  return {
+    expiryPrice,
+    side,
+    clientPayoutAsset,
+    clientPayoutAmount,
+    clientPayoutBtc,
+    clientPayoutUsdt,
+    clientPrincipalInterestBtc,
+    clientPrincipalInterestUsdt,
+    optionSettlementBtc,
+    netHedgeBtc,
+    btcToPurchase: null,
+    sellBtcProceedsUsdt,
+    firmProfitUsdt,
+    annualizedFirmProfit,
+    formulaTrace
+  };
+}
+
 export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
   const nowMs = request.nowMs ?? Date.now();
   const firmMarginBps = request.firmMarginBps ?? 200;
   const maxSlippageBps = request.maxSlippageBps ?? 500;
   const quoteFreshnessSeconds = request.quoteFreshnessSeconds ?? 10;
-  const investmentUsdt = request.investmentUsdt;
+  const investmentUsdt = Number(request.investmentUsdt ?? 0);
   const spotPrice = market.underlyingPrice ?? 0;
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
   const requiredContracts = market.strike > 0 ? roundContracts(investmentUsdt / market.strike, market.minTradeAmount ?? 0.1) : 0;
@@ -385,6 +509,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
       : (investmentUsdt / market.strike) * (1 + clientYield * (dayCount / 365));
 
   const baseScenarioInput = {
+    productType: "sell_put" as const,
     investmentUsdt,
     strike: market.strike,
     dayCount,
@@ -495,12 +620,14 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
 
   return {
     formulaTemplate: { ...getDcnTemplateSummary(), firmMarginBps },
+    productType: "sell_put",
     instrumentName: market.instrumentName,
     investmentUsdt,
     spotPrice,
     strike: market.strike,
     dayCount,
     requiredContracts,
+    effectiveOptionBidPrice: effectivePutBidPrice,
     effectivePutBidPrice,
     grossReferenceYield,
     firmMarginBps,
@@ -525,8 +652,244 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   };
 }
 
+export function calculateDcnSellCall(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
+  const nowMs = request.nowMs ?? Date.now();
+  const maxSlippageBps = request.maxSlippageBps ?? 500;
+  const quoteFreshnessSeconds = request.quoteFreshnessSeconds ?? 10;
+  const sellCallTargetFirmProfitBps =
+    request.sellCallTargetFirmProfitBps ?? DCN_SELL_CALL_TEMPLATE.sellCallTargetFirmProfitBps;
+  const targetFirmAnnualizedProfit = sellCallTargetFirmProfitBps / 10000;
+  const investmentBtc = Number(request.investmentBtc ?? 10);
+  const spotPrice = market.underlyingPrice ?? 0;
+  const investmentUsdt = spotPrice > 0 ? investmentBtc * spotPrice : 0;
+  const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
+  const requiredContracts = roundContracts(investmentBtc, market.minTradeAmount ?? 0.1);
+  const depth = modelSellIntoBidDepth(market.bids, requiredContracts, market.bidPrice, market.bidAmount);
+  const effectiveCallBidPrice = depth.effectiveOptionBidPrice;
+  const quoteTime = market.deribitTimestamp ?? market.ingestedAt ?? null;
+  const quoteAgeSeconds = quoteTime ? Math.max(0, (nowMs - quoteTime) / 1000) : null;
+  const grossReferenceYield =
+    effectiveCallBidPrice === null || dayCount <= 0 ? null : (effectiveCallBidPrice / dayCount) * 365;
+  const tradingFeePerContractBtc =
+    effectiveCallBidPrice === null ? null : -Math.min(0.0003, 0.125 * effectiveCallBidPrice);
+  const tradingFeesBtc = tradingFeePerContractBtc === null ? null : tradingFeePerContractBtc * requiredContracts;
+  const grossOptionProceedsBtc = effectiveCallBidPrice === null ? null : requiredContracts * effectiveCallBidPrice;
+  const netOptionProceedsBtc =
+    grossOptionProceedsBtc === null || tradingFeesBtc === null ? null : grossOptionProceedsBtc + tradingFeesBtc;
+  const netOptionProceedsUsdt = netOptionProceedsBtc === null ? null : netOptionProceedsBtc * spotPrice;
+  const upsideReferencePrice = request.scenarioUpsidePrice ?? market.strike * DCN_SELL_CALL_TEMPLATE.upsideReferenceMultiplier;
+  const clientYield =
+    netOptionProceedsUsdt === null || dayCount <= 0
+      ? null
+      : calculateSellCallClientYield({
+          upsidePrice: upsideReferencePrice,
+          strike: market.strike,
+          investmentBtc,
+          spotPrice,
+          dayCount,
+          requiredContracts,
+          premiumUsdt: netOptionProceedsUsdt,
+          targetFirmAnnualizedProfit
+        });
+  const clientInterestBtc = clientYield === null ? null : investmentBtc * clientYield * (dayCount / 365);
+  const clientInterestUsdt = clientInterestBtc === null ? null : clientInterestBtc * market.strike;
+  const clientPrincipalInterestBtc =
+    clientYield === null ? null : investmentBtc * (1 + clientYield * (dayCount / 365));
+  const clientPrincipalInterestUsdt =
+    clientPrincipalInterestBtc === null ? null : clientPrincipalInterestBtc * market.strike;
+  const scenarioDownsidePrice = request.scenarioDownsidePrice ?? market.strike * 0.75;
+  const scenarioUpsidePrice = request.scenarioUpsidePrice ?? upsideReferencePrice;
+
+  const baseScenarioInput = {
+    productType: "sell_call" as const,
+    investmentUsdt,
+    investmentBtc,
+    spotPrice,
+    strike: market.strike,
+    dayCount,
+    requiredContracts,
+    clientYield,
+    clientPrincipalInterestBtc,
+    clientPrincipalInterestUsdt,
+    netOptionProceedsBtc
+  };
+  const selectedScenario = calculateDcnScenario(request.scenarioExpiryPrice ?? market.strike, baseScenarioInput);
+  const downsideScenario = calculateDcnScenario(scenarioDownsidePrice, baseScenarioInput);
+  const upsideScenario = calculateDcnScenario(scenarioUpsidePrice, baseScenarioInput);
+  const upsideProfitUsdt = upsideScenario.firmProfitUsdt;
+  const upsideAnnualizedProfit = upsideScenario.annualizedFirmProfit;
+  const downsideProfitUsdt = downsideScenario.firmProfitUsdt;
+  const downsideAnnualizedProfit = downsideScenario.annualizedFirmProfit;
+  const premiumCoversInterest =
+    netOptionProceedsUsdt !== null && clientInterestUsdt !== null && netOptionProceedsUsdt >= clientInterestUsdt;
+
+  const checks = {
+    spotPricePositive: spotPrice > 0,
+    strikePositive: market.strike > 0,
+    strikeAboveSpot: market.strike > spotPrice,
+    quoteFresh: quoteAgeSeconds !== null && quoteAgeSeconds <= quoteFreshnessSeconds,
+    usableBid: effectiveCallBidPrice !== null && effectiveCallBidPrice > 0,
+    sufficientDepth: depth.sufficientDepth,
+    slippageWithinLimit: depth.slippagePct !== null && depth.slippagePct * 10000 <= maxSlippageBps,
+    clientYieldFormulaValid: clientYield !== null && Number.isFinite(clientYield),
+    clientYieldPositive: clientYield !== null && clientYield > 0,
+    targetFirmProfitNonNegative: sellCallTargetFirmProfitBps >= 0,
+    selectedScenarioProfitPositive: selectedScenario.firmProfitUsdt !== null && selectedScenario.firmProfitUsdt > 0,
+    upsideProfitPositive: upsideProfitUsdt !== null && upsideProfitUsdt > 0,
+    downsideProfitPositive: downsideProfitUsdt !== null && downsideProfitUsdt > 0
+  };
+  const eligible = Object.values(checks).every(Boolean);
+
+  const formulaTrace: FormulaTraceRow[] = [
+    { cell: "C4", label: "Initial Investment (BTC)", formula: "user input", value: investmentBtc },
+    { cell: "C5", label: "BTC Spot Price", formula: "Deribit BTC_USDC spot mid", value: spotPrice },
+    { cell: "C7", label: "Strike Price", formula: "selected Deribit call strike", value: market.strike },
+    { cell: "C11", label: "Day Count", formula: DCN_SELL_CALL_TEMPLATE.formulas.dayCount, value: dayCount },
+    { cell: "C13", label: "Firm annualized profit margin", formula: "admin sellCallTargetFirmProfitBps / 10000", value: targetFirmAnnualizedProfit },
+    { cell: "C16", label: "Contracts", formula: DCN_SELL_CALL_TEMPLATE.formulas.contracts, value: requiredContracts },
+    {
+      cell: "C17",
+      label: "Call Bid Price",
+      formula: "SUM(filled contracts * bid level price) / required contracts",
+      value: effectiveCallBidPrice
+    },
+    {
+      cell: "C19",
+      label: "Option Baseline Premium",
+      formula: DCN_SELL_CALL_TEMPLATE.formulas.grossReferenceYield,
+      value: grossReferenceYield
+    },
+    {
+      cell: "C22",
+      label: "Trading Fees (BTC)",
+      formula: DCN_SELL_CALL_TEMPLATE.formulas.tradingFeesBtc,
+      value: tradingFeesBtc
+    },
+    {
+      cell: "C24",
+      label: "Net Call Proceeds (BTC)",
+      formula: DCN_SELL_CALL_TEMPLATE.formulas.netCallProceedsBtc,
+      value: netOptionProceedsBtc
+    },
+    {
+      cell: "C25",
+      label: "Net Call Proceeds (USDT)",
+      formula: DCN_SELL_CALL_TEMPLATE.formulas.netCallProceedsUsdt,
+      value: netOptionProceedsUsdt
+    },
+    {
+      cell: "Scenario Analysis - Sell Call!D27",
+      label: "Upside reference price",
+      formula: "selected scenarioUpsidePrice or strike * 1.30",
+      value: upsideReferencePrice
+    },
+    {
+      cell: "Input Dashboard - Sell Call!C9",
+      label: "Client target yield",
+      formula: DCN_SELL_CALL_TEMPLATE.formulas.clientYield,
+      value: clientYield
+    },
+    {
+      cell: "Selected Payout",
+      label: `Client receives ${selectedScenario.clientPayoutAsset}`,
+      formula:
+        selectedScenario.clientPayoutAsset === "BTC"
+          ? DCN_SELL_CALL_TEMPLATE.formulas.clientBtcPayout
+          : DCN_SELL_CALL_TEMPLATE.formulas.clientUsdtPayout,
+      value: selectedScenario.clientPayoutAmount
+    }
+  ];
+
+  return {
+    formulaTemplate: {
+      ...getDcnTemplateSummary("sell_call"),
+      sellCallTargetFirmProfitBps,
+      upsideReferenceMultiplier: DCN_SELL_CALL_TEMPLATE.upsideReferenceMultiplier
+    },
+    productType: "sell_call",
+    instrumentName: market.instrumentName,
+    investmentUsdt,
+    investmentBtc,
+    spotPrice,
+    strike: market.strike,
+    dayCount,
+    requiredContracts,
+    effectiveOptionBidPrice: effectiveCallBidPrice,
+    effectiveCallBidPrice,
+    effectivePutBidPrice: effectiveCallBidPrice,
+    grossReferenceYield,
+    firmMarginBps: 0,
+    sellCallTargetFirmProfitBps,
+    upsideReferencePrice,
+    clientYield,
+    clientInterestUsdt,
+    clientInterestBtc,
+    tradingFeesBtc,
+    netOptionProceedsBtc,
+    netOptionProceedsUsdt,
+    premiumCoversInterest,
+    selectedScenario,
+    downsideScenario,
+    upsideScenario,
+    upsideProfitUsdt,
+    upsideAnnualizedProfit,
+    downsideProfitUsdt,
+    downsideAnnualizedProfit,
+    quoteAgeSeconds,
+    depth,
+    eligible,
+    checks,
+    formulaTrace
+  };
+}
+
+export function calculateSellCallClientYield({
+  upsidePrice,
+  strike,
+  investmentBtc,
+  spotPrice,
+  dayCount,
+  requiredContracts,
+  premiumUsdt,
+  targetFirmAnnualizedProfit
+}: {
+  upsidePrice: number;
+  strike: number;
+  investmentBtc: number;
+  spotPrice: number;
+  dayCount: number;
+  requiredContracts: number;
+  premiumUsdt: number;
+  targetFirmAnnualizedProfit: number;
+}): number | null {
+  if (
+    !isPositiveFinite(upsidePrice) ||
+    !isPositiveFinite(strike) ||
+    !isPositiveFinite(investmentBtc) ||
+    !isPositiveFinite(spotPrice) ||
+    !isPositiveFinite(dayCount) ||
+    !Number.isFinite(requiredContracts) ||
+    !Number.isFinite(premiumUsdt) ||
+    !Number.isFinite(targetFirmAnnualizedProfit) ||
+    upsidePrice <= strike
+  ) {
+    return null;
+  }
+
+  const targetFirmProfitUsdt = targetFirmAnnualizedProfit * investmentBtc * spotPrice * dayCount / 365;
+  const callSettlementBtc = ((upsidePrice - strike) / upsidePrice) * requiredContracts;
+  const profitBeforeClientInterest = premiumUsdt + (investmentBtc - callSettlementBtc) * upsidePrice;
+  const rawYield =
+    ((profitBeforeClientInterest - targetFirmProfitUsdt) / (investmentBtc * strike) - 1) * 365 / dayCount;
+  return roundDownToDecimals(rawYield, 4);
+}
+
 export function priceCandidateAtSize(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
   return calculateDcnSellPut(request, market);
+}
+
+export function priceCallCandidateAtSize(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
+  return calculateDcnSellCall(request, market);
 }
 
 export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketInput): number {
@@ -586,6 +949,76 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
   );
 }
 
+export function scoreCallCandidate(request: DcnPricingRequest, market: PutMarketInput): number {
+  const spot = market.underlyingPrice ?? 0;
+  if (!spot || !market.bidPrice || market.bidPrice <= 0) return -Infinity;
+  if (market.strike <= spot) return -Infinity;
+
+  const dayCount = dayCountFromExpiry(market.expirationTimestamp, request.nowMs ?? Date.now());
+  if (dayCount <= 0) return -Infinity;
+  const investmentBtc = Number(request.investmentBtc ?? 10);
+  const requiredContracts = roundContracts(investmentBtc, market.minTradeAmount ?? 0.1);
+  const premiumUsdt = requiredContracts * market.bidPrice * spot;
+  const roughClientYield = calculateSellCallClientYield({
+    upsidePrice: request.scenarioUpsidePrice ?? market.strike * DCN_SELL_CALL_TEMPLATE.upsideReferenceMultiplier,
+    strike: market.strike,
+    investmentBtc,
+    spotPrice: spot,
+    dayCount,
+    requiredContracts,
+    premiumUsdt,
+    targetFirmAnnualizedProfit:
+      (request.sellCallTargetFirmProfitBps ?? DCN_SELL_CALL_TEMPLATE.sellCallTargetFirmProfitBps) / 10000
+  });
+  if (roughClientYield === null) return -Infinity;
+
+  const roughCandidate: DcnRankableCandidate = {
+    eligible: true,
+    clientYield: roughClientYield,
+    upsideProfitUsdt: null,
+    downsideProfitUsdt: null,
+    quoteAgeSeconds: null,
+    depth: { slippagePct: null },
+    dayCount,
+    strike: market.strike,
+    spotPrice: spot
+  };
+  const fit = getCandidateFitMetrics({ ...request, productType: "sell_call" }, roughCandidate);
+  const mode = request.selectorMode ?? "closest";
+  const targetBonus = fit.targetMet ? 1000 : 0;
+
+  if (mode === "auto_yield") {
+    const boundedYieldScore = Math.min(Math.max(roughClientYield, 0), 1) * 100;
+    return 1000 - fit.normalizedRunwayGap * 1000 - fit.strikeMoneynessGap * 2000 + boundedYieldScore;
+  }
+
+  if (mode === "auto_strike") {
+    return (
+      1000 +
+      targetBonus -
+      fit.normalizedRunwayGap * 200 -
+      (fit.targetMet ? (2 - fit.strikeMoneyness) * 25 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
+    );
+  }
+
+  if (mode === "auto_runway") {
+    return (
+      1000 +
+      targetBonus -
+      fit.strikeMoneynessGap * 200 -
+      (fit.targetMet ? (roughCandidate.dayCount ?? 0) / 10 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
+    );
+  }
+
+  return (
+    1000 +
+    targetBonus -
+    fit.normalizedRunwayGap * 250 -
+    fit.strikeMoneynessGap * 250 -
+    (fit.targetMet ? fit.yieldExcess * 150 : fit.yieldShortfall * 1000)
+  );
+}
+
 export function compareDcnCandidatesForClientMandate(
   request: DcnPricingRequest,
   a: DcnRankableCandidate,
@@ -613,7 +1046,12 @@ export function compareDcnCandidatesForClientMandate(
     return compareBy([
       () => compareBooleanDesc(af.targetMet, bf.targetMet),
       () => (af.targetMet && bf.targetMet ? compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap) : 0),
-      () => (af.targetMet && bf.targetMet ? compareAsc(af.strikeMoneyness, bf.strikeMoneyness) : 0),
+      () =>
+        af.targetMet && bf.targetMet
+          ? request.productType === "sell_call"
+            ? compareDesc(af.strikeMoneyness, bf.strikeMoneyness)
+            : compareAsc(af.strikeMoneyness, bf.strikeMoneyness)
+          : 0,
       () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : compareAsc(af.yieldShortfall, bf.yieldShortfall)),
       () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
       () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
@@ -738,12 +1176,15 @@ function getCandidateFitMetrics(request: DcnPricingRequest, candidate: DcnRankab
   };
 }
 
-function getPreferredMoneyness(request: Pick<DcnPricingRequest, "strikePreference" | "strikeBufferPct">): number | null {
+function getPreferredMoneyness(
+  request: Pick<DcnPricingRequest, "productType" | "strikePreference" | "strikeBufferPct">
+): number | null {
   if (typeof request.strikeBufferPct === "number" && Number.isFinite(request.strikeBufferPct)) {
-    return 1 - Math.min(99, Math.max(0, request.strikeBufferPct)) / 100;
+    const buffer = Math.min(99, Math.max(0, request.strikeBufferPct)) / 100;
+    return request.productType === "sell_call" ? 1 + buffer : 1 - buffer;
   }
-  if (request.strikePreference === "ten_otm") return 0.9;
-  if (request.strikePreference === "five_otm") return 0.95;
+  if (request.strikePreference === "ten_otm") return request.productType === "sell_call" ? 1.1 : 0.9;
+  if (request.strikePreference === "five_otm") return request.productType === "sell_call" ? 1.05 : 0.95;
   return null;
 }
 
@@ -776,4 +1217,14 @@ function compareDesc(a: number | null | undefined, b: number | null | undefined)
 
 function finiteOr(value: number | null | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function isPositiveFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function roundDownToDecimals(value: number, decimals: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = 10 ** decimals;
+  return Math.trunc(value * factor) / factor;
 }
