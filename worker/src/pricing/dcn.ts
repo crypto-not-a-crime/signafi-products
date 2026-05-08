@@ -1180,7 +1180,8 @@ function getPreferredMoneyness(
   request: Pick<DcnPricingRequest, "productType" | "strikePreference" | "strikeBufferPct">
 ): number | null {
   if (typeof request.strikeBufferPct === "number" && Number.isFinite(request.strikeBufferPct)) {
-    const buffer = Math.min(99, Math.max(0, request.strikeBufferPct)) / 100;
+    const maxBufferPct = request.productType === "sell_call" ? 200 : 99;
+    const buffer = Math.min(maxBufferPct, Math.max(0, request.strikeBufferPct)) / 100;
     return request.productType === "sell_call" ? 1 + buffer : 1 - buffer;
   }
   if (request.strikePreference === "ten_otm") return request.productType === "sell_call" ? 1.1 : 0.9;

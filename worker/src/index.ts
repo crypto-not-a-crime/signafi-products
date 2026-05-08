@@ -645,7 +645,7 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     targetYieldBps: Number(request.targetYieldBps ?? 1000),
     runwayDays: Number(request.runwayDays ?? 92),
     strikePreference: request.strikePreference ?? "any",
-    strikeBufferPct: normalizeStrikeBufferPct(request.strikeBufferPct),
+    strikeBufferPct: normalizeStrikeBufferPct(request.strikeBufferPct, productType),
     selectorMode: normalizeSelectorMode(request.selectorMode),
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
     sellCallTargetFirmProfitBps: Number(
@@ -665,10 +665,14 @@ function normalizeSelectorMode(mode: DcnPricingRequest["selectorMode"]): DcnPric
   return mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike" ? mode : "closest";
 }
 
-function normalizeStrikeBufferPct(value: DcnPricingRequest["strikeBufferPct"]): number | undefined {
+function normalizeStrikeBufferPct(
+  value: DcnPricingRequest["strikeBufferPct"],
+  productType: DcnPricingRequest["productType"]
+): number | undefined {
   if (value === null || value === undefined) return undefined;
   const numeric = Number(value);
-  return Number.isFinite(numeric) ? Math.min(99, Math.max(0, numeric)) : undefined;
+  const maxBufferPct = productType === "sell_call" ? 200 : 99;
+  return Number.isFinite(numeric) ? Math.min(maxBufferPct, Math.max(0, numeric)) : undefined;
 }
 
 function rowToMarket(

@@ -566,6 +566,29 @@ describe("DCN sell-call pricing", () => {
       })
     ).toBe(-Infinity);
   });
+
+  it("uses call strike buffers above 99 percent when ranking candidates", () => {
+    const request = {
+      productType: "sell_call" as const,
+      investmentBtc: 10,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikeBufferPct: 150,
+      selectorMode: "closest" as const
+    };
+    const nearLegacyCap = rankableCandidate("BTC-180D-199000-C", {
+      dayCount: 180,
+      strike: 199000,
+      spotPrice: 100000
+    });
+    const requestedBuffer = rankableCandidate("BTC-180D-250000-C", {
+      dayCount: 180,
+      strike: 250000,
+      spotPrice: 100000
+    });
+
+    expect(selectDcnCandidate(request, [nearLegacyCap, requestedBuffer]).bestCandidate).toBe(requestedBuffer);
+  });
 });
 
 function rankableCandidate(

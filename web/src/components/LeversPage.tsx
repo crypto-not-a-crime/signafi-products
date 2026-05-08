@@ -15,9 +15,14 @@ const runwayOptions = [
 
 const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
 const btcInvestmentOptions = [1, 2, 5, 10, 25, 50, 100];
-const strikeBufferOptions = [5, 10, 15, 20, 25, 30];
 type LeversLayoutVariant = "classic" | "rail";
 type DcnProductType = "sell_put" | "sell_call";
+const putStrikeBufferOptions = [5, 10, 15, 20, 25, 30];
+const callStrikeBufferOptions = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+const strikeBufferMaxByProduct: Record<DcnProductType, number> = {
+  sell_put: 30,
+  sell_call: 200
+};
 
 const putCopy = {
   navActive: "dcn-put" as const,
@@ -68,6 +73,9 @@ export function LeversPage({
 
   const isCall = productType === "sell_call";
   const copy = isCall ? callCopy : putCopy;
+  const yieldDigits = isCall ? 2 : 1;
+  const strikeBufferOptions = isCall ? callStrikeBufferOptions : putStrikeBufferOptions;
+  const strikeBufferMax = strikeBufferMaxByProduct[productType];
   const runwayDays = useMemo(() => runwayOptions.find((item) => item.id === runway)?.days ?? 92, [runway]);
   const best = data?.bestCandidate ?? null;
   const allCandidates = useMemo(() => getUniqueCandidates(best, data?.candidates), [best, data?.candidates]);
@@ -78,6 +86,12 @@ export function LeversPage({
         : best,
     [allCandidates, best, selectedInstrumentName]
   );
+
+  useEffect(() => {
+    if (strikeBufferPct > strikeBufferMax) {
+      setStrikeBufferPct(strikeBufferMax);
+    }
+  }, [strikeBufferPct, strikeBufferMax]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -310,7 +324,7 @@ export function LeversPage({
         <input
           type="range"
           min={5}
-          max={30}
+          max={strikeBufferMax}
           step={1}
           value={strikeBufferPct}
           onChange={(event) => {
@@ -355,7 +369,7 @@ export function LeversPage({
       <div className="metric-grid">
         <div className="metric-card">
           <div className="sum-lbl">Client yield</div>
-          <div className="metric-value green">{formatPct(selectedCandidate?.clientYield, 1)}</div>
+          <div className="metric-value green">{formatPct(selectedCandidate?.clientYield, yieldDigits)}</div>
         </div>
         <div className="metric-card">
           <div className="sum-lbl">Runway</div>
@@ -602,7 +616,7 @@ function RecommendationRailCard({
       </h3>
       <div className="recommendation-yield-row">
         <span>Yield</span>
-        <strong>{formatPct(candidate.clientYield, 1)}</strong>
+        <strong>{formatCandidateYield(candidate)}</strong>
       </div>
       <dl className="recommendation-terms">
         <div>
@@ -684,7 +698,7 @@ function ClientPayoutSimulator({
                 : "At/above strike"
           }
         />
-        <Metric label="Client yield" value={formatPct(candidate.clientYield, 1)} tone="ok" />
+        <Metric label="Client yield" value={formatCandidateYield(candidate)} tone="ok" />
         <Metric label="Strike" value={formatUsd(candidate.strike)} />
       </div>
       <p className="card-copy">
@@ -799,7 +813,7 @@ function getRecommendedLever(selectorMode: DcnSelectorMode): DcnRecommendation["
 function formatRecommendationValue(recommendation: DcnRecommendation, candidate: DcnCandidate) {
   if (recommendation.recommendedLever === "runway") return `${formatNumber(candidate.dayCount, 0)} days`;
   if (recommendation.recommendedLever === "strike") return formatUsd(candidate.strike);
-  return formatPct(candidate.clientYield, 1);
+  return formatCandidateYield(candidate);
 }
 
 const DERIBIT_MONTHS: Record<string, string> = {
@@ -870,10 +884,14 @@ function CandidateCard({ candidate, best = false }: { candidate: DcnCandidate; b
         </div>
       </dl>
       <div className="metric-grid product-yield">
-        <Metric label="Client yield" value={formatPct(candidate.clientYield, 1)} tone="ok" />
+        <Metric label="Client yield" value={formatCandidateYield(candidate)} tone="ok" />
       </div>
     </div>
   );
+}
+
+function formatCandidateYield(candidate: DcnCandidate) {
+  return formatPct(candidate.clientYield, candidate.productType === "sell_call" ? 2 : 1);
 }
 
 function formatStrikeDistanceFromSpot(candidate: DcnCandidate) {
