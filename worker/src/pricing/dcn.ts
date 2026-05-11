@@ -7,6 +7,7 @@ import {
 
 export type BidAskLevel = [price: number, amount: number];
 export type DcnProductType = "sell_put" | "sell_call";
+export type SellPutPricingMethod = "firm_margin" | "target_firm_profit";
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
 export type DcnRecommendedLever = "none" | "yield" | "runway" | "strike";
 
@@ -19,7 +20,9 @@ export interface DcnPricingRequest {
   strikePreference?: "any" | "five_otm" | "ten_otm";
   strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
+  sellPutPricingMethod?: SellPutPricingMethod;
   firmMarginBps?: number;
+  sellPutTargetFirmProfitBps?: number;
   sellCallTargetFirmProfitBps?: number;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
@@ -114,7 +117,9 @@ export interface DcnCalculation {
   effectiveCallBidPrice?: number | null;
   effectivePutBidPrice: number | null;
   grossReferenceYield: number | null;
+  sellPutPricingMethod?: SellPutPricingMethod;
   firmMarginBps: number;
+  sellPutTargetFirmProfitBps?: number;
   sellCallTargetFirmProfitBps?: number;
   upsideReferencePrice?: number;
   clientYield: number | null;
@@ -469,9 +474,49 @@ function calculateDcnSellCallScenario(expiryPrice: number, input: DcnScenarioInp
   };
 }
 
+export function calculateSellPutClientYield({
+  pricingMethod,
+  grossReferenceYield,
+  netOptionProceedsUsdt,
+  investmentUsdt,
+  dayCount,
+  firmMarginBps,
+  targetFirmAnnualizedProfit
+}: {
+  pricingMethod: SellPutPricingMethod;
+  grossReferenceYield: number | null;
+  netOptionProceedsUsdt: number | null;
+  investmentUsdt: number;
+  dayCount: number;
+  firmMarginBps: number;
+  targetFirmAnnualizedProfit: number;
+}): number | null {
+  if (pricingMethod === "target_firm_profit") {
+    if (
+      !isPositiveFinite(netOptionProceedsUsdt) ||
+      !isPositiveFinite(investmentUsdt) ||
+      !isPositiveFinite(dayCount) ||
+      !Number.isFinite(targetFirmAnnualizedProfit)
+    ) {
+      return null;
+    }
+    return (netOptionProceedsUsdt / investmentUsdt) * (365 / dayCount) - targetFirmAnnualizedProfit;
+  }
+
+  if (grossReferenceYield === null || !Number.isFinite(grossReferenceYield) || !Number.isFinite(firmMarginBps)) {
+    return null;
+  }
+
+  return roundYieldToOneDecimalPercent(Math.max(0, grossReferenceYield - firmMarginBps / 10000));
+}
+
 export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarketInput): DcnCalculation {
   const nowMs = request.nowMs ?? Date.now();
-  const firmMarginBps = request.firmMarginBps ?? 200;
+  const sellPutPricingMethod = normalizeSellPutPricingMethod(request.sellPutPricingMethod);
+  const firmMarginBps = request.firmMarginBps ?? DCN_SELL_PUT_TEMPLATE.firmMarginBps;
+  const sellPutTargetFirmProfitBps =
+    request.sellPutTargetFirmProfitBps ?? DCN_SELL_PUT_TEMPLATE.sellPutTargetFirmProfitBps;
+  const targetFirmAnnualizedProfit = sellPutTargetFirmProfitBps / 10000;
   const maxSlippageBps = request.maxSlippageBps ?? 500;
   const quoteFreshnessSeconds = request.quoteFreshnessSeconds ?? 10;
   const investmentUsdt = Number(request.investmentUsdt ?? 0);
@@ -485,9 +530,6 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
 
   const grossReferenceYield =
     effectivePutBidPrice === null || dayCount <= 0 ? null : (effectivePutBidPrice / dayCount) * 365;
-  const rawClientYield = grossReferenceYield === null ? null : Math.max(0, grossReferenceYield - firmMarginBps / 10000);
-  const clientYield = rawClientYield === null ? null : roundYieldToOneDecimalPercent(rawClientYield);
-  const clientInterestUsdt = clientYield === null ? null : investmentUsdt * clientYield * (dayCount / 365);
   const tradingFeePerContractBtc =
     effectivePutBidPrice === null ? null : -Math.min(0.0003, 0.125 * effectivePutBidPrice);
   const tradingFeesBtc = tradingFeePerContractBtc === null ? null : tradingFeePerContractBtc * requiredContracts;
@@ -495,6 +537,16 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   const netOptionProceedsBtc =
     grossOptionProceedsBtc === null || tradingFeesBtc === null ? null : grossOptionProceedsBtc + tradingFeesBtc;
   const netOptionProceedsUsdt = netOptionProceedsBtc === null ? null : netOptionProceedsBtc * spotPrice;
+  const clientYield = calculateSellPutClientYield({
+    pricingMethod: sellPutPricingMethod,
+    grossReferenceYield,
+    netOptionProceedsUsdt,
+    investmentUsdt,
+    dayCount,
+    firmMarginBps,
+    targetFirmAnnualizedProfit
+  });
+  const clientInterestUsdt = clientYield === null ? null : investmentUsdt * clientYield * (dayCount / 365);
 
   const premiumCoversInterest =
     netOptionProceedsUsdt !== null && clientInterestUsdt !== null && netOptionProceedsUsdt >= clientInterestUsdt;
@@ -539,13 +591,46 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     sufficientDepth: depth.sufficientDepth,
     slippageWithinLimit: depth.slippagePct !== null && depth.slippagePct * 10000 <= maxSlippageBps,
     premiumCoversInterest,
+    clientYieldFormulaValid: clientYield !== null && Number.isFinite(clientYield),
     clientYieldPositive: clientYield !== null && clientYield > 0,
-    firmMarginPositive: firmMarginBps > 0,
+    firmMarginPositive: sellPutPricingMethod !== "firm_margin" || firmMarginBps > 0,
+    targetFirmProfitNonNegative: sellPutPricingMethod !== "target_firm_profit" || sellPutTargetFirmProfitBps >= 0,
     selectedScenarioProfitPositive: selectedScenario.firmProfitUsdt !== null && selectedScenario.firmProfitUsdt > 0,
     upsideProfitPositive: upsideProfitUsdt !== null && upsideProfitUsdt > 0,
     downsideProfitPositive: downsideProfitUsdt !== null && downsideProfitUsdt > 0
   };
   const eligible = Object.values(checks).every(Boolean);
+
+  const pricingMethodTrace: FormulaTraceRow[] =
+    sellPutPricingMethod === "target_firm_profit"
+      ? [
+          {
+            cell: "Input Dashboard - Sell Put!C15",
+            label: "Put target firm profit",
+            formula: "admin sellPutTargetFirmProfitBps / 10000",
+            value: targetFirmAnnualizedProfit
+          },
+          {
+            cell: "Input Dashboard - Sell Put!C9",
+            label: "Client target yield",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.clientYieldTargetFirmProfit,
+            value: clientYield
+          }
+        ]
+      : [
+          {
+            cell: "Signafi Margin",
+            label: "Firm margin",
+            formula: "request firmMarginBps / 10000",
+            value: firmMarginBps / 10000
+          },
+          {
+            cell: "Client Yield",
+            label: "Client target yield",
+            formula: DCN_SELL_PUT_TEMPLATE.formulas.clientYieldFirmMargin,
+            value: clientYield
+          }
+        ];
 
   const formulaTrace: FormulaTraceRow[] = [
     { cell: "C4", label: "Initial Investment (USDT)", formula: "user input", value: investmentUsdt },
@@ -566,18 +651,6 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
       value: grossReferenceYield
     },
     {
-      cell: "Signafi Margin",
-      label: "Firm margin",
-      formula: "request firmMarginBps / 10000",
-      value: firmMarginBps / 10000
-    },
-    {
-      cell: "Client Yield",
-      label: "Client target yield",
-      formula: DCN_SELL_PUT_TEMPLATE.formulas.clientYield,
-      value: clientYield
-    },
-    {
       cell: "C20",
       label: "Trading Fees (BTC)",
       formula: "-MIN(0.0003, 0.125*C15) * C14",
@@ -595,6 +668,13 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
       formula: "C22*C5",
       value: netOptionProceedsUsdt
     },
+    {
+      cell: "Put Pricing Method",
+      label: "Put pricing basis",
+      formula: "admin sellPutPricingMethod",
+      value: sellPutPricingMethod
+    },
+    ...pricingMethodTrace,
     {
       cell: "Premium Check",
       label: "Premium covers client interest",
@@ -619,7 +699,7 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
   ];
 
   return {
-    formulaTemplate: { ...getDcnTemplateSummary(), firmMarginBps },
+    formulaTemplate: { ...getDcnTemplateSummary(), sellPutPricingMethod, firmMarginBps, sellPutTargetFirmProfitBps },
     productType: "sell_put",
     instrumentName: market.instrumentName,
     investmentUsdt,
@@ -630,7 +710,9 @@ export function calculateDcnSellPut(request: DcnPricingRequest, market: PutMarke
     effectiveOptionBidPrice: effectivePutBidPrice,
     effectivePutBidPrice,
     grossReferenceYield,
+    sellPutPricingMethod,
     firmMarginBps,
+    sellPutTargetFirmProfitBps,
     clientYield,
     clientInterestUsdt,
     tradingFeesBtc,
@@ -899,9 +981,22 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
 
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, request.nowMs ?? Date.now());
   if (dayCount <= 0) return -Infinity;
-  const roughClientYield = roundYieldToOneDecimalPercent(
-    Math.max(0, (market.bidPrice / dayCount) * 365 - (request.firmMarginBps ?? 200) / 10000)
-  );
+  const investmentUsdt = Number(request.investmentUsdt ?? 500000);
+  const requiredContracts = market.strike > 0 ? roundContracts(investmentUsdt / market.strike, market.minTradeAmount ?? 0.1) : 0;
+  const tradingFeePerContractBtc = -Math.min(0.0003, 0.125 * market.bidPrice);
+  const netOptionProceedsBtc = requiredContracts * market.bidPrice + tradingFeePerContractBtc * requiredContracts;
+  const netOptionProceedsUsdt = netOptionProceedsBtc * spot;
+  const roughClientYield = calculateSellPutClientYield({
+    pricingMethod: normalizeSellPutPricingMethod(request.sellPutPricingMethod),
+    grossReferenceYield: (market.bidPrice / dayCount) * 365,
+    netOptionProceedsUsdt,
+    investmentUsdt,
+    dayCount,
+    firmMarginBps: request.firmMarginBps ?? DCN_SELL_PUT_TEMPLATE.firmMarginBps,
+    targetFirmAnnualizedProfit:
+      (request.sellPutTargetFirmProfitBps ?? DCN_SELL_PUT_TEMPLATE.sellPutTargetFirmProfitBps) / 10000
+  });
+  if (roughClientYield === null) return -Infinity;
   const roughCandidate: DcnRankableCandidate = {
     eligible: true,
     clientYield: roughClientYield,
@@ -1218,6 +1313,10 @@ function compareDesc(a: number | null | undefined, b: number | null | undefined)
 
 function finiteOr(value: number | null | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeSellPutPricingMethod(value: DcnPricingRequest["sellPutPricingMethod"]): SellPutPricingMethod {
+  return value === "target_firm_profit" ? "target_firm_profit" : "firm_margin";
 }
 
 function isPositiveFinite(value: unknown): value is number {

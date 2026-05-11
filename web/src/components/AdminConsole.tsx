@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, DeribitMarginCheck, MarketExpirySummary, MarketOption, PricingConfig } from "@/types";
+import type {
+  DcnCandidate,
+  DeribitMarginCheck,
+  MarketExpirySummary,
+  MarketOption,
+  PricingConfig,
+  SellPutPricingMethod
+} from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 import { AdminYieldSurface } from "@/components/AdminYieldSurface";
@@ -35,8 +42,12 @@ export function AdminConsole() {
   const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [investmentBtc, setInvestmentBtc] = useState(10);
+  const [sellPutPricingMethod, setSellPutPricingMethod] = useState<SellPutPricingMethod>("firm_margin");
+  const [savedSellPutPricingMethod, setSavedSellPutPricingMethod] = useState<SellPutPricingMethod>("firm_margin");
   const [firmMarginPct, setFirmMarginPct] = useState(2);
   const [savedFirmMarginPct, setSavedFirmMarginPct] = useState(2);
+  const [sellPutTargetFirmProfitPct, setSellPutTargetFirmProfitPct] = useState(5);
+  const [savedSellPutTargetFirmProfitPct, setSavedSellPutTargetFirmProfitPct] = useState(5);
   const [sellCallTargetFirmProfitPct, setSellCallTargetFirmProfitPct] = useState(5);
   const [savedSellCallTargetFirmProfitPct, setSavedSellCallTargetFirmProfitPct] = useState(5);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
@@ -138,7 +149,16 @@ export function AdminConsole() {
     setConfigMessage(null);
     setRefreshError(null);
     setExpiryPrice(null);
-  }, [instrumentName, investmentUsdt, investmentBtc, firmMarginPct, sellCallTargetFirmProfitPct, selectedProductType]);
+  }, [
+    instrumentName,
+    investmentUsdt,
+    investmentBtc,
+    sellPutPricingMethod,
+    firmMarginPct,
+    sellPutTargetFirmProfitPct,
+    sellCallTargetFirmProfitPct,
+    selectedProductType
+  ]);
 
   useEffect(() => {
     if (!audit) return;
@@ -157,11 +177,23 @@ export function AdminConsole() {
     const response = await fetch("/api/admin/pricing-config", { cache: "no-store" });
     if (!response.ok) return;
     const payload = (await response.json()) as { pricingConfig?: PricingConfig };
+    const putMethod = payload.pricingConfig?.sellPutPricingMethod;
+    if (putMethod === "firm_margin" || putMethod === "target_firm_profit") {
+      setSellPutPricingMethod(putMethod);
+      setSavedSellPutPricingMethod(putMethod);
+    }
     const firmMarginBps = payload.pricingConfig?.firmMarginBps;
-    if (typeof firmMarginBps !== "number" || !Number.isFinite(firmMarginBps)) return;
-    const firmMargin = firmMarginBps / 100;
-    setFirmMarginPct(firmMargin);
-    setSavedFirmMarginPct(firmMargin);
+    if (typeof firmMarginBps === "number" && Number.isFinite(firmMarginBps)) {
+      const firmMargin = firmMarginBps / 100;
+      setFirmMarginPct(firmMargin);
+      setSavedFirmMarginPct(firmMargin);
+    }
+    const putTargetBps = payload.pricingConfig?.sellPutTargetFirmProfitBps;
+    if (typeof putTargetBps === "number" && Number.isFinite(putTargetBps)) {
+      const putTarget = putTargetBps / 100;
+      setSellPutTargetFirmProfitPct(putTarget);
+      setSavedSellPutTargetFirmProfitPct(putTarget);
+    }
     const callTargetBps = payload.pricingConfig?.sellCallTargetFirmProfitBps;
     if (typeof callTargetBps === "number" && Number.isFinite(callTargetBps)) {
       const callTarget = callTargetBps / 100;
@@ -198,10 +230,14 @@ export function AdminConsole() {
 
   const firmMarginBps = Math.max(0, Math.round(firmMarginPct * 100));
   const savedFirmMarginBps = Math.max(0, Math.round(savedFirmMarginPct * 100));
+  const sellPutTargetFirmProfitBps = Math.max(0, Math.round(sellPutTargetFirmProfitPct * 100));
+  const savedSellPutTargetFirmProfitBps = Math.max(0, Math.round(savedSellPutTargetFirmProfitPct * 100));
   const sellCallTargetFirmProfitBps = Math.max(0, Math.round(sellCallTargetFirmProfitPct * 100));
   const savedSellCallTargetFirmProfitBps = Math.max(0, Math.round(savedSellCallTargetFirmProfitPct * 100));
   const pricingConfigChanged =
+    sellPutPricingMethod !== savedSellPutPricingMethod ||
     firmMarginBps !== savedFirmMarginBps ||
+    sellPutTargetFirmProfitBps !== savedSellPutTargetFirmProfitBps ||
     sellCallTargetFirmProfitBps !== savedSellCallTargetFirmProfitBps;
 
   async function savePricingConfig() {
@@ -211,7 +247,12 @@ export function AdminConsole() {
       const response = await fetch("/api/admin/pricing-config", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ firmMarginBps, sellCallTargetFirmProfitBps })
+        body: JSON.stringify({
+          sellPutPricingMethod,
+          firmMarginBps,
+          sellPutTargetFirmProfitBps,
+          sellCallTargetFirmProfitBps
+        })
       });
       const payload = (await response.json()) as { pricingConfig?: PricingConfig; error?: string };
       if (!response.ok) {
@@ -222,6 +263,13 @@ export function AdminConsole() {
       const nextMarginPct = nextMarginBps / 100;
       setFirmMarginPct(nextMarginPct);
       setSavedFirmMarginPct(nextMarginPct);
+      const nextPutMethod = payload.pricingConfig?.sellPutPricingMethod ?? sellPutPricingMethod;
+      setSellPutPricingMethod(nextPutMethod);
+      setSavedSellPutPricingMethod(nextPutMethod);
+      const nextPutTargetBps = payload.pricingConfig?.sellPutTargetFirmProfitBps ?? sellPutTargetFirmProfitBps;
+      const nextPutTargetPct = nextPutTargetBps / 100;
+      setSellPutTargetFirmProfitPct(nextPutTargetPct);
+      setSavedSellPutTargetFirmProfitPct(nextPutTargetPct);
       const nextCallTargetBps = payload.pricingConfig?.sellCallTargetFirmProfitBps ?? sellCallTargetFirmProfitBps;
       const nextCallTargetPct = nextCallTargetBps / 100;
       setSellCallTargetFirmProfitPct(nextCallTargetPct);
@@ -248,7 +296,9 @@ export function AdminConsole() {
           investmentBtc: selectedProductType === "sell_call" ? investmentBtc : undefined,
           targetYieldBps: 1000,
           runwayDays: 92,
+          sellPutPricingMethod,
           firmMarginBps,
+          sellPutTargetFirmProfitBps,
           sellCallTargetFirmProfitBps,
           orderBookDepth: 100,
           scenarioExpiryPrice: expiryPrice ?? undefined
@@ -278,7 +328,9 @@ export function AdminConsole() {
         investmentBtc: selectedProductType === "sell_call" ? investmentBtc : undefined,
         targetYieldBps: 1000,
         runwayDays: 92,
+        sellPutPricingMethod,
         firmMarginBps,
+        sellPutTargetFirmProfitBps,
         sellCallTargetFirmProfitBps,
         orderBookDepth: 100,
         scenarioExpiryPrice: expiryPrice ?? undefined
@@ -367,7 +419,7 @@ export function AdminConsole() {
         <div className="pill">Backend verification</div>
         <h1>DCN pricing audit</h1>
         <p className="small-muted">
-          Check that Deribit quotes are fresh, depth is sufficient, and Signafi margin/profit checks pass before a
+          Check that Deribit quotes are fresh, depth is sufficient, and Signafi pricing/profit checks pass before a
           client-facing yield is shown.
         </p>
       </section>
@@ -423,6 +475,19 @@ export function AdminConsole() {
                   <option value="sell_call">DCN Call</option>
                 </select>
               </label>
+              {selectedProductType === "sell_put" ? (
+                <label>
+                  <span className="field-label">Put pricing basis</span>
+                  <select
+                    className="admin-input"
+                    value={sellPutPricingMethod}
+                    onChange={(event) => setSellPutPricingMethod(event.target.value as SellPutPricingMethod)}
+                  >
+                    <option value="firm_margin">Firm margin % p.a.</option>
+                    <option value="target_firm_profit">PUT TARGET FIRM PROFIT % P.A.</option>
+                  </select>
+                </label>
+              ) : null}
               <label>
                 <span className="field-label">Expiry date</span>
                 <select
@@ -470,28 +535,57 @@ export function AdminConsole() {
               </label>
               <label>
                 <span className="field-label">
-                  {selectedProductType === "sell_call" ? "Call target firm profit % p.a." : "Firm margin % p.a."}
+                  {selectedProductType === "sell_call"
+                    ? "Call target firm profit % p.a."
+                    : sellPutPricingMethod === "target_firm_profit"
+                      ? "PUT TARGET FIRM PROFIT % P.A."
+                      : "Firm margin % p.a."}
                 </span>
                 <input
                   className="admin-input"
                   type="number"
                   min={0}
                   step={0.1}
-                  value={selectedProductType === "sell_call" ? sellCallTargetFirmProfitPct : firmMarginPct}
+                  value={
+                    selectedProductType === "sell_call"
+                      ? sellCallTargetFirmProfitPct
+                      : sellPutPricingMethod === "target_firm_profit"
+                        ? sellPutTargetFirmProfitPct
+                        : firmMarginPct
+                  }
                   onChange={(event) => {
                     const next = Number(event.target.value);
                     if (selectedProductType === "sell_call") setSellCallTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
+                    else if (sellPutPricingMethod === "target_firm_profit") {
+                      setSellPutTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
+                    }
                     else setFirmMarginPct(Number.isFinite(next) ? next : 0);
                   }}
                 />
               </label>
             </div>
+            {selectedProductType === "sell_put" ? (
+              <div className="soft-row" style={{ marginTop: 12 }}>
+                <span>Saved put pricing basis</span>
+                <strong className="mono">
+                  {savedSellPutPricingMethod === "target_firm_profit" ? "Target firm profit" : "Firm margin"}
+                </strong>
+              </div>
+            ) : null}
             <div className="soft-row" style={{ marginTop: 12 }}>
-              <span>{selectedProductType === "sell_call" ? "Saved call target firm profit" : "Saved firm margin"}</span>
+              <span>
+                {selectedProductType === "sell_call"
+                  ? "Saved call target firm profit"
+                  : sellPutPricingMethod === "target_firm_profit"
+                    ? "Saved put target firm profit"
+                    : "Saved firm margin"}
+              </span>
               <strong className="mono">
                 {selectedProductType === "sell_call"
                   ? savedSellCallTargetFirmProfitPct.toFixed(1)
-                  : savedFirmMarginPct.toFixed(1)}
+                  : sellPutPricingMethod === "target_firm_profit"
+                    ? savedSellPutTargetFirmProfitPct.toFixed(1)
+                    : savedFirmMarginPct.toFixed(1)}
                 % p.a.
               </strong>
             </div>
@@ -689,10 +783,18 @@ export function AdminConsole() {
                   <CheckRow label="Sufficient depth" ok={audit.checks.sufficientDepth} />
                   <CheckRow label="Slippage within limit" ok={audit.checks.slippageWithinLimit ?? true} />
                   <CheckRow
-                    label={selectedProductType === "sell_call" ? "Call C9 yield valid" : "Premium covers interest"}
+                    label={
+                      selectedProductType === "sell_call"
+                        ? "Call C9 yield valid"
+                        : audit.sellPutPricingMethod === "target_firm_profit"
+                          ? "Put C9 yield valid"
+                          : "Premium covers interest"
+                    }
                     ok={
                       selectedProductType === "sell_call"
                         ? audit.checks.clientYieldFormulaValid ?? false
+                        : audit.sellPutPricingMethod === "target_firm_profit"
+                          ? audit.checks.clientYieldFormulaValid ?? false
                         : audit.checks.premiumCoversInterest
                     }
                   />

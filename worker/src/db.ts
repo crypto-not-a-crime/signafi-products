@@ -1,8 +1,12 @@
 import type { DeribitBookSummary, DeribitInstrument, DeribitOrderBook, DeribitTicker } from "./deribit";
 import type { YieldSurfaceOptionType, YieldSurfaceSourceRow } from "./pricing/yield-surface";
 
+export type SellPutPricingMethod = "firm_margin" | "target_firm_profit";
+
 export interface PricingConfig {
+  sellPutPricingMethod: SellPutPricingMethod;
   firmMarginBps: number;
+  sellPutTargetFirmProfitBps: number;
   sellCallTargetFirmProfitBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
@@ -241,7 +245,9 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
   const rows = await db.prepare("SELECT key, value FROM pricing_config").all<{ key: string; value: string }>();
   const map = new Map(rows.results.map((row) => [row.key, row.value]));
   return {
+    sellPutPricingMethod: normalizeSellPutPricingMethod(map.get("sell_put_pricing_method")),
     firmMarginBps: Number(map.get("firm_margin_bps") ?? 200),
+    sellPutTargetFirmProfitBps: Number(map.get("sell_put_target_firm_profit_bps") ?? 500),
     sellCallTargetFirmProfitBps: Number(map.get("sell_call_target_firm_profit_bps") ?? 500),
     quoteFreshnessSeconds: Number(map.get("quote_freshness_seconds") ?? 10),
     defaultOrderBookDepth: Number(map.get("default_order_book_depth") ?? 100),
@@ -252,13 +258,30 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
 
 export async function updatePricingConfig(
   db: D1Database,
-  updates: Partial<Pick<PricingConfig, "firmMarginBps" | "sellCallTargetFirmProfitBps">>,
+  updates: Partial<
+    Pick<PricingConfig, "sellPutPricingMethod" | "firmMarginBps" | "sellPutTargetFirmProfitBps" | "sellCallTargetFirmProfitBps">
+  >,
   nowMs: number
 ): Promise<PricingConfig> {
   const statements: D1PreparedStatement[] = [];
 
+  if (typeof updates.sellPutPricingMethod === "string") {
+    statements.push(
+      upsertPricingConfigStatement(db, "sell_put_pricing_method", normalizeSellPutPricingMethod(updates.sellPutPricingMethod), nowMs)
+    );
+  }
   if (typeof updates.firmMarginBps === "number") {
     statements.push(upsertPricingConfigStatement(db, "firm_margin_bps", String(updates.firmMarginBps), nowMs));
+  }
+  if (typeof updates.sellPutTargetFirmProfitBps === "number") {
+    statements.push(
+      upsertPricingConfigStatement(
+        db,
+        "sell_put_target_firm_profit_bps",
+        String(updates.sellPutTargetFirmProfitBps),
+        nowMs
+      )
+    );
   }
   if (typeof updates.sellCallTargetFirmProfitBps === "number") {
     statements.push(
@@ -459,6 +482,10 @@ function upsertPricingConfigStatement(db: D1Database, key: string, value: string
         updated_at = excluded.updated_at`
     )
     .bind(key, value, nowMs);
+}
+
+function normalizeSellPutPricingMethod(value: unknown): SellPutPricingMethod {
+  return value === "target_firm_profit" ? "target_firm_profit" : "firm_margin";
 }
 
 async function runInChunks(db: D1Database, statements: D1PreparedStatement[], chunkSize: number): Promise<void> {

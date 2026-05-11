@@ -27,7 +27,7 @@ const strikeBufferMaxByProduct: Record<DcnProductType, number> = {
 const putCopy = {
   navActive: "dcn-put" as const,
   engineDescription:
-    "The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured firm margin.",
+    "The matching engine uses live BTC put options, depth-weighted executable bids, and Signafi's configured Put pricing basis.",
   investmentLabel: "Investment",
   investmentPrompt: "How much are you investing?",
   returnPrompt: "What annual return are you targeting?",

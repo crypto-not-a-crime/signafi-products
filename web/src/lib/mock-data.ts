@@ -6,17 +6,26 @@ function roundYieldToOneDecimalPercent(value: number): number {
 }
 
 export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCandidate {
+  const sellPutPricingMethod = overrides.sellPutPricingMethod ?? "firm_margin";
+  const sellPutTargetFirmProfitBps = overrides.sellPutTargetFirmProfitBps ?? 500;
   const grossReferenceYield = (0.0641 / 92) * 365;
-  const clientYield = roundYieldToOneDecimalPercent(grossReferenceYield - 0.02);
+  const defaultClientYield =
+    sellPutPricingMethod === "target_firm_profit"
+      ? (33054.78 / Number(overrides.investmentUsdt ?? 500000)) * (365 / 92) - sellPutTargetFirmProfitBps / 10000
+      : roundYieldToOneDecimalPercent(grossReferenceYield - 0.02);
+  const clientYield = overrides.clientYield ?? defaultClientYield;
   const base: DcnCandidate = {
     formulaTemplate: {
       id: "dcn-sell-put-workbook-v1",
-      version: "2026-04-30",
+      version: "2026-05-11",
       label: "DCN Sell Put workbook template",
-      sourceWorkbook: "SP_Sell_Put_Calc_with_Scenario_Analysis.xlsx",
-      sourceSheets: ["Product 3 - Sell Put", "Scenario Analysis"],
-      firmMarginBps: 200
+      sourceWorkbook: "DCN Calcs.xlsx",
+      sourceSheets: ["Input Dashboard - Sell Put", "DCN - Sell Put", "Scenario Analysis - Sell Put"],
+      sellPutPricingMethod,
+      firmMarginBps: 200,
+      sellPutTargetFirmProfitBps
     },
+    productType: "sell_put",
     instrumentName: "BTC-31JUL26-75000-P",
     investmentUsdt: 500000,
     spotPrice: 78500,
@@ -25,7 +34,9 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
     requiredContracts: 6.6,
     effectivePutBidPrice: 0.0641,
     grossReferenceYield,
+    sellPutPricingMethod,
     firmMarginBps: 200,
+    sellPutTargetFirmProfitBps,
     clientYield,
     clientInterestUsdt: 500000 * (clientYield * (92 / 365)),
     tradingFeesBtc: -0.00198,
@@ -46,8 +57,10 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
       usableBid: true,
       sufficientDepth: true,
       premiumCoversInterest: true,
+      clientYieldFormulaValid: true,
       clientYieldPositive: true,
       firmMarginPositive: true,
+      targetFirmProfitNonNegative: true,
       upsideProfitPositive: true,
       downsideProfitPositive: true
     },
@@ -55,11 +68,27 @@ export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCand
       { cell: "C4", label: "Initial Investment (USDT)", formula: "user input", value: 500000 },
       { cell: "C15", label: "Put Bid Price", formula: "depth-weighted bid", value: 0.0641 },
       { cell: "C17", label: "Option Baseline Premium", formula: "C15/C11*365", value: grossReferenceYield },
-      { cell: "Signafi Margin", label: "Firm margin", formula: "admin firm margin input / 100", value: 0.02 },
       {
-        cell: "Client Yield",
+        cell: "Put Pricing Method",
+        label: "Put pricing basis",
+        formula: "admin sellPutPricingMethod",
+        value: sellPutPricingMethod
+      },
+      sellPutPricingMethod === "target_firm_profit"
+        ? {
+            cell: "Input Dashboard - Sell Put!C15",
+            label: "Put target firm profit",
+            formula: "admin sellPutTargetFirmProfitBps / 10000",
+            value: sellPutTargetFirmProfitBps / 10000
+          }
+        : { cell: "Signafi Margin", label: "Firm margin", formula: "admin firm margin input / 100", value: 0.02 },
+      {
+        cell: sellPutPricingMethod === "target_firm_profit" ? "Input Dashboard - Sell Put!C9" : "Client Yield",
         label: "Client target yield",
-        formula: "ROUND(MAX(C17 - Signafi Margin, 0) * 100, 1) / 100",
+        formula:
+          sellPutPricingMethod === "target_firm_profit"
+            ? "NetPremiumUSDT/InitialInvestment*365/DayCount-TargetFirmAnnualizedProfit"
+            : "ROUND(MAX(C17 - Signafi Margin, 0) * 100, 1) / 100",
         value: clientYield
       },
       { cell: "Selected Payout", label: "Client payout", formula: "scenario analysis", value: 522000 }
@@ -188,12 +217,19 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
   }
 
   const investmentUsdt = Number(input.investmentUsdt ?? 500000);
+  const sellPutPricingMethod = input.sellPutPricingMethod === "target_firm_profit" ? "target_firm_profit" : "firm_margin";
+  const sellPutTargetFirmProfitBps =
+    typeof input.sellPutTargetFirmProfitBps === "number" && Number.isFinite(input.sellPutTargetFirmProfitBps)
+      ? input.sellPutTargetFirmProfitBps
+      : 500;
   const strikeBufferPct = typeof input.strikeBufferPct === "number" ? Number(input.strikeBufferPct) : null;
   const selectorMode =
     input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
       ? input.selectorMode
       : "closest";
   const best = mockDcnCandidate({
+    sellPutPricingMethod,
+    sellPutTargetFirmProfitBps,
     investmentUsdt,
     requiredContracts: Math.floor((investmentUsdt / 75000) * 10) / 10
   });
@@ -207,6 +243,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
     candidates: [
       best,
       mockDcnCandidate({
+        sellPutPricingMethod,
+        sellPutTargetFirmProfitBps,
         instrumentName: "BTC-31JUL26-70000-P",
         strike: 70000,
         effectivePutBidPrice: 0.044,
@@ -216,6 +254,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
         downsideProfitUsdt: 8400
       }),
       mockDcnCandidate({
+        sellPutPricingMethod,
+        sellPutTargetFirmProfitBps,
         instrumentName: "BTC-25SEP26-65000-P",
         strike: 65000,
         dayCount: 150,

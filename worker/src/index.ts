@@ -438,12 +438,33 @@ async function handleGetPricingConfig(_request: Request, env: Env): Promise<Resp
 }
 
 async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Response> {
-  const payload = await request.json<{ firmMarginBps?: number; sellCallTargetFirmProfitBps?: number }>();
+  const payload = await request.json<{
+    sellPutPricingMethod?: string;
+    firmMarginBps?: number;
+    sellPutTargetFirmProfitBps?: number;
+    sellCallTargetFirmProfitBps?: number;
+  }>();
+  if (
+    payload.sellPutPricingMethod !== undefined &&
+    payload.sellPutPricingMethod !== "firm_margin" &&
+    payload.sellPutPricingMethod !== "target_firm_profit"
+  ) {
+    return json({ error: "sellPutPricingMethod must be firm_margin or target_firm_profit" }, 400);
+  }
   if (payload.firmMarginBps !== undefined && !isNonNegativeFinite(payload.firmMarginBps)) {
     return json({ error: "firmMarginBps must be a non-negative number" }, 400);
   }
   if (payload.firmMarginBps !== undefined && payload.firmMarginBps > 10_000) {
     return json({ error: "firmMarginBps must be less than or equal to 10000" }, 400);
+  }
+  if (
+    payload.sellPutTargetFirmProfitBps !== undefined &&
+    !isNonNegativeFinite(payload.sellPutTargetFirmProfitBps)
+  ) {
+    return json({ error: "sellPutTargetFirmProfitBps must be a non-negative number" }, 400);
+  }
+  if (payload.sellPutTargetFirmProfitBps !== undefined && payload.sellPutTargetFirmProfitBps > 10_000) {
+    return json({ error: "sellPutTargetFirmProfitBps must be less than or equal to 10000" }, 400);
   }
   if (
     payload.sellCallTargetFirmProfitBps !== undefined &&
@@ -458,8 +479,16 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
   const pricingConfig = await updatePricingConfig(
     env.DB,
     {
+      sellPutPricingMethod:
+        payload.sellPutPricingMethod === "target_firm_profit" || payload.sellPutPricingMethod === "firm_margin"
+          ? payload.sellPutPricingMethod
+          : undefined,
       firmMarginBps:
         payload.firmMarginBps === undefined ? undefined : Math.round(payload.firmMarginBps),
+      sellPutTargetFirmProfitBps:
+        payload.sellPutTargetFirmProfitBps === undefined
+          ? undefined
+          : Math.round(payload.sellPutTargetFirmProfitBps),
       sellCallTargetFirmProfitBps:
         payload.sellCallTargetFirmProfitBps === undefined
           ? undefined
@@ -647,7 +676,11 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     strikePreference: request.strikePreference ?? "any",
     strikeBufferPct: normalizeStrikeBufferPct(request.strikeBufferPct, productType),
     selectorMode: normalizeSelectorMode(request.selectorMode),
+    sellPutPricingMethod: normalizeSellPutPricingMethod(request.sellPutPricingMethod ?? config.sellPutPricingMethod),
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
+    sellPutTargetFirmProfitBps: Number(
+      request.sellPutTargetFirmProfitBps ?? config.sellPutTargetFirmProfitBps
+    ),
     sellCallTargetFirmProfitBps: Number(
       request.sellCallTargetFirmProfitBps ?? config.sellCallTargetFirmProfitBps
     ),
@@ -663,6 +696,10 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
 
 function normalizeSelectorMode(mode: DcnPricingRequest["selectorMode"]): DcnPricingRequest["selectorMode"] {
   return mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike" ? mode : "closest";
+}
+
+function normalizeSellPutPricingMethod(method: DcnPricingRequest["sellPutPricingMethod"]): DcnPricingRequest["sellPutPricingMethod"] {
+  return method === "target_firm_profit" ? "target_firm_profit" : "firm_margin";
 }
 
 function normalizeStrikeBufferPct(

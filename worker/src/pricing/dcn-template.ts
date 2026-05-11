@@ -1,10 +1,12 @@
 export const DCN_SELL_PUT_TEMPLATE = {
   id: "dcn-sell-put-workbook-v1",
-  version: "2026-04-30",
+  version: "2026-05-11",
   label: "DCN Sell Put workbook template",
-  sourceWorkbook: "SP_Sell_Put_Calc_with_Scenario_Analysis.xlsx",
-  sourceSheets: ["Product 3 - Sell Put", "Scenario Analysis"],
+  sourceWorkbook: "DCN Calcs.xlsx",
+  sourceSheets: ["Input Dashboard - Sell Put", "DCN - Sell Put", "Scenario Analysis - Sell Put"],
+  defaultPricingMethod: "firm_margin",
   firmMarginBps: 200,
+  sellPutTargetFirmProfitBps: 500,
   cells: {
     investmentUsdt: "C4",
     spotPrice: "C5",
@@ -13,6 +15,7 @@ export const DCN_SELL_PUT_TEMPLATE = {
     dayCount: "C11",
     contracts: "C14",
     effectivePutBidPrice: "C15",
+    targetFirmAnnualizedProfit: "C18",
     grossReferenceYield: "C17",
     tradingFeesBtc: "C20",
     netOptionProceedsBtc: "C22",
@@ -32,7 +35,10 @@ export const DCN_SELL_PUT_TEMPLATE = {
     dayCount: "calendar expiry date - calendar today date (exclusive today, inclusive expiry date)",
     contracts: "ROUNDDOWN(C4/C7, 1)",
     grossReferenceYield: "effectivePutBidPrice / dayCount * 365",
-    clientYield: "ROUND(MAX(grossReferenceYield - firmMarginBps / 10000, 0) * 100, 1) / 100",
+    clientYield: "selected Put pricing method client yield formula",
+    clientYieldFirmMargin: "ROUND(MAX(grossReferenceYield - firmMarginBps / 10000, 0) * 100, 1) / 100",
+    clientYieldTargetFirmProfit:
+      "NetPremiumUSDT/InitialInvestment*365/DayCount-TargetFirmAnnualizedProfit",
     clientPayoutBtc: "investmentUSDT / strike * (1 + clientYield * days / 365)",
     clientPayoutUsdt: "investmentUSDT * (1 + clientYield * days / 365)",
     downsideOptionSettlementBtc: "IF(expiryPrice < strike, -((strike - expiryPrice) / expiryPrice * contracts), 0)",
@@ -99,7 +105,9 @@ export interface DcnTemplateSummary {
   label: string;
   sourceWorkbook: string;
   sourceSheets: string[];
+  sellPutPricingMethod?: string;
   firmMarginBps?: number;
+  sellPutTargetFirmProfitBps?: number;
   sellCallTargetFirmProfitBps?: number;
   upsideReferenceMultiplier?: number;
 }
@@ -123,6 +131,8 @@ export function getDcnTemplateSummary(productType: "sell_put" | "sell_call" = "s
     label: DCN_SELL_PUT_TEMPLATE.label,
     sourceWorkbook: DCN_SELL_PUT_TEMPLATE.sourceWorkbook,
     sourceSheets: [...DCN_SELL_PUT_TEMPLATE.sourceSheets],
-    firmMarginBps: DCN_SELL_PUT_TEMPLATE.firmMarginBps
+    sellPutPricingMethod: DCN_SELL_PUT_TEMPLATE.defaultPricingMethod,
+    firmMarginBps: DCN_SELL_PUT_TEMPLATE.firmMarginBps,
+    sellPutTargetFirmProfitBps: DCN_SELL_PUT_TEMPLATE.sellPutTargetFirmProfitBps
   };
 }

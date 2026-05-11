@@ -10,7 +10,9 @@ export interface FormulaTemplateSummary {
   label: string;
   sourceWorkbook: string;
   sourceSheets: string[];
+  sellPutPricingMethod?: SellPutPricingMethod;
   firmMarginBps?: number;
+  sellPutTargetFirmProfitBps?: number;
   sellCallTargetFirmProfitBps?: number;
   upsideReferenceMultiplier?: number;
 }
@@ -23,7 +25,9 @@ export interface FormulaTraceRow {
 }
 
 export interface PricingConfig {
+  sellPutPricingMethod: SellPutPricingMethod;
   firmMarginBps: number;
+  sellPutTargetFirmProfitBps: number;
   sellCallTargetFirmProfitBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
@@ -63,7 +67,9 @@ export interface DcnCandidate {
   effectiveCallBidPrice?: number | null;
   effectivePutBidPrice: number | null;
   grossReferenceYield: number | null;
+  sellPutPricingMethod?: SellPutPricingMethod;
   firmMarginBps: number;
+  sellPutTargetFirmProfitBps?: number;
   sellCallTargetFirmProfitBps?: number;
   upsideReferencePrice?: number;
   clientYield: number | null;
@@ -100,6 +106,7 @@ export interface DcnCandidate {
 }
 
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
+export type SellPutPricingMethod = "firm_margin" | "target_firm_profit";
 
 export interface DcnPricingRequest {
   productType?: "sell_put" | "sell_call";
@@ -110,6 +117,9 @@ export interface DcnPricingRequest {
   strikePreference?: "any" | "five_otm" | "ten_otm";
   strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
+  sellPutPricingMethod?: SellPutPricingMethod;
+  firmMarginBps?: number;
+  sellPutTargetFirmProfitBps?: number;
   sellCallTargetFirmProfitBps?: number;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;

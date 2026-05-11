@@ -3,6 +3,7 @@ import {
   calculateDcnScenario,
   calculateDcnSellCall,
   calculateDcnSellPut,
+  calculateSellPutClientYield,
   calculateSellCallClientYield,
   compareDcnCandidatesForClientMandate,
   dayCountFromExpiry,
@@ -200,10 +201,11 @@ describe("DCN sell-put pricing", () => {
     expect(upsideScenario.clientPayoutAmount).toBeCloseTo(519030.1369863014, 6);
   });
 
-  it("keeps the Signafi client yield at C17 less a fixed 2 percent margin", () => {
+  it("preserves the legacy firm-margin client yield method", () => {
     const result = calculateDcnSellPut(
       {
         investmentUsdt: 500000,
+        sellPutPricingMethod: "firm_margin",
         firmMarginBps: 200,
         quoteFreshnessSeconds: 10,
         nowMs: NOW
@@ -221,7 +223,54 @@ describe("DCN sell-put pricing", () => {
       }
     );
 
+    expect(result.sellPutPricingMethod).toBe("firm_margin");
     expect(result.clientYield).toBe(roundYieldToOneDecimalPercent((0.04358 / 92) * 365 - 0.02));
+  });
+
+  it("matches the Sell Put dashboard C9 yield formula when target firm profit mode is selected", () => {
+    const putWorkbookNow = Date.UTC(2026, 4, 8);
+    const putWorkbookExpiry = Date.UTC(2026, 6, 31, 8, 0);
+    const result = calculateDcnSellPut(
+      {
+        investmentUsdt: 1000000,
+        sellPutPricingMethod: "target_firm_profit",
+        sellPutTargetFirmProfitBps: 500,
+        quoteFreshnessSeconds: 10,
+        nowMs: putWorkbookNow
+      },
+      {
+        instrumentName: "BTC-31JUL26-77000-P",
+        strike: 77000,
+        expirationTimestamp: putWorkbookExpiry,
+        minTradeAmount: 0.1,
+        underlyingPrice: 81499,
+        bidPrice: 0.04908,
+        bidAmount: 12.9,
+        markPrice: 0.0498,
+        deribitTimestamp: putWorkbookNow,
+        bids: [[0.04908, 12.9]]
+      }
+    );
+
+    const expected = calculateSellPutClientYield({
+      pricingMethod: "target_firm_profit",
+      grossReferenceYield: result.grossReferenceYield,
+      netOptionProceedsUsdt: result.netOptionProceedsUsdt,
+      investmentUsdt: result.investmentUsdt,
+      dayCount: result.dayCount,
+      firmMarginBps: 200,
+      targetFirmAnnualizedProfit: 0.05
+    });
+
+    expect(result.sellPutPricingMethod).toBe("target_firm_profit");
+    expect(result.dayCount).toBe(84);
+    expect(result.requiredContracts).toBe(12.9);
+    expect(result.tradingFeesBtc).toBeCloseTo(-0.00387, 10);
+    expect(result.netOptionProceedsBtc).toBeCloseTo(0.629262, 10);
+    expect(result.netOptionProceedsUsdt).toBeCloseTo(51284.223738, 8);
+    expect(result.clientYield).toBe(expected);
+    expect(result.clientYield).toBeCloseTo(0.172842162671071, 12);
+    expect(result.checks.clientYieldFormulaValid).toBe(true);
   });
 
   it("fails eligibility when the quote is stale", () => {
