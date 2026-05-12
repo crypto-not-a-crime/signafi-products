@@ -239,11 +239,16 @@ async function handleYieldSurface(request: Request, env: Env): Promise<Response>
 
   const nowMs = Date.now();
   const limit = Math.min(Math.max(Math.floor(limitParam ?? 5000), 1), 10000);
-  const rows = await getYieldSurfaceRows(env.DB, rawType as YieldSurfaceOptionType, nowMs, limit);
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
+  const [rows, spot] = await Promise.all([
+    getYieldSurfaceRows(env.DB, rawType as YieldSurfaceOptionType, nowMs, limit),
+    getBtcUsdcSpotMetadata(client)
+  ]);
   return json(
     buildYieldSurface(rows, {
       nowMs,
       optionType: rawType as YieldSurfaceOptionType,
+      spot,
       filters: {
         minDte,
         maxDte,
@@ -651,6 +656,26 @@ async function getBtcUsdcSpotPrice(client: DeribitClient): Promise<number | null
     return spotPriceFromTicker(await client.btcUsdcSpotTicker());
   } catch {
     return null;
+  }
+}
+
+async function getBtcUsdcSpotMetadata(client: DeribitClient): Promise<
+  | {
+      spotPrice: number | null;
+      spotInstrumentName: string | null;
+      spotTickerTimestamp: number | null;
+    }
+  | undefined
+> {
+  try {
+    const ticker = await client.btcUsdcSpotTicker();
+    return {
+      spotPrice: spotPriceFromTicker(ticker),
+      spotInstrumentName: ticker.instrument_name ?? "BTC_USDC",
+      spotTickerTimestamp: ticker.timestamp ?? null
+    };
+  } catch {
+    return undefined;
   }
 }
 

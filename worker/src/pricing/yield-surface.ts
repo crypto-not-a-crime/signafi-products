@@ -60,6 +60,9 @@ export interface YieldSurfaceResponse {
   generatedAt: number;
   optionType: YieldSurfaceOptionType;
   source: "d1_latest";
+  spotPrice?: number | null;
+  spotInstrumentName?: string | null;
+  spotTickerTimestamp?: number | null;
   formula: {
     label: string;
     expression: string;
@@ -82,6 +85,11 @@ export function buildYieldSurface(
     nowMs?: number;
     optionType: YieldSurfaceOptionType;
     filters?: YieldSurfaceFilters;
+    spot?: {
+      spotPrice: number | null;
+      spotInstrumentName: string | null;
+      spotTickerTimestamp: number | null;
+    };
   }
 ): YieldSurfaceResponse {
   const nowMs = options.nowMs ?? Date.now();
@@ -136,6 +144,9 @@ export function buildYieldSurface(
     generatedAt: nowMs,
     optionType: options.optionType,
     source: "d1_latest",
+    spotPrice: options.spot?.spotPrice,
+    spotInstrumentName: options.spot?.spotInstrumentName,
+    spotTickerTimestamp: options.spot?.spotTickerTimestamp,
     formula: {
       label: "Annualized Premium Yield",
       expression: "bidPrice / daysToExpiry * 365",

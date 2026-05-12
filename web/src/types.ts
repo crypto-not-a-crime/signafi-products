@@ -219,6 +219,9 @@ export interface YieldSurfaceResponse {
   generatedAt: number;
   optionType: "call" | "put";
   source: "d1_latest" | "deribit_public" | "mock";
+  spotPrice?: number | null;
+  spotInstrumentName?: string | null;
+  spotTickerTimestamp?: number | null;
   formula: {
     label: string;
     expression: string;

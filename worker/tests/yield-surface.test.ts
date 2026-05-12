@@ -70,6 +70,32 @@ describe("annualized yield surface", () => {
     expect(puts.points.map((point) => point.instrumentName)).toEqual(["BTC-31JUL26-73000-P"]);
     expect(calls.points.map((point) => point.instrumentName)).toEqual(["BTC-31JUL26-90000-C"]);
   });
+
+  it("carries BTC_USDC spot metadata without filtering the surface points", () => {
+    const surface = buildYieldSurface(
+      [
+        row({ instrument_name: "BTC-31JUL26-65000-P", strike: 65000, bid_price: 0.02 }),
+        row({ instrument_name: "BTC-31JUL26-93000-P", strike: 93000, bid_price: 0.025 })
+      ],
+      {
+        nowMs: NOW,
+        optionType: "put",
+        spot: {
+          spotPrice: 82000,
+          spotInstrumentName: "BTC_USDC",
+          spotTickerTimestamp: NOW - 1000
+        }
+      }
+    );
+
+    expect(surface.spotPrice).toBe(82000);
+    expect(surface.spotInstrumentName).toBe("BTC_USDC");
+    expect(surface.spotTickerTimestamp).toBe(NOW - 1000);
+    expect(surface.points.map((point) => point.instrumentName)).toEqual([
+      "BTC-31JUL26-65000-P",
+      "BTC-31JUL26-93000-P"
+    ]);
+  });
 });
 
 function row(overrides: Partial<YieldSurfaceSourceRow> = {}): YieldSurfaceSourceRow {

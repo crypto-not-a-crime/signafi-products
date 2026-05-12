@@ -27,6 +27,16 @@ interface DeribitBookSummary {
   mark_iv?: number | null;
 }
 
+interface DeribitTicker {
+  instrument_name?: string;
+  best_bid_price?: number | null;
+  best_ask_price?: number | null;
+  mark_price?: number | null;
+  last_price?: number | null;
+  index_price?: number | null;
+  timestamp?: number | null;
+}
+
 interface DeribitRpcResponse<T> {
   jsonrpc: "2.0";
   id: number;
@@ -45,7 +55,7 @@ export async function fetchLiveDeribitYieldSurface(request: Request): Promise<Yi
   const filters = normalizeFilters(url);
   const nowMs = Date.now();
 
-  const [instruments, summaries] = await Promise.all([
+  const [instruments, summaries, spotTicker] = await Promise.all([
     deribitRpc<DeribitInstrument[]>("public/get_instruments", {
       currency: "BTC",
       kind: "option",
@@ -54,7 +64,10 @@ export async function fetchLiveDeribitYieldSurface(request: Request): Promise<Yi
     deribitRpc<DeribitBookSummary[]>("public/get_book_summary_by_currency", {
       currency: "BTC",
       kind: "option"
-    })
+    }),
+    deribitRpc<DeribitTicker>("public/ticker", {
+      instrument_name: "BTC_USDC"
+    }).catch(() => null)
   ]);
   const summariesByInstrument = new Map(summaries.map((summary) => [summary.instrument_name, summary]));
   const points: YieldSurfacePoint[] = [];
@@ -110,6 +123,9 @@ export async function fetchLiveDeribitYieldSurface(request: Request): Promise<Yi
     generatedAt: nowMs,
     optionType,
     source: "deribit_public",
+    spotPrice: spotPriceFromTicker(spotTicker),
+    spotInstrumentName: spotTicker?.instrument_name ?? "BTC_USDC",
+    spotTickerTimestamp: finiteOrNull(spotTicker?.timestamp),
     formula: {
       label: "Annualized Premium Yield",
       expression: "bidPrice / daysToExpiry * 365",
@@ -177,6 +193,19 @@ function optionalNonNegativeParam(url: URL, names: string[]): number | undefined
   return undefined;
 }
 
+function spotPriceFromTicker(ticker: DeribitTicker | null | undefined): number | null {
+  const bid = finitePositive(ticker?.best_bid_price);
+  const ask = finitePositive(ticker?.best_ask_price);
+  const mid = bid !== null && ask !== null ? (bid + ask) / 2 : null;
+  return (
+    mid ??
+    finitePositive(ticker?.mark_price) ??
+    finitePositive(ticker?.last_price) ??
+    finitePositive(ticker?.index_price) ??
+    null
+  );
+}
+
 function summarizeExpiries(points: YieldSurfacePoint[]): YieldSurfaceExpiry[] {
   const map = new Map<number, YieldSurfaceExpiry>();
   for (const point of points) {
@@ -216,6 +245,10 @@ function formatExpiry(timestamp: number): string {
 
 function isPositiveFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function finitePositive(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function finiteOrNull(value: number | null | undefined): number | null {

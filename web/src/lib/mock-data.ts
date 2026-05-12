@@ -379,6 +379,9 @@ export function mockYieldSurface(optionType: "call" | "put" = "put"): YieldSurfa
     generatedAt,
     optionType,
     source: "mock",
+    spotPrice: 80000,
+    spotInstrumentName: "BTC_USDC",
+    spotTickerTimestamp: latestQuoteAt,
     formula: {
       label: "Annualized Premium Yield",
       expression: "bidPrice / daysToExpiry * 365",

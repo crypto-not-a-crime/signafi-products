@@ -222,8 +222,8 @@ export function AdminYieldSurface() {
             executable return, or a guarantee that the same trade can be repeated.
           </p>
           <p className="card-copy" style={{ marginTop: 8 }}>
-            The chart covers all live non-expired expiries by default, with a broad strike window and annualized
-            premium yield below 150% for readability. The API payload still includes the full live surface.
+            The API payload includes the full live surface. The initial display opens around BTC_USDC spot, with
+            annualized premium yield below 150% for readability; use the sliders to expand or trim the view.
           </p>
         </div>
 
@@ -564,13 +564,46 @@ function buildPercentileFallback(points: YieldSurfacePoint[]): YieldSurfacePoint
 function defaultControlsForSurface(surface: YieldSurfaceResponse): SurfaceControls {
   const universe = getDisplayUniverse(surface);
   const extents = universe.extents;
+  const strikeStep = getStrikeStep(extents);
+  const defaultMinStrike =
+    surface.optionType === "call" && isPositiveNumber(surface.spotPrice)
+      ? clampStrikeBoundary(
+          nearestStrikeAtOrBelow(universe.points, surface.spotPrice * 0.9) ?? extents.minStrike,
+          extents.minStrike,
+          extents.maxStrike - strikeStep
+        )
+      : extents.minStrike;
+  const defaultMaxStrike =
+    surface.optionType === "put" && isPositiveNumber(surface.spotPrice)
+      ? clampStrikeBoundary(
+          nearestStrikeAtOrAbove(universe.points, surface.spotPrice * 1.1) ?? extents.maxStrike,
+          extents.minStrike + strikeStep,
+          extents.maxStrike
+        )
+      : extents.maxStrike;
+
   return {
-    minStrike: extents.minStrike,
-    maxStrike: extents.maxStrike,
+    minStrike: defaultMinStrike,
+    maxStrike: defaultMaxStrike,
     minDte: Math.max(DISPLAY_MIN_DTE, extents.minDte),
     maxDte: Math.min(DISPLAY_MAX_DTE, extents.maxDte),
     maxYield: Math.min(DEFAULT_MAX_ANNUALIZED_YIELD, universe.maxYield)
   };
+}
+
+function nearestStrikeAtOrBelow(points: YieldSurfacePoint[], target: number): number | null {
+  const strikes = Array.from(new Set(points.map((point) => point.strike))).sort((a, b) => b - a);
+  return strikes.find((strike) => strike <= target) ?? null;
+}
+
+function nearestStrikeAtOrAbove(points: YieldSurfacePoint[], target: number): number | null {
+  const strikes = Array.from(new Set(points.map((point) => point.strike))).sort((a, b) => a - b);
+  return strikes.find((strike) => strike >= target) ?? null;
+}
+
+function clampStrikeBoundary(value: number, min: number, max: number): number {
+  if (max < min) return value;
+  return Math.min(Math.max(value, min), max);
 }
 
 function getSurfaceExtents(points: YieldSurfacePoint[]): SurfaceRange {
@@ -593,6 +626,10 @@ function hasUsableSurface(points: YieldSurfacePoint[]): boolean {
   const strikeCount = new Set(points.map((point) => point.strike)).size;
   const expiryCount = new Set(points.map((point) => point.expirationTimestamp)).size;
   return points.length >= 12 && strikeCount >= 4 && expiryCount >= 3;
+}
+
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function summarizeExpiries(points: YieldSurfacePoint[]) {
