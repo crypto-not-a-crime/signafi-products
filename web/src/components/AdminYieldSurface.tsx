@@ -36,6 +36,11 @@ interface NormalizedSample {
   annualizedYield: number;
 }
 
+interface NearestSample {
+  sample: NormalizedSample;
+  distanceSquared: number;
+}
+
 interface SurfaceControls {
   minStrike: number;
   maxStrike: number;
@@ -280,10 +285,10 @@ function YieldSurfaceChart({ surface }: { surface: YieldSurfaceResponse }) {
 
     const interpolatedSurface = buildInterpolatedSurface(surface.points);
     const ranges = interpolatedSurface.ranges;
-    const pointRefsByVertex = interpolatedSurface.pointRefs;
     const surfacePositions = interpolatedSurface.positions;
     const surfaceColors = interpolatedSurface.colors;
     const surfaceIndices = interpolatedSurface.indices;
+    const rawSamples = interpolatedSurface.rawSamples;
 
     let surfaceMesh: THREE.Mesh | null = null;
     if (surfacePositions.length > 0) {
@@ -329,8 +334,8 @@ function YieldSurfaceChart({ surface }: { surface: YieldSurfaceResponse }) {
 
       if (surfaceMesh) {
         const [hit] = raycaster.intersectObject(surfaceMesh);
-        if (hit?.face) {
-          const point = nearestFacePoint(hit, surfaceMesh, pointRefsByVertex);
+        if (hit) {
+          const point = nearestHitPoint(hit.point, ranges, rawSamples);
           setTooltip({ point, x: event.clientX - rect.left + 14, y: event.clientY - rect.top + 14 });
           return;
         }
@@ -625,8 +630,14 @@ function buildInterpolatedSurface(points: YieldSurfacePoint[]) {
     annualizedYield: point.annualizedYield
   }));
   const samples = buildTerrainSamples(rawSamples);
-  const xCoordinates = buildEvenCoordinates(strikeSteps);
-  const zCoordinates = buildEvenCoordinates(dteSteps);
+  const xCoordinates = buildSurfaceCoordinates(
+    rawSamples.map((sample) => sample.x),
+    strikeSteps
+  );
+  const zCoordinates = buildSurfaceCoordinates(
+    rawSamples.map((sample) => sample.z),
+    dteSteps
+  );
   const grid: SurfaceVertex[][] = [];
 
   for (const zNorm of zCoordinates) {
@@ -673,14 +684,12 @@ function buildInterpolatedSurface(points: YieldSurfacePoint[]) {
   const positions: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
-  const pointRefs: YieldSurfacePoint[] = [];
 
   for (const row of grid) {
     for (const vertex of row) {
       const color = colorForYield(vertex.annualizedYield, ranges);
       positions.push(vertex.position.x, vertex.position.y, vertex.position.z);
       colors.push(color.r, color.g, color.b);
-      pointRefs.push(vertex.nearestPoint);
     }
   }
 
@@ -695,17 +704,20 @@ function buildInterpolatedSurface(points: YieldSurfacePoint[]) {
     }
   }
 
-  return { positions, colors, indices, pointRefs, ranges };
+  return { positions, colors, indices, ranges, rawSamples };
 }
 
-function buildEvenCoordinates(baseSteps: number): number[] {
-  const coordinates: number[] = [];
+function buildSurfaceCoordinates(sampleCoordinates: number[], baseSteps: number): number[] {
+  const coordinates = new Set<number>();
   for (let index = 0; index < baseSteps; index += 1) {
-    coordinates.push(roundCoordinate(baseSteps === 1 ? 0.5 : index / (baseSteps - 1)));
+    coordinates.add(roundCoordinate(baseSteps === 1 ? 0.5 : index / (baseSteps - 1)));
   }
-  if (!coordinates.includes(0)) coordinates.unshift(0);
-  if (!coordinates.includes(1)) coordinates.push(1);
-  return Array.from(new Set(coordinates)).sort((a, b) => a - b);
+  for (const coordinate of sampleCoordinates) {
+    coordinates.add(roundCoordinate(coordinate));
+  }
+  coordinates.add(0);
+  coordinates.add(1);
+  return Array.from(coordinates).sort((a, b) => a - b);
 }
 
 function buildTerrainSamples(samples: NormalizedSample[]): NormalizedSample[] {
@@ -759,7 +771,7 @@ function interpolateYield(samples: NormalizedSample[], x: number, z: number) {
   };
 }
 
-function nearestSamples(samples: NormalizedSample[], x: number, z: number) {
+function nearestSamples(samples: NormalizedSample[], x: number, z: number): NearestSample[] {
   return samples
     .map((sample) => {
       const xDistance = x - sample.x;
@@ -866,16 +878,10 @@ function addAxes(scene: THREE.Scene, surface: YieldSurfaceResponse, ranges: Rend
   scene.add(group);
 }
 
-function nearestFacePoint(hit: THREE.Intersection, mesh: THREE.Mesh, pointRefs: YieldSurfacePoint[]): YieldSurfacePoint {
-  const face = hit.face;
-  if (!face) return pointRefs[0];
-  const position = mesh.geometry.getAttribute("position");
-  const candidates = [face.a, face.b, face.c].map((index) => ({
-    index,
-    point: new THREE.Vector3().fromBufferAttribute(position, index)
-  }));
-  candidates.sort((a, b) => a.point.distanceTo(hit.point) - b.point.distanceTo(hit.point));
-  return pointRefs[candidates[0].index] ?? pointRefs[0];
+function nearestHitPoint(hitPoint: THREE.Vector3, ranges: RenderRanges, samples: NormalizedSample[]): YieldSurfacePoint {
+  const x = normalize(scale(hitPoint.x, SURFACE_WIDTH / 2, -SURFACE_WIDTH / 2, ranges.minStrike, ranges.maxStrike), ranges.minStrike, ranges.maxStrike);
+  const z = normalize(scale(hitPoint.z, -SURFACE_DEPTH / 2, SURFACE_DEPTH / 2, ranges.minDte, ranges.maxDte), ranges.minDte, ranges.maxDte);
+  return nearestSamples(samples, x, z)[0]?.sample.point ?? samples[0].point;
 }
 
 function getCoordinateRanges(points: YieldSurfacePoint[]): Pick<RenderRanges, "minStrike" | "maxStrike" | "minDte" | "maxDte"> {
