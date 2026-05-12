@@ -10,6 +10,7 @@ export type DcnProductType = "sell_put" | "sell_call";
 export type SellPutPricingMethod = "firm_margin" | "target_firm_profit";
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
 export type DcnRecommendedLever = "none" | "yield" | "runway" | "strike";
+export type DcnPriorityLever = "yield" | "runway" | "strike";
 
 export interface DcnPricingRequest {
   productType?: DcnProductType;
@@ -20,6 +21,7 @@ export interface DcnPricingRequest {
   strikePreference?: "any" | "five_otm" | "ten_otm";
   strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
+  priorityLever?: DcnPriorityLever;
   sellPutPricingMethod?: SellPutPricingMethod;
   firmMarginBps?: number;
   sellPutTargetFirmProfitBps?: number;
@@ -159,6 +161,7 @@ export interface DcnRankableCandidate {
 export interface DcnRecommendation {
   selectorMode: DcnSelectorMode;
   recommendedLever: DcnRecommendedLever;
+  priorityLever?: DcnPriorityLever;
   reason: string;
   targetYieldGapBps: number | null;
   runwayGapDays: number | null;
@@ -236,6 +239,12 @@ export function modelSellIntoBidDepth(
     fills
   };
 }
+
+type AutoSelectionPlan = {
+  fixed: [DcnPriorityLever, DcnPriorityLever];
+  solved: DcnPriorityLever;
+  priorityLever: DcnPriorityLever;
+};
 
 interface DcnScenarioInput {
   productType?: DcnProductType;
@@ -1009,32 +1018,10 @@ export function scorePutCandidate(request: DcnPricingRequest, market: PutMarketI
     spotPrice: spot
   };
   const fit = getCandidateFitMetrics(request, roughCandidate);
-  const mode = request.selectorMode ?? "closest";
+  const autoScore = scoreAutoCandidate(request, roughCandidate, fit);
+  if (autoScore !== null) return autoScore;
+
   const targetBonus = fit.targetMet ? 1000 : 0;
-
-  if (mode === "auto_yield") {
-    const boundedYieldScore = Math.min(Math.max(roughClientYield, 0), 1) * 100;
-    return 1000 - fit.normalizedRunwayGap * 1000 - fit.strikeMoneynessGap * 2000 + boundedYieldScore;
-  }
-
-  if (mode === "auto_strike") {
-    return (
-      1000 +
-      targetBonus -
-      fit.normalizedRunwayGap * 200 -
-      (fit.targetMet ? fit.strikeMoneyness * 25 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
-    );
-  }
-
-  if (mode === "auto_runway") {
-    return (
-      1000 +
-      targetBonus -
-      fit.strikeMoneynessGap * 200 -
-      (fit.targetMet ? (roughCandidate.dayCount ?? 0) / 10 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
-    );
-  }
-
   return (
     1000 +
     targetBonus -
@@ -1079,32 +1066,10 @@ export function scoreCallCandidate(request: DcnPricingRequest, market: PutMarket
     spotPrice: spot
   };
   const fit = getCandidateFitMetrics({ ...request, productType: "sell_call" }, roughCandidate);
-  const mode = request.selectorMode ?? "closest";
+  const autoScore = scoreAutoCandidate({ ...request, productType: "sell_call" }, roughCandidate, fit);
+  if (autoScore !== null) return autoScore;
+
   const targetBonus = fit.targetMet ? 1000 : 0;
-
-  if (mode === "auto_yield") {
-    const boundedYieldScore = Math.min(Math.max(roughClientYield, 0), 1) * 100;
-    return 1000 - fit.normalizedRunwayGap * 1000 - fit.strikeMoneynessGap * 2000 + boundedYieldScore;
-  }
-
-  if (mode === "auto_strike") {
-    return (
-      1000 +
-      targetBonus -
-      fit.normalizedRunwayGap * 200 -
-      (fit.targetMet ? (2 - fit.strikeMoneyness) * 25 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
-    );
-  }
-
-  if (mode === "auto_runway") {
-    return (
-      1000 +
-      targetBonus -
-      fit.strikeMoneynessGap * 200 -
-      (fit.targetMet ? (roughCandidate.dayCount ?? 0) / 10 + fit.yieldExcess * 100 : fit.yieldShortfall * 1000)
-    );
-  }
-
   return (
     1000 +
     targetBonus -
@@ -1124,12 +1089,13 @@ export function compareDcnCandidatesForClientMandate(
   const mode = request.selectorMode ?? "closest";
   const af = getCandidateFitMetrics(request, a);
   const bf = getCandidateFitMetrics(request, b);
+  const plan = getAutoSelectionPlan(request);
 
-  if (mode === "auto_yield") {
+  if (plan) {
     return compareBy([
-      () => compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap),
-      () => compareAsc(af.strikeMoneynessGap, bf.strikeMoneynessGap),
-      () => compareDesc(a.clientYield, b.clientYield),
+      () => compareFixedLever(plan.fixed[0], af, bf),
+      () => compareFixedLever(plan.fixed[1], af, bf),
+      () => compareSolvedLever(request, plan.solved, a, b, af, bf),
       () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
       () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
       () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
@@ -1137,35 +1103,8 @@ export function compareDcnCandidatesForClientMandate(
     ]);
   }
 
-  if (mode === "auto_strike") {
-    return compareBy([
-      () => compareBooleanDesc(af.targetMet, bf.targetMet),
-      () => (af.targetMet && bf.targetMet ? compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap) : 0),
-      () =>
-        af.targetMet && bf.targetMet
-          ? request.productType === "sell_call"
-            ? compareDesc(af.strikeMoneyness, bf.strikeMoneyness)
-            : compareAsc(af.strikeMoneyness, bf.strikeMoneyness)
-          : 0,
-      () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : compareAsc(af.yieldShortfall, bf.yieldShortfall)),
-      () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
-      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
-      () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
-      () => compareDesc(a.score, b.score)
-    ]);
-  }
-
-  if (mode === "auto_runway") {
-    return compareBy([
-      () => compareBooleanDesc(af.targetMet, bf.targetMet),
-      () => compareAsc(af.strikeMoneynessGap, bf.strikeMoneynessGap),
-      () => (af.targetMet && bf.targetMet ? compareAsc(a.dayCount, b.dayCount) : compareAsc(af.yieldShortfall, bf.yieldShortfall)),
-      () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : 0),
-      () => compareAsc(a.depth.slippagePct, b.depth.slippagePct),
-      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
-      () => compareDesc(a.upsideProfitUsdt, b.upsideProfitUsdt),
-      () => compareDesc(a.score, b.score)
-    ]);
+  if (mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike") {
+    return compareDesc(a.score, b.score);
   }
 
   return compareBy([
@@ -1209,6 +1148,7 @@ interface CandidateFitMetrics {
 function buildRecommendation(request: DcnPricingRequest, candidate: DcnRankableCandidate | null): DcnRecommendation {
   const selectorMode = request.selectorMode ?? "closest";
   const fit = candidate ? getCandidateFitMetrics(request, candidate) : null;
+  const plan = getAutoSelectionPlan(request);
   const recommendedLever: DcnRecommendedLever =
     selectorMode === "auto_yield"
       ? "yield"
@@ -1219,16 +1159,17 @@ function buildRecommendation(request: DcnPricingRequest, candidate: DcnRankableC
           : "none";
   const reason =
     selectorMode === "auto_yield"
-      ? "Highest executable client yield among products closest to the requested runway and strike buffer."
+      ? `Highest executable client yield after prioritizing ${formatPriorityLever(plan?.priorityLever)}.`
       : selectorMode === "auto_runway"
-        ? "Shortest eligible runway that fits the requested target yield and strike buffer."
+        ? `Shortest eligible runway after prioritizing ${formatPriorityLever(plan?.priorityLever)}.`
         : selectorMode === "auto_strike"
-          ? "Safest eligible strike that fits the requested runway and target yield."
+          ? `Safest eligible strike after prioritizing ${formatPriorityLever(plan?.priorityLever)}.`
           : "Closest eligible product to the requested target yield, runway, and strike buffer.";
 
   return {
     selectorMode,
     recommendedLever,
+    priorityLever: plan?.priorityLever,
     reason,
     targetYieldGapBps: fit?.targetYieldGapBps ?? null,
     runwayGapDays: fit?.runwayGapDays ?? null,
@@ -1282,6 +1223,107 @@ function getPreferredMoneyness(
   if (request.strikePreference === "ten_otm") return request.productType === "sell_call" ? 1.1 : 0.9;
   if (request.strikePreference === "five_otm") return request.productType === "sell_call" ? 1.05 : 0.95;
   return null;
+}
+
+function getAutoSelectionPlan(request: DcnPricingRequest): AutoSelectionPlan | null {
+  const mode = request.selectorMode ?? "closest";
+  const priority = request.priorityLever;
+
+  if (mode === "auto_yield") {
+    const priorityLever = priority === "strike" ? "strike" : "runway";
+    return {
+      fixed: priorityLever === "strike" ? ["strike", "runway"] : ["runway", "strike"],
+      solved: "yield",
+      priorityLever
+    };
+  }
+
+  if (mode === "auto_runway") {
+    const priorityLever = priority === "strike" ? "strike" : "yield";
+    return {
+      fixed: priorityLever === "strike" ? ["strike", "yield"] : ["yield", "strike"],
+      solved: "runway",
+      priorityLever
+    };
+  }
+
+  if (mode === "auto_strike") {
+    const priorityLever = priority === "runway" ? "runway" : "yield";
+    return {
+      fixed: priorityLever === "runway" ? ["runway", "yield"] : ["yield", "runway"],
+      solved: "strike",
+      priorityLever
+    };
+  }
+
+  return null;
+}
+
+function scoreAutoCandidate(
+  request: DcnPricingRequest,
+  candidate: DcnRankableCandidate,
+  fit: CandidateFitMetrics
+): number | null {
+  const plan = getAutoSelectionPlan(request);
+  if (!plan) return null;
+
+  const primaryPenalty = getFixedLeverPenalty(plan.fixed[0], fit);
+  const secondaryPenalty = getFixedLeverPenalty(plan.fixed[1], fit);
+  const solvedScore = getSolvedLeverScore(request, plan.solved, candidate, fit);
+
+  return 1_000_000_000 - primaryPenalty * 100_000_000 - secondaryPenalty * 10_000 + solvedScore;
+}
+
+function getFixedLeverPenalty(lever: DcnPriorityLever, fit: CandidateFitMetrics): number {
+  if (lever === "yield") {
+    return fit.targetMet ? Math.min(fit.yieldExcess, 1) : 1 + Math.min(fit.yieldShortfall, 1);
+  }
+  if (lever === "runway") return Math.min(fit.normalizedRunwayGap, 10);
+  return Math.min(fit.strikeMoneynessGap, 10);
+}
+
+function getSolvedLeverScore(
+  request: DcnPricingRequest,
+  lever: DcnPriorityLever,
+  candidate: DcnRankableCandidate,
+  fit: CandidateFitMetrics
+): number {
+  if (lever === "yield") return Math.min(Math.max(finiteOr(candidate.clientYield, 0), 0), 1) * 1000;
+  if (lever === "runway") return -finiteOr(candidate.dayCount, Infinity);
+  return request.productType === "sell_call" ? fit.strikeMoneyness * 100 : -fit.strikeMoneyness * 100;
+}
+
+function compareFixedLever(lever: DcnPriorityLever, af: CandidateFitMetrics, bf: CandidateFitMetrics): number {
+  if (lever === "yield") {
+    return compareBy([
+      () => compareBooleanDesc(af.targetMet, bf.targetMet),
+      () => (af.targetMet && bf.targetMet ? compareAsc(af.yieldExcess, bf.yieldExcess) : compareAsc(af.yieldShortfall, bf.yieldShortfall))
+    ]);
+  }
+  if (lever === "runway") return compareAsc(af.normalizedRunwayGap, bf.normalizedRunwayGap);
+  return compareAsc(af.strikeMoneynessGap, bf.strikeMoneynessGap);
+}
+
+function compareSolvedLever(
+  request: DcnPricingRequest,
+  lever: DcnPriorityLever,
+  a: DcnRankableCandidate,
+  b: DcnRankableCandidate,
+  af: CandidateFitMetrics,
+  bf: CandidateFitMetrics
+): number {
+  if (lever === "yield") return compareDesc(a.clientYield, b.clientYield);
+  if (lever === "runway") return compareAsc(a.dayCount, b.dayCount);
+  return request.productType === "sell_call"
+    ? compareDesc(af.strikeMoneyness, bf.strikeMoneyness)
+    : compareAsc(af.strikeMoneyness, bf.strikeMoneyness);
+}
+
+function formatPriorityLever(lever: DcnPriorityLever | undefined): string {
+  if (lever === "yield") return "return";
+  if (lever === "runway") return "runway";
+  if (lever === "strike") return "strike buffer";
+  return "the selected fixed inputs";
 }
 
 function compareBy(comparators: Array<() => number>): number {

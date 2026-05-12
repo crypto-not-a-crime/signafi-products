@@ -1,8 +1,21 @@
-import type { DcnCandidate, DcnPricingResponse, YieldSurfaceResponse } from "@/types";
+import type { DcnCandidate, DcnPricingResponse, DcnPriorityLever, DcnSelectorMode, YieldSurfaceResponse } from "@/types";
 import { calculateScenario } from "./dcn-scenario";
 
 function roundYieldToOneDecimalPercent(value: number): number {
   return Math.round(value * 1000) / 1000;
+}
+
+function mockSelectorMode(input: Record<string, unknown>): DcnSelectorMode {
+  return input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
+    ? input.selectorMode
+    : "closest";
+}
+
+function mockPriorityLever(input: Record<string, unknown>, selectorMode: DcnSelectorMode): DcnPriorityLever | undefined {
+  if (selectorMode === "auto_yield") return input.priorityLever === "strike" ? "strike" : "runway";
+  if (selectorMode === "auto_runway") return input.priorityLever === "strike" ? "strike" : "yield";
+  if (selectorMode === "auto_strike") return input.priorityLever === "runway" ? "runway" : "yield";
+  return undefined;
 }
 
 export function mockDcnCandidate(overrides: Partial<DcnCandidate> = {}): DcnCandidate {
@@ -223,10 +236,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
       ? input.sellPutTargetFirmProfitBps
       : 500;
   const strikeBufferPct = typeof input.strikeBufferPct === "number" ? Number(input.strikeBufferPct) : null;
-  const selectorMode =
-    input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
-      ? input.selectorMode
-      : "closest";
+  const selectorMode = mockSelectorMode(input);
+  const priorityLever = mockPriorityLever(input, selectorMode);
   const best = mockDcnCandidate({
     sellPutPricingMethod,
     sellPutTargetFirmProfitBps,
@@ -271,6 +282,7 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
     recommendation: {
       selectorMode,
       recommendedLever: selectorMode === "auto_yield" ? "yield" : selectorMode === "auto_runway" ? "runway" : selectorMode === "auto_strike" ? "strike" : "none",
+      priorityLever,
       reason: "Mock recommendation generated without live worker data.",
       targetYieldGapBps: best.clientYield === null ? null : best.clientYield * 10000 - Number(input.targetYieldBps ?? 1000),
       runwayGapDays: 0,
@@ -284,10 +296,8 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
 function mockCallPricingResponse(input: Record<string, unknown> = {}): DcnPricingResponse {
   const investmentBtc = Number(input.investmentBtc ?? 10);
   const strikeBufferPct = typeof input.strikeBufferPct === "number" ? Number(input.strikeBufferPct) : null;
-  const selectorMode =
-    input.selectorMode === "auto_yield" || input.selectorMode === "auto_runway" || input.selectorMode === "auto_strike"
-      ? input.selectorMode
-      : "closest";
+  const selectorMode = mockSelectorMode(input);
+  const priorityLever = mockPriorityLever(input, selectorMode);
   const best = mockDcnCallCandidate({ investmentBtc, investmentUsdt: investmentBtc * 78500, requiredContracts: Math.floor(investmentBtc * 10) / 10 });
   return {
     generatedAt: Date.now(),
@@ -317,6 +327,7 @@ function mockCallPricingResponse(input: Record<string, unknown> = {}): DcnPricin
       selectorMode,
       recommendedLever:
         selectorMode === "auto_yield" ? "yield" : selectorMode === "auto_runway" ? "runway" : selectorMode === "auto_strike" ? "strike" : "none",
+      priorityLever,
       reason: "Mock call recommendation generated without live worker data.",
       targetYieldGapBps: best.clientYield === null ? null : best.clientYield * 10000 - Number(input.targetYieldBps ?? 1000),
       runwayGapDays: 0,

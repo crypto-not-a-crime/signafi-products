@@ -106,6 +106,7 @@ export interface DcnCandidate {
 }
 
 export type DcnSelectorMode = "closest" | "auto_yield" | "auto_runway" | "auto_strike";
+export type DcnPriorityLever = "yield" | "runway" | "strike";
 export type SellPutPricingMethod = "firm_margin" | "target_firm_profit";
 
 export interface DcnPricingRequest {
@@ -117,6 +118,7 @@ export interface DcnPricingRequest {
   strikePreference?: "any" | "five_otm" | "ten_otm";
   strikeBufferPct?: number;
   selectorMode?: DcnSelectorMode;
+  priorityLever?: DcnPriorityLever;
   sellPutPricingMethod?: SellPutPricingMethod;
   firmMarginBps?: number;
   sellPutTargetFirmProfitBps?: number;
@@ -129,6 +131,7 @@ export interface DcnPricingRequest {
 export interface DcnRecommendation {
   selectorMode: DcnSelectorMode;
   recommendedLever: "none" | "yield" | "runway" | "strike";
+  priorityLever?: DcnPriorityLever;
   reason: string;
   targetYieldGapBps: number | null;
   runwayGapDays: number | null;

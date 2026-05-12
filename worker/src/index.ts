@@ -667,6 +667,7 @@ async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: 
 
 function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<ReturnType<typeof getPricingConfig>>): DcnPricingRequest {
   const productType = request.productType === "sell_call" ? "sell_call" : "sell_put";
+  const selectorMode = normalizeSelectorMode(request.selectorMode);
   return {
     productType,
     investmentUsdt: Number(request.investmentUsdt ?? 500000),
@@ -675,7 +676,8 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
     runwayDays: Number(request.runwayDays ?? 92),
     strikePreference: request.strikePreference ?? "any",
     strikeBufferPct: normalizeStrikeBufferPct(request.strikeBufferPct, productType),
-    selectorMode: normalizeSelectorMode(request.selectorMode),
+    selectorMode,
+    priorityLever: normalizePriorityLever(request.priorityLever, selectorMode),
     sellPutPricingMethod: normalizeSellPutPricingMethod(request.sellPutPricingMethod ?? config.sellPutPricingMethod),
     firmMarginBps: Number(request.firmMarginBps ?? config.firmMarginBps),
     sellPutTargetFirmProfitBps: Number(
@@ -696,6 +698,16 @@ function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<Ret
 
 function normalizeSelectorMode(mode: DcnPricingRequest["selectorMode"]): DcnPricingRequest["selectorMode"] {
   return mode === "auto_yield" || mode === "auto_runway" || mode === "auto_strike" ? mode : "closest";
+}
+
+function normalizePriorityLever(
+  priorityLever: DcnPricingRequest["priorityLever"],
+  selectorMode: DcnPricingRequest["selectorMode"]
+): DcnPricingRequest["priorityLever"] {
+  if (selectorMode === "auto_yield") return priorityLever === "strike" ? "strike" : "runway";
+  if (selectorMode === "auto_runway") return priorityLever === "strike" ? "strike" : "yield";
+  if (selectorMode === "auto_strike") return priorityLever === "runway" ? "runway" : "yield";
+  return undefined;
 }
 
 function normalizeSellPutPricingMethod(method: DcnPricingRequest["sellPutPricingMethod"]): DcnPricingRequest["sellPutPricingMethod"] {

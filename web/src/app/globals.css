@@ -603,6 +603,12 @@ input[type="range"] {
   margin-top: 14px;
 }
 
+.priority-control {
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
 .range-labels {
   color: var(--muted);
   display: flex;

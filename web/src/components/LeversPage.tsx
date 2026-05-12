@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DcnCandidate, DcnPricingRequest, DcnPricingResponse, DcnRecommendation, DcnSelectorMode } from "@/types";
+import type {
+  DcnCandidate,
+  DcnPricingRequest,
+  DcnPricingResponse,
+  DcnPriorityLever,
+  DcnRecommendation,
+  DcnSelectorMode
+} from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
 import { SiteNav } from "./Logo";
@@ -65,6 +72,7 @@ export function LeversPage({
   const [strikeBufferMode, setStrikeBufferMode] = useState<"target" | "any">("target");
   const [strikeBufferPct, setStrikeBufferPct] = useState(5);
   const [selectorMode, setSelectorMode] = useState<DcnSelectorMode>("auto_yield");
+  const [priorityLever, setPriorityLever] = useState<DcnPriorityLever>("runway");
   const [data, setData] = useState<DcnPricingResponse | null>(null);
   const [selectedInstrumentName, setSelectedInstrumentName] = useState<string | null>(null);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
@@ -77,6 +85,10 @@ export function LeversPage({
   const strikeBufferOptions = isCall ? callStrikeBufferOptions : putStrikeBufferOptions;
   const strikeBufferMax = strikeBufferMaxByProduct[productType];
   const runwayDays = useMemo(() => runwayOptions.find((item) => item.id === runway)?.days ?? 92, [runway]);
+  const priorityOptions = useMemo(() => getPriorityOptions(selectorMode), [selectorMode]);
+  const effectivePriorityLever = priorityOptions.some((option) => option.id === priorityLever)
+    ? priorityLever
+    : priorityOptions[0]?.id;
   const best = data?.bestCandidate ?? null;
   const allCandidates = useMemo(() => getUniqueCandidates(best, data?.candidates), [best, data?.candidates]);
   const selectedCandidate = useMemo(
@@ -98,7 +110,23 @@ export function LeversPage({
       void fetchPricing();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [investmentUsdt, investmentBtc, runwayDays, targetYieldPct, strikeBufferMode, strikeBufferPct, selectorMode, productType]);
+  }, [
+    investmentUsdt,
+    investmentBtc,
+    runwayDays,
+    targetYieldPct,
+    strikeBufferMode,
+    strikeBufferPct,
+    selectorMode,
+    effectivePriorityLever,
+    productType
+  ]);
+
+  useEffect(() => {
+    if (effectivePriorityLever && effectivePriorityLever !== priorityLever) {
+      setPriorityLever(effectivePriorityLever);
+    }
+  }, [effectivePriorityLever, priorityLever]);
 
   useEffect(() => {
     if (!data) {
@@ -133,6 +161,7 @@ export function LeversPage({
         strikePreference: strikeBufferMode === "any" ? "any" : undefined,
         strikeBufferPct: strikeBufferMode === "target" ? strikeBufferPct : undefined,
         selectorMode,
+        priorityLever: effectivePriorityLever,
         maxSlippageBps: 500,
         quoteFreshnessSeconds: 10,
         orderBookDepth: 100
@@ -182,6 +211,7 @@ export function LeversPage({
             bestInstrumentName: best?.instrumentName ?? null,
             runwayDays,
             selectorMode,
+            priorityLever: effectivePriorityLever,
             strikeBufferMode,
             strikeBufferPct,
             targetYieldPct
@@ -193,6 +223,7 @@ export function LeversPage({
       runwayDays,
       selectedCandidate,
       selectorMode,
+      effectivePriorityLever,
       strikeBufferMode,
       strikeBufferPct,
       targetYieldPct
@@ -230,6 +261,25 @@ export function LeversPage({
             </button>
           ))}
         </div>
+        {priorityOptions.length > 0 ? (
+          <div className="priority-control">
+            <div>
+              <div className="field-label">Priority</div>
+              <strong>When fixed inputs conflict, which should win?</strong>
+            </div>
+            <div className="pill-row">
+              {priorityOptions.map((option) => (
+                <button
+                  className={`choice-pill ${effectivePriorityLever === option.id ? "active" : ""}`}
+                  key={option.id}
+                  onClick={() => setPriorityLever(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="control-block">
@@ -729,6 +779,7 @@ function RecommendationCard({
       ? "-"
       : `${formatNumber(recommendation.strikeMoneynessGapBps, 0)} bps`;
   const recommendationValue = formatRecommendationValue(recommendation, candidate);
+  const priorityLabel = formatPriorityLever(recommendation.priorityLever);
 
   return (
     <div className="candidate-card">
@@ -750,7 +801,7 @@ function RecommendationCard({
         <Metric label="Yield gap" value={gap} />
         <Metric label="Runway gap" value={runwayGap} />
         <Metric label="Strike gap" value={strikeGap} />
-        <Metric label="Mode" value={recommendation.selectorMode.replace("_", " ")} />
+        <Metric label={priorityLabel ? "Priority" : "Mode"} value={priorityLabel ?? recommendation.selectorMode.replace("_", " ")} />
       </div>
     </div>
   );
@@ -762,6 +813,7 @@ function buildSelectedRecommendation({
   bestInstrumentName,
   runwayDays,
   selectorMode,
+  priorityLever,
   strikeBufferMode,
   strikeBufferPct,
   targetYieldPct
@@ -771,6 +823,7 @@ function buildSelectedRecommendation({
   bestInstrumentName: string | null;
   runwayDays: number;
   selectorMode: DcnSelectorMode;
+  priorityLever: DcnPriorityLever | undefined;
   strikeBufferMode: "target" | "any";
   strikeBufferPct: number;
   targetYieldPct: number;
@@ -796,6 +849,7 @@ function buildSelectedRecommendation({
   return {
     selectorMode,
     recommendedLever: getRecommendedLever(selectorMode),
+    priorityLever,
     reason: "This selected product is compared against your current levers.",
     targetYieldGapBps,
     runwayGapDays,
@@ -808,6 +862,35 @@ function getRecommendedLever(selectorMode: DcnSelectorMode): DcnRecommendation["
   if (selectorMode === "auto_runway") return "runway";
   if (selectorMode === "auto_strike") return "strike";
   return "none";
+}
+
+function getPriorityOptions(selectorMode: DcnSelectorMode): Array<{ id: DcnPriorityLever; label: string }> {
+  if (selectorMode === "auto_yield") {
+    return [
+      { id: "runway", label: "Prioritize Runway" },
+      { id: "strike", label: "Prioritize Strike buffer" }
+    ];
+  }
+  if (selectorMode === "auto_runway") {
+    return [
+      { id: "yield", label: "Prioritize Return" },
+      { id: "strike", label: "Prioritize Strike buffer" }
+    ];
+  }
+  if (selectorMode === "auto_strike") {
+    return [
+      { id: "yield", label: "Prioritize Return" },
+      { id: "runway", label: "Prioritize Runway" }
+    ];
+  }
+  return [];
+}
+
+function formatPriorityLever(priorityLever: DcnPriorityLever | undefined) {
+  if (priorityLever === "yield") return "Return";
+  if (priorityLever === "runway") return "Runway";
+  if (priorityLever === "strike") return "Strike buffer";
+  return null;
 }
 
 function formatRecommendationValue(recommendation: DcnRecommendation, candidate: DcnCandidate) {

@@ -421,6 +421,111 @@ describe("DCN sell-put pricing", () => {
       .toBe(shorterRunway);
   });
 
+  it("auto runway can prioritize strike buffer over target return", () => {
+    const request = {
+      investmentUsdt: 500000,
+      targetYieldBps: 1200,
+      runwayDays: 180,
+      strikeBufferPct: 10,
+      selectorMode: "auto_runway" as const
+    };
+    const betterReturn = rankableCandidate("better-return", {
+      clientYield: 0.13,
+      dayCount: 80,
+      strike: 96000,
+      spotPrice: 100000
+    });
+    const betterStrike = rankableCandidate("better-strike", {
+      clientYield: 0.09,
+      dayCount: 150,
+      strike: 90000,
+      spotPrice: 100000
+    });
+
+    expect(selectDcnCandidate({ ...request, priorityLever: "yield" as const }, [betterStrike, betterReturn]).bestCandidate)
+      .toBe(betterReturn);
+    expect(selectDcnCandidate({ ...request, priorityLever: "strike" as const }, [betterReturn, betterStrike]).bestCandidate)
+      .toBe(betterStrike);
+  });
+
+  it("auto return can switch fixed-input priority between runway and strike buffer", () => {
+    const request = {
+      investmentUsdt: 500000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      strikeBufferPct: 10,
+      selectorMode: "auto_yield" as const
+    };
+    const betterRunway = rankableCandidate("better-runway", {
+      clientYield: 0.12,
+      dayCount: 180,
+      strike: 85000,
+      spotPrice: 100000
+    });
+    const betterStrike = rankableCandidate("better-strike", {
+      clientYield: 0.11,
+      dayCount: 120,
+      strike: 90000,
+      spotPrice: 100000
+    });
+
+    expect(selectDcnCandidate({ ...request, priorityLever: "runway" as const }, [betterStrike, betterRunway]).bestCandidate)
+      .toBe(betterRunway);
+    expect(selectDcnCandidate({ ...request, priorityLever: "strike" as const }, [betterRunway, betterStrike]).bestCandidate)
+      .toBe(betterStrike);
+  });
+
+  it("auto strike can prioritize runway over return", () => {
+    const request = {
+      investmentUsdt: 500000,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      selectorMode: "auto_strike" as const
+    };
+    const betterReturn = rankableCandidate("better-return", {
+      clientYield: 0.11,
+      dayCount: 240,
+      strike: 65000,
+      spotPrice: 100000
+    });
+    const betterRunway = rankableCandidate("better-runway", {
+      clientYield: 0.09,
+      dayCount: 180,
+      strike: 64000,
+      spotPrice: 100000
+    });
+
+    expect(selectDcnCandidate({ ...request, priorityLever: "yield" as const }, [betterRunway, betterReturn]).bestCandidate)
+      .toBe(betterReturn);
+    expect(selectDcnCandidate({ ...request, priorityLever: "runway" as const }, [betterReturn, betterRunway]).bestCandidate)
+      .toBe(betterRunway);
+  });
+
+  it("auto strike chooses the safer above-spot call strike after fixed priorities match", () => {
+    const request = {
+      productType: "sell_call" as const,
+      investmentBtc: 10,
+      targetYieldBps: 1000,
+      runwayDays: 180,
+      selectorMode: "auto_strike" as const,
+      priorityLever: "runway" as const
+    };
+    const lowerCallStrike = rankableCandidate("BTC-180D-110000-C", {
+      clientYield: 0.11,
+      dayCount: 180,
+      strike: 110000,
+      spotPrice: 100000
+    });
+    const higherCallStrike = rankableCandidate("BTC-180D-130000-C", {
+      clientYield: 0.11,
+      dayCount: 180,
+      strike: 130000,
+      spotPrice: 100000
+    });
+
+    expect(selectDcnCandidate(request, [lowerCallStrike, higherCallStrike]).bestCandidate).toBe(higherCallStrike);
+  });
+
   it("auto return shortlist favors fixed runway and strike buffer before raw yield", () => {
     const request = {
       investmentUsdt: 1000000,
