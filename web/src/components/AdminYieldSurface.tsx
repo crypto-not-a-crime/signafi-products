@@ -62,6 +62,12 @@ const MIN_SURFACE_STRIKE_STEPS = 28;
 const MAX_SURFACE_STRIKE_STEPS = 56;
 const MIN_SURFACE_DTE_STEPS = 18;
 const MAX_SURFACE_DTE_STEPS = 38;
+const SURFACE_NEIGHBOR_COUNT = 14;
+const SURFACE_DTE_DISTANCE_WEIGHT = 1.2;
+const SURFACE_OUTLIER_MAD_MULTIPLIER = 2.6;
+const SURFACE_LOCAL_BLEND = 0.65;
+const SURFACE_SMOOTHING_PASSES = 3;
+const SURFACE_SMOOTHING_CENTER_WEIGHT = 0.6;
 const DEFAULT_CAMERA_POSITION = new THREE.Vector3(10.8, 7.4, -11.6);
 const DEFAULT_CAMERA_TARGET = new THREE.Vector3(0.4, SURFACE_HEIGHT * 0.42, 0.25);
 
@@ -272,22 +278,19 @@ function YieldSurfaceChart({ surface }: { surface: YieldSurfaceResponse }) {
     keyLight.position.set(3, 8, 6);
     scene.add(keyLight);
 
-    const ranges = getRanges(surface.points);
-    const renderPoints = surface.points.map((point) => ({
-      point,
-      position: pointToVector(point, ranges)
-    }));
-
-    const interpolatedSurface = buildInterpolatedSurface(surface.points, ranges);
+    const interpolatedSurface = buildInterpolatedSurface(surface.points);
+    const ranges = interpolatedSurface.ranges;
     const pointRefsByVertex = interpolatedSurface.pointRefs;
     const surfacePositions = interpolatedSurface.positions;
     const surfaceColors = interpolatedSurface.colors;
+    const surfaceIndices = interpolatedSurface.indices;
 
     let surfaceMesh: THREE.Mesh | null = null;
     if (surfacePositions.length > 0) {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(surfacePositions, 3));
       geometry.setAttribute("color", new THREE.Float32BufferAttribute(surfaceColors, 3));
+      geometry.setIndex(surfaceIndices);
       geometry.computeVertexNormals();
       surfaceMesh = new THREE.Mesh(
         geometry,
@@ -302,33 +305,20 @@ function YieldSurfaceChart({ surface }: { surface: YieldSurfaceResponse }) {
         })
       );
       scene.add(surfaceMesh);
+
+      const wireframe = new THREE.LineSegments(
+        new THREE.WireframeGeometry(geometry),
+        new THREE.LineBasicMaterial({
+          color: 0xd9e1ff,
+          transparent: true,
+          opacity: 0.12
+        })
+      );
+      scene.add(wireframe);
     }
-
-    const pointRefs = renderPoints.map((item) => item.point);
-    const pointGeometry = new THREE.BufferGeometry();
-    pointGeometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(renderPoints.flatMap((item) => item.position.toArray()), 3)
-    );
-    pointGeometry.setAttribute(
-      "color",
-      new THREE.Float32BufferAttribute(renderPoints.flatMap((item) => colorForYield(item.point.annualizedYield, ranges).toArray()), 3)
-    );
-    const pointCloud = new THREE.Points(
-      pointGeometry,
-      new THREE.PointsMaterial({
-        size: 0.13,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.95
-      })
-    );
-    scene.add(pointCloud);
-
     addAxes(scene, surface, ranges);
 
     const raycaster = new THREE.Raycaster();
-    raycaster.params.Points = { threshold: 0.24 };
     const mouse = new THREE.Vector2();
 
     function onPointerMove(event: PointerEvent) {
@@ -345,13 +335,7 @@ function YieldSurfaceChart({ surface }: { surface: YieldSurfaceResponse }) {
           return;
         }
       }
-
-      const [pointHit] = raycaster.intersectObject(pointCloud);
-      if (pointHit && typeof pointHit.index === "number") {
-        setTooltip({ point: pointRefs[pointHit.index], x: event.clientX - rect.left + 14, y: event.clientY - rect.top + 14 });
-      } else {
-        setTooltip(null);
-      }
+      setTooltip(null);
     }
 
     function onPointerLeave() {
@@ -624,7 +608,8 @@ function summarizeExpiries(points: YieldSurfacePoint[]) {
   return Array.from(map.values()).sort((a, b) => a.expirationTimestamp - b.expirationTimestamp);
 }
 
-function buildInterpolatedSurface(points: YieldSurfacePoint[], ranges: RenderRanges) {
+function buildInterpolatedSurface(points: YieldSurfacePoint[]) {
+  const coordinateRanges = getCoordinateRanges(points);
   const strikeSteps = Math.min(
     MAX_SURFACE_STRIKE_STEPS,
     Math.max(MIN_SURFACE_STRIKE_STEPS, Math.round(Math.sqrt(points.length) * 4))
@@ -633,20 +618,15 @@ function buildInterpolatedSurface(points: YieldSurfacePoint[], ranges: RenderRan
     MAX_SURFACE_DTE_STEPS,
     Math.max(MIN_SURFACE_DTE_STEPS, new Set(points.map((point) => point.expirationTimestamp)).size * 4)
   );
-  const samples = points.map((point) => ({
+  const rawSamples = points.map((point) => ({
     point,
-    x: normalize(point.strike, ranges.minStrike, ranges.maxStrike),
-    z: normalize(point.daysToExpiry, ranges.minDte, ranges.maxDte),
+    x: normalize(point.strike, coordinateRanges.minStrike, coordinateRanges.maxStrike),
+    z: normalize(point.daysToExpiry, coordinateRanges.minDte, coordinateRanges.maxDte),
     annualizedYield: point.annualizedYield
   }));
-  const xCoordinates = mergeCoordinates(
-    samples.map((sample) => sample.x),
-    strikeSteps
-  );
-  const zCoordinates = mergeCoordinates(
-    samples.map((sample) => sample.z),
-    dteSteps
-  );
+  const samples = buildTerrainSamples(rawSamples);
+  const xCoordinates = buildEvenCoordinates(strikeSteps);
+  const zCoordinates = buildEvenCoordinates(dteSteps);
   const grid: SurfaceVertex[][] = [];
 
   for (const zNorm of zCoordinates) {
@@ -658,7 +638,7 @@ function buildInterpolatedSurface(points: YieldSurfacePoint[], ranges: RenderRan
         annualizedYield: interpolated.annualizedYield,
         position: new THREE.Vector3(
           scale(xNorm, 0, 1, SURFACE_WIDTH / 2, -SURFACE_WIDTH / 2),
-          scale(interpolated.annualizedYield, ranges.minYield, ranges.maxYield, 0, SURFACE_HEIGHT),
+          0,
           scale(zNorm, 0, 1, -SURFACE_DEPTH / 2, SURFACE_DEPTH / 2)
         )
       });
@@ -666,60 +646,109 @@ function buildInterpolatedSurface(points: YieldSurfacePoint[], ranges: RenderRan
     grid.push(row);
   }
 
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const pointRefs: YieldSurfacePoint[] = [];
+  smoothSurfaceGrid(grid, SURFACE_SMOOTHING_PASSES);
 
-  for (let zIndex = 0; zIndex < zCoordinates.length - 1; zIndex += 1) {
-    for (let xIndex = 0; xIndex < xCoordinates.length - 1; xIndex += 1) {
-      pushTriangle([grid[zIndex][xIndex], grid[zIndex][xIndex + 1], grid[zIndex + 1][xIndex + 1]], ranges, positions, colors, pointRefs);
-      pushTriangle([grid[zIndex][xIndex], grid[zIndex + 1][xIndex + 1], grid[zIndex + 1][xIndex]], ranges, positions, colors, pointRefs);
+  const terrainMax =
+    maxFinite([...grid.flat().map((vertex) => vertex.annualizedYield), ...samples.map((sample) => sample.annualizedYield)]) ??
+    maxFinite(points.map((point) => point.annualizedYield)) ??
+    0.01;
+  const ranges: RenderRanges = {
+    ...coordinateRanges,
+    minYield: 0,
+    maxYield: Math.max(0.01, terrainMax * 1.08)
+  };
+
+  for (const [zIndex, row] of grid.entries()) {
+    const zNorm = zCoordinates[zIndex];
+    for (const [xIndex, vertex] of row.entries()) {
+      const xNorm = xCoordinates[xIndex];
+      vertex.position.set(
+        scale(xNorm, 0, 1, SURFACE_WIDTH / 2, -SURFACE_WIDTH / 2),
+        scale(vertex.annualizedYield, ranges.minYield, ranges.maxYield, 0, SURFACE_HEIGHT),
+        scale(zNorm, 0, 1, -SURFACE_DEPTH / 2, SURFACE_DEPTH / 2)
+      );
     }
   }
 
-  return { positions, colors, pointRefs };
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const pointRefs: YieldSurfacePoint[] = [];
+
+  for (const row of grid) {
+    for (const vertex of row) {
+      const color = colorForYield(vertex.annualizedYield, ranges);
+      positions.push(vertex.position.x, vertex.position.y, vertex.position.z);
+      colors.push(color.r, color.g, color.b);
+      pointRefs.push(vertex.nearestPoint);
+    }
+  }
+
+  const rowWidth = xCoordinates.length;
+  for (let zIndex = 0; zIndex < zCoordinates.length - 1; zIndex += 1) {
+    for (let xIndex = 0; xIndex < xCoordinates.length - 1; xIndex += 1) {
+      const topLeft = zIndex * rowWidth + xIndex;
+      const topRight = topLeft + 1;
+      const bottomLeft = (zIndex + 1) * rowWidth + xIndex;
+      const bottomRight = bottomLeft + 1;
+      indices.push(topLeft, topRight, bottomRight, topLeft, bottomRight, bottomLeft);
+    }
+  }
+
+  return { positions, colors, indices, pointRefs, ranges };
 }
 
-function mergeCoordinates(sampleCoordinates: number[], baseSteps: number): number[] {
-  const coordinates = new Set<number>();
+function buildEvenCoordinates(baseSteps: number): number[] {
+  const coordinates: number[] = [];
   for (let index = 0; index < baseSteps; index += 1) {
-    coordinates.add(roundCoordinate(baseSteps === 1 ? 0.5 : index / (baseSteps - 1)));
+    coordinates.push(roundCoordinate(baseSteps === 1 ? 0.5 : index / (baseSteps - 1)));
   }
-  for (const coordinate of sampleCoordinates) {
-    coordinates.add(roundCoordinate(coordinate));
-  }
-  coordinates.add(0);
-  coordinates.add(1);
-  return Array.from(coordinates).sort((a, b) => a - b);
+  if (!coordinates.includes(0)) coordinates.unshift(0);
+  if (!coordinates.includes(1)) coordinates.push(1);
+  return Array.from(new Set(coordinates)).sort((a, b) => a - b);
+}
+
+function buildTerrainSamples(samples: NormalizedSample[]): NormalizedSample[] {
+  if (samples.length <= 2) return samples;
+
+  return samples.map((sample) => {
+    const nearest = nearestSamples(samples, sample.x, sample.z);
+    const localValues = nearest.map((item) => item.sample.annualizedYield);
+    const localMedian = median(localValues) ?? sample.annualizedYield;
+    const localMad = median(localValues.map((value) => Math.abs(value - localMedian))) ?? 0;
+    const localFloor = Math.max(Math.abs(localMedian) * 0.08, 0.01);
+    const allowedMove = Math.max(localMad * SURFACE_OUTLIER_MAD_MULTIPLIER, localFloor);
+    const lowerBound = Math.max(0, localMedian - allowedMove);
+    const upperBound = localMedian + allowedMove;
+
+    let weightSum = 0;
+    let yieldSum = 0;
+    for (const item of nearest) {
+      const weight = inverseDistanceWeight(item.distanceSquared);
+      weightSum += weight;
+      yieldSum += clamp(item.sample.annualizedYield, lowerBound, upperBound) * weight;
+    }
+
+    const localAverage = weightSum === 0 ? localMedian : yieldSum / weightSum;
+    const clampedSelf = clamp(sample.annualizedYield, lowerBound, upperBound);
+    return {
+      ...sample,
+      annualizedYield: clampedSelf * (1 - SURFACE_LOCAL_BLEND) + localAverage * SURFACE_LOCAL_BLEND
+    };
+  });
 }
 
 function interpolateYield(samples: NormalizedSample[], x: number, z: number) {
-  const nearest = samples
-    .map((sample) => {
-      const xDistance = x - sample.x;
-      const zDistance = (z - sample.z) * 1.2;
-      return {
-        sample,
-        distanceSquared: xDistance * xDistance + zDistance * zDistance
-      };
-    })
-    .sort((a, b) => a.distanceSquared - b.distanceSquared)
-    .slice(0, Math.min(14, samples.length));
+  const nearest = nearestSamples(samples, x, z);
 
   if (nearest.length === 0) {
     throw new Error("Cannot interpolate an empty yield surface");
-  }
-  if (nearest[0].distanceSquared < 0.000001) {
-    return {
-      nearestPoint: nearest[0].sample.point,
-      annualizedYield: nearest[0].sample.annualizedYield
-    };
   }
 
   let weightSum = 0;
   let yieldSum = 0;
   for (const item of nearest) {
-    const weight = 1 / Math.pow(item.distanceSquared + 0.0025, 1.35);
+    const weight = inverseDistanceWeight(item.distanceSquared);
     weightSum += weight;
     yieldSum += item.sample.annualizedYield * weight;
   }
@@ -730,18 +759,53 @@ function interpolateYield(samples: NormalizedSample[], x: number, z: number) {
   };
 }
 
-function pushTriangle(
-  vertices: [SurfaceVertex, SurfaceVertex, SurfaceVertex],
-  ranges: RenderRanges,
-  positions: number[],
-  colors: number[],
-  pointRefs: YieldSurfacePoint[]
-) {
-  for (const vertex of vertices) {
-    const color = colorForYield(vertex.annualizedYield, ranges);
-    positions.push(vertex.position.x, vertex.position.y, vertex.position.z);
-    colors.push(color.r, color.g, color.b);
-    pointRefs.push(vertex.nearestPoint);
+function nearestSamples(samples: NormalizedSample[], x: number, z: number) {
+  return samples
+    .map((sample) => {
+      const xDistance = x - sample.x;
+      const zDistance = (z - sample.z) * SURFACE_DTE_DISTANCE_WEIGHT;
+      return {
+        sample,
+        distanceSquared: xDistance * xDistance + zDistance * zDistance
+      };
+    })
+    .sort((a, b) => a.distanceSquared - b.distanceSquared)
+    .slice(0, Math.min(SURFACE_NEIGHBOR_COUNT, samples.length));
+}
+
+function inverseDistanceWeight(distanceSquared: number): number {
+  return 1 / Math.pow(distanceSquared + 0.0025, 1.35);
+}
+
+function smoothSurfaceGrid(grid: SurfaceVertex[][], passes: number) {
+  if (grid.length === 0) return;
+  let values = grid.map((row) => row.map((vertex) => vertex.annualizedYield));
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    values = values.map((row, zIndex) =>
+      row.map((value, xIndex) => {
+        let neighborSum = 0;
+        let neighborCount = 0;
+        for (let zOffset = -1; zOffset <= 1; zOffset += 1) {
+          for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+            if (zOffset === 0 && xOffset === 0) continue;
+            const neighborRow = values[zIndex + zOffset];
+            const neighborValue = neighborRow?.[xIndex + xOffset];
+            if (typeof neighborValue !== "number") continue;
+            neighborSum += neighborValue;
+            neighborCount += 1;
+          }
+        }
+        if (neighborCount === 0) return value;
+        return value * SURFACE_SMOOTHING_CENTER_WEIGHT + (neighborSum / neighborCount) * (1 - SURFACE_SMOOTHING_CENTER_WEIGHT);
+      })
+    );
+  }
+
+  for (const [zIndex, row] of grid.entries()) {
+    for (const [xIndex, vertex] of row.entries()) {
+      vertex.annualizedYield = values[zIndex][xIndex];
+    }
   }
 }
 
@@ -814,27 +878,15 @@ function nearestFacePoint(hit: THREE.Intersection, mesh: THREE.Mesh, pointRefs: 
   return pointRefs[candidates[0].index] ?? pointRefs[0];
 }
 
-function getRanges(points: YieldSurfacePoint[]): RenderRanges {
+function getCoordinateRanges(points: YieldSurfacePoint[]): Pick<RenderRanges, "minStrike" | "maxStrike" | "minDte" | "maxDte"> {
   const strikes = points.map((point) => point.strike);
   const dtes = points.map((point) => point.daysToExpiry);
-  const yields = points.map((point) => point.annualizedYield);
-  const maxYield = Math.max(...yields, 0.01);
   return {
     minStrike: Math.min(...strikes),
     maxStrike: Math.max(...strikes),
     minDte: Math.min(...dtes),
-    maxDte: Math.max(...dtes),
-    minYield: 0,
-    maxYield: maxYield * 1.08
+    maxDte: Math.max(...dtes)
   };
-}
-
-function pointToVector(point: YieldSurfacePoint, ranges: RenderRanges): THREE.Vector3 {
-  return new THREE.Vector3(
-    scaleStrike(point.strike, ranges),
-    scale(point.annualizedYield, ranges.minYield, ranges.maxYield, 0, SURFACE_HEIGHT),
-    scale(point.daysToExpiry, ranges.minDte, ranges.maxDte, -SURFACE_DEPTH / 2, SURFACE_DEPTH / 2)
-  );
 }
 
 function scale(value: number, min: number, max: number, outMin: number, outMax: number): number {
@@ -849,6 +901,10 @@ function scaleStrike(value: number, ranges: Pick<RenderRanges, "minStrike" | "ma
 function normalize(value: number, min: number, max: number): number {
   if (max === min) return 0.5;
   return Math.min(1, Math.max(0, (value - min) / (max - min)));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function roundCoordinate(value: number): number {
