@@ -530,6 +530,7 @@ export function LeversPage({
                   loading={loading}
                   error={error}
                   mock={Boolean(data?.mock)}
+                  onRefresh={() => void fetchPricing()}
                   onSelect={setSelectedInstrumentName}
                   selectedInstrumentName={selectedCandidate?.instrumentName ?? null}
                 />
@@ -586,6 +587,7 @@ function RecommendationRail({
   loading,
   error,
   mock,
+  onRefresh,
   onSelect,
   selectedInstrumentName
 }: {
@@ -595,6 +597,7 @@ function RecommendationRail({
   loading: boolean;
   error: string | null;
   mock: boolean;
+  onRefresh: () => void;
   onSelect: (instrumentName: string) => void;
   selectedInstrumentName: string | null;
 }) {
@@ -608,7 +611,12 @@ function RecommendationRail({
           <div className="pc-label">Top matches</div>
           <h2 className="rail-title">Product recommendations</h2>
         </div>
-        <span className={`status-badge ${statusClassName}`}>{statusLabel}</span>
+        <div className="rail-actions">
+          <button className="rail-refresh-btn" disabled={loading} onClick={onRefresh} type="button">
+            {loading ? "Refreshing..." : "Refresh quotes"}
+          </button>
+          <span className={`status-badge ${statusClassName}`}>{statusLabel}</span>
+        </div>
       </div>
       <p className="card-copy rail-copy">The best fit stays in view while you adjust the levers.</p>
       {loading ? <div className="rail-state">Refreshing Deribit depth and pricing...</div> : null}
