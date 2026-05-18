@@ -9,7 +9,7 @@ export function Logo() {
   );
 }
 
-export function SiteNav({ active = "home" }: { active?: "home" | "dcn-put" | "dcn-call" | "admin" }) {
+export function SiteNav({ active = "home" }: { active?: "home" | "dcn-put" | "dcn-call" | "ppp" | "admin" }) {
   return (
     <nav className="site-nav">
       <Logo />
@@ -22,6 +22,9 @@ export function SiteNav({ active = "home" }: { active?: "home" | "dcn-put" | "dc
         </Link>
         <Link className={`nav-link ${active === "dcn-call" ? "active" : ""}`} href="/DCN-call">
           DCN Call
+        </Link>
+        <Link className={`nav-link ${active === "ppp" ? "active" : ""}`} href="/PPP">
+          PPP
         </Link>
         <Link className="nav-link" href="/#products">
           Products

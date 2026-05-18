@@ -8,6 +8,7 @@ export interface PricingConfig {
   firmMarginBps: number;
   sellPutTargetFirmProfitBps: number;
   sellCallTargetFirmProfitBps: number;
+  pppTargetFirmMarginBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
   maxDepthCandidates: number;
@@ -249,6 +250,7 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
     firmMarginBps: Number(map.get("firm_margin_bps") ?? 200),
     sellPutTargetFirmProfitBps: Number(map.get("sell_put_target_firm_profit_bps") ?? 500),
     sellCallTargetFirmProfitBps: Number(map.get("sell_call_target_firm_profit_bps") ?? 500),
+    pppTargetFirmMarginBps: Number(map.get("ppp_target_firm_margin_bps") ?? 500),
     quoteFreshnessSeconds: Number(map.get("quote_freshness_seconds") ?? 10),
     defaultOrderBookDepth: Number(map.get("default_order_book_depth") ?? 100),
     maxDepthCandidates: Number(map.get("max_depth_candidates") ?? 12),
@@ -259,7 +261,14 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
 export async function updatePricingConfig(
   db: D1Database,
   updates: Partial<
-    Pick<PricingConfig, "sellPutPricingMethod" | "firmMarginBps" | "sellPutTargetFirmProfitBps" | "sellCallTargetFirmProfitBps">
+    Pick<
+      PricingConfig,
+      | "sellPutPricingMethod"
+      | "firmMarginBps"
+      | "sellPutTargetFirmProfitBps"
+      | "sellCallTargetFirmProfitBps"
+      | "pppTargetFirmMarginBps"
+    >
   >,
   nowMs: number
 ): Promise<PricingConfig> {
@@ -281,6 +290,11 @@ export async function updatePricingConfig(
         String(updates.sellPutTargetFirmProfitBps),
         nowMs
       )
+    );
+  }
+  if (typeof updates.pppTargetFirmMarginBps === "number") {
+    statements.push(
+      upsertPricingConfigStatement(db, "ppp_target_firm_margin_bps", String(updates.pppTargetFirmMarginBps), nowMs)
     );
   }
   if (typeof updates.sellCallTargetFirmProfitBps === "number") {
@@ -371,6 +385,50 @@ export async function getCallCandidates(db: D1Database, nowMs: number): Promise<
         AND i.expiration_timestamp > ?
         AND q.bid_price IS NOT NULL
         AND q.bid_price > 0`
+    )
+    .bind(nowMs)
+    .all<JoinedPutRow>();
+  return result.results;
+}
+
+export async function getPppOptionCandidates(db: D1Database, nowMs: number): Promise<JoinedPutRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT
+        i.instrument_name,
+        i.option_type,
+        i.strike,
+        i.expiration_timestamp,
+        i.min_trade_amount,
+        i.contract_size,
+        q.bid_price,
+        q.bid_amount,
+        q.ask_price,
+        q.ask_amount,
+        q.mark_price,
+        q.last_price,
+        q.bid_iv,
+        q.ask_iv,
+        q.mark_iv,
+        q.open_interest,
+        q.underlying_price,
+        q.underlying_index,
+        q.interest_rate,
+        q.deribit_timestamp,
+        q.ingested_at
+      FROM option_instruments i
+      JOIN option_quotes_latest q ON q.instrument_name = i.instrument_name
+      WHERE i.base_currency = 'BTC'
+        AND i.is_active = 1
+        AND i.expiration_timestamp > ?
+        AND (
+          (i.option_type = 'call' AND q.ask_price IS NOT NULL AND q.ask_price > 0)
+          OR
+          (i.option_type = 'put' AND (
+            (q.bid_price IS NOT NULL AND q.bid_price > 0)
+            OR (q.ask_price IS NOT NULL AND q.ask_price > 0)
+          ))
+        )`
     )
     .bind(nowMs)
     .all<JoinedPutRow>();

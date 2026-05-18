@@ -1,6 +1,7 @@
 import {
   getCallCandidates,
   getInstrumentQuote,
+  getPppOptionCandidates,
   getPricingConfig,
   getPutCandidates,
   getYieldSurfaceRows,
@@ -25,6 +26,15 @@ import {
   type DcnPricingRequest,
   type PutMarketInput
 } from "./pricing/dcn";
+import {
+  calculatePppCandidate,
+  normalizePppPricingRequest,
+  scorePppPackageForShortlist,
+  selectPppCandidate,
+  type PppMarketLegInput,
+  type PppMarketPackageInput,
+  type PppPricingRequest
+} from "./pricing/ppp";
 import { buildYieldSurface, type YieldSurfaceOptionType } from "./pricing/yield-surface";
 
 export interface Env {
@@ -44,9 +54,11 @@ const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, adm
   ["GET", /^\/api\/market\/options$/, handleOptions],
   ["POST", /^\/api\/products\/dcn\/sell-put\/price$/, handleSellPutPrice],
   ["POST", /^\/api\/products\/dcn\/sell-call\/price$/, handleSellCallPrice],
+  ["POST", /^\/api\/products\/ppp\/price$/, handlePppPrice],
   ["GET", /^\/api\/admin\/market-health$/, handleMarketHealth, true],
   ["GET", /^\/api\/admin\/yield-surface$/, handleYieldSurface, true],
   ["POST", /^\/api\/admin\/dcn-audit$/, handleDcnAudit, true],
+  ["POST", /^\/api\/admin\/ppp-audit$/, handlePppAudit, true],
   ["POST", /^\/api\/admin\/verify-quote$/, handleVerifyQuote, true],
   ["POST", /^\/api\/admin\/deribit-margins$/, handleDeribitMargins, true],
   ["GET", /^\/api\/admin\/pricing-config$/, handleGetPricingConfig, true],
@@ -339,6 +351,21 @@ async function handleSellCallPrice(request: Request, env: Env): Promise<Response
   });
 }
 
+async function handlePppPrice(request: Request, env: Env): Promise<Response> {
+  const payload = await request.json<PppPricingRequest>();
+  const result = await pricePppRequest(payload, env);
+  return json(result);
+}
+
+async function handlePppAudit(request: Request, env: Env): Promise<Response> {
+  const payload = await request.json<PppPricingRequest>();
+  const result = await pricePppRequest(payload, env);
+  return json({
+    ...result,
+    calculation: result.bestCandidate
+  });
+}
+
 async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
   const payload = await request.json<DcnPricingRequest & { instrumentName?: string }>();
   if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
@@ -448,6 +475,7 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
     firmMarginBps?: number;
     sellPutTargetFirmProfitBps?: number;
     sellCallTargetFirmProfitBps?: number;
+    pppTargetFirmMarginBps?: number;
   }>();
   if (
     payload.sellPutPricingMethod !== undefined &&
@@ -480,6 +508,15 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
   if (payload.sellCallTargetFirmProfitBps !== undefined && payload.sellCallTargetFirmProfitBps > 10_000) {
     return json({ error: "sellCallTargetFirmProfitBps must be less than or equal to 10000" }, 400);
   }
+  if (
+    payload.pppTargetFirmMarginBps !== undefined &&
+    !isNonNegativeFinite(payload.pppTargetFirmMarginBps)
+  ) {
+    return json({ error: "pppTargetFirmMarginBps must be a non-negative number" }, 400);
+  }
+  if (payload.pppTargetFirmMarginBps !== undefined && payload.pppTargetFirmMarginBps > 10_000) {
+    return json({ error: "pppTargetFirmMarginBps must be less than or equal to 10000" }, 400);
+  }
 
   const pricingConfig = await updatePricingConfig(
     env.DB,
@@ -497,7 +534,9 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
       sellCallTargetFirmProfitBps:
         payload.sellCallTargetFirmProfitBps === undefined
           ? undefined
-          : Math.round(payload.sellCallTargetFirmProfitBps)
+          : Math.round(payload.sellCallTargetFirmProfitBps),
+      pppTargetFirmMarginBps:
+        payload.pppTargetFirmMarginBps === undefined ? undefined : Math.round(payload.pppTargetFirmMarginBps)
     },
     Date.now()
   );
@@ -690,6 +729,77 @@ async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: 
   return { instruments: instrumentCount, quotes: quoteCount, syncedAt: nowMs };
 }
 
+async function pricePppRequest(payload: PppPricingRequest, env: Env) {
+  const nowMs = Date.now();
+  const config = await getPricingConfig(env.DB);
+  const normalized = normalizePppPricingRequest(payload, config);
+  let rows = await getPppOptionCandidates(env.DB, nowMs);
+
+  if (rows.length === 0) {
+    await syncMarketData(env);
+    rows = await getPppOptionCandidates(env.DB, nowMs);
+  }
+
+  const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
+  const spotPrice = await getBtcUsdcSpotPrice(client);
+  if (!spotPrice) {
+    return {
+      generatedAt: nowMs,
+      input: normalized,
+      candidates: [],
+      bestCandidate: null,
+      recommendation: {
+        reason: "BTC_USDC spot price was unavailable.",
+        runwayGapDays: null,
+        protectionGapBps: null,
+        optimizedParticipationBps: null
+      }
+    };
+  }
+
+  const packages = buildPppMarketPackages(rows, spotPrice, normalized, nowMs);
+  const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 4), 8);
+  const shortlisted = packages
+    .map((marketPackage) => ({
+      marketPackage,
+      score: scorePppPackageForShortlist(normalized, marketPackage, nowMs)
+    }))
+    .filter((item) => Number.isFinite(item.score))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, depthCandidateCount);
+
+  const priced = [];
+  for (const item of shortlisted) {
+    const [callBook, atmPutBook, floorPutBook] = await Promise.all([
+      client.getOrderBook(item.marketPackage.atmCall.instrumentName, normalized.orderBookDepth),
+      client.getOrderBook(item.marketPackage.atmPut.instrumentName, normalized.orderBookDepth),
+      client.getOrderBook(item.marketPackage.floorPut.instrumentName, normalized.orderBookDepth)
+    ]);
+    const marketPackage: PppMarketPackageInput = {
+      expirationTimestamp: item.marketPackage.expirationTimestamp,
+      spotPrice,
+      atmCall: rowToPppMarketLeg(item.marketPackage.atmCall, callBook.bids, callBook.asks, callBook.timestamp),
+      atmPut: rowToPppMarketLeg(item.marketPackage.atmPut, atmPutBook.bids, atmPutBook.asks, atmPutBook.timestamp),
+      floorPut: rowToPppMarketLeg(item.marketPackage.floorPut, floorPutBook.bids, floorPutBook.asks, floorPutBook.timestamp)
+    };
+    priced.push(calculatePppCandidate(normalized, marketPackage));
+  }
+
+  const selected = selectPppCandidate(normalized, priced);
+  return {
+    generatedAt: nowMs,
+    input: normalized,
+    candidates: selected.candidates,
+    bestCandidate: selected.bestCandidate,
+    recommendation: {
+      reason: selected.reason,
+      runwayGapDays: selected.runwayGapDays,
+      protectionGapBps: selected.protectionGapBps,
+      optimizedParticipationBps: selected.optimizedParticipationBps
+    }
+  };
+}
+
 function normalizePricingRequest(request: DcnPricingRequest, config: Awaited<ReturnType<typeof getPricingConfig>>): DcnPricingRequest {
   const productType = request.productType === "sell_call" ? "sell_call" : "sell_put";
   const selectorMode = normalizeSelectorMode(request.selectorMode);
@@ -747,6 +857,88 @@ function normalizeStrikeBufferPct(
   const numeric = Number(value);
   const maxBufferPct = productType === "sell_call" ? 200 : 99;
   return Number.isFinite(numeric) ? Math.min(maxBufferPct, Math.max(0, numeric)) : undefined;
+}
+
+function buildPppMarketPackages(
+  rows: JoinedPutRow[],
+  spotPrice: number,
+  request: Pick<PppPricingRequest, "protectionLevelBps">,
+  _nowMs: number
+): PppMarketPackageInput[] {
+  const protectionLevel = Math.min(1, Math.max(0.1, Number(request.protectionLevelBps ?? 8000) / 10000));
+  const targetFloorStrike = spotPrice * protectionLevel;
+  const byExpiry = new Map<number, JoinedPutRow[]>();
+
+  for (const row of rows) {
+    const bucket = byExpiry.get(row.expiration_timestamp) ?? [];
+    bucket.push(row);
+    byExpiry.set(row.expiration_timestamp, bucket);
+  }
+
+  const packages: PppMarketPackageInput[] = [];
+  for (const [expirationTimestamp, expiryRows] of byExpiry) {
+    const calls = expiryRows.filter((row) => row.option_type === "call" && isPositiveFinite(row.ask_price));
+    const bidPuts = expiryRows.filter((row) => row.option_type === "put" && isPositiveFinite(row.bid_price));
+    const askPuts = expiryRows.filter((row) => row.option_type === "put" && isPositiveFinite(row.ask_price));
+    const atmCall = findHighestStrikeAtOrBelow(calls, spotPrice);
+    const atmPut = findHighestStrikeAtOrBelow(bidPuts, spotPrice);
+    const floorPut = findLowestStrikeAtOrAbove(askPuts, targetFloorStrike);
+    if (!atmCall || !atmPut || !floorPut) continue;
+
+    packages.push({
+      expirationTimestamp,
+      spotPrice,
+      atmCall: pppRowToMarketLeg(atmCall),
+      atmPut: pppRowToMarketLeg(atmPut),
+      floorPut: pppRowToMarketLeg(floorPut)
+    });
+  }
+
+  return packages;
+}
+
+function findHighestStrikeAtOrBelow(rows: JoinedPutRow[], target: number): JoinedPutRow | null {
+  return rows
+    .filter((row) => row.strike <= target)
+    .sort((a, b) => b.strike - a.strike)[0] ?? null;
+}
+
+function findLowestStrikeAtOrAbove(rows: JoinedPutRow[], target: number): JoinedPutRow | null {
+  return rows
+    .filter((row) => row.strike >= target)
+    .sort((a, b) => a.strike - b.strike)[0] ?? null;
+}
+
+function pppRowToMarketLeg(row: JoinedPutRow): PppMarketLegInput {
+  return {
+    instrumentName: row.instrument_name,
+    optionType: row.option_type,
+    strike: row.strike,
+    expirationTimestamp: row.expiration_timestamp,
+    minTradeAmount: row.min_trade_amount,
+    bidPrice: row.bid_price,
+    bidAmount: row.bid_amount,
+    askPrice: row.ask_price,
+    askAmount: row.ask_amount,
+    deribitTimestamp: row.deribit_timestamp,
+    ingestedAt: row.ingested_at,
+    bids: [],
+    asks: []
+  };
+}
+
+function rowToPppMarketLeg(
+  row: PppMarketLegInput,
+  bids: BidAskLevel[] = [],
+  asks: BidAskLevel[] = [],
+  bookTimestamp?: number
+): PppMarketLegInput {
+  return {
+    ...row,
+    deribitTimestamp: bookTimestamp ?? row.deribitTimestamp,
+    bids,
+    asks
+  };
 }
 
 function rowToMarket(

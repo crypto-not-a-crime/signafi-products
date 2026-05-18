@@ -1,4 +1,12 @@
-import type { DcnCandidate, DcnPricingResponse, DcnPriorityLever, DcnSelectorMode, YieldSurfaceResponse } from "@/types";
+import type {
+  DcnCandidate,
+  DcnPricingResponse,
+  DcnPriorityLever,
+  DcnSelectorMode,
+  PppCandidate,
+  PppPricingResponse,
+  YieldSurfaceResponse
+} from "@/types";
 import { calculateScenario } from "./dcn-scenario";
 
 function roundYieldToOneDecimalPercent(value: number): number {
@@ -290,6 +298,276 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
         strikeBufferPct === null ? null : Math.abs(best.strike / best.spotPrice - (1 - strikeBufferPct / 100)) * 10000
     },
     mock: true
+  };
+}
+
+export function mockPppPricingResponse(input: Record<string, unknown> = {}): PppPricingResponse {
+  const investmentUsdt = Number(input.investmentUsdt ?? 1000000);
+  const protectionLevel = Number(input.protectionLevelBps ?? 8000) / 10000;
+  const targetFirmMarginBps = Number(input.targetFirmMarginBps ?? 500);
+  const best = mockPppCandidate({
+    investmentUsdt,
+    protectionLevel,
+    protectionLevelBps: Math.round(protectionLevel * 10000),
+    targetFirmMarginBps
+  });
+  const candidates = [
+    best,
+    mockPppCandidate({
+      expirationTimestamp: expiryTimestampFromDte(Date.now(), 180),
+      dayCount: 180,
+      optimizedParticipation: 0.212,
+      optimizedParticipationBps: 2120,
+      optimalCallContracts: 2.8,
+      floorPutStrike: 62000,
+      putSpreadImpliedFloor: 0.812,
+      protectionGapBps: Math.abs(0.812 - protectionLevel) * 10000,
+      minScenarioPnlUsdt: 35800,
+      stressPrice: 80000
+    }),
+    mockPppCandidate({
+      expirationTimestamp: expiryTimestampFromDte(Date.now(), 365),
+      dayCount: 365,
+      optimizedParticipation: 0.186,
+      optimizedParticipationBps: 1860,
+      optimalCallContracts: 2.4,
+      floorPutStrike: 60000,
+      putSpreadImpliedFloor: 0.798,
+      protectionGapBps: Math.abs(0.798 - protectionLevel) * 10000,
+      minScenarioPnlUsdt: 52500,
+      stressPrice: 77121
+    })
+  ];
+
+  return {
+    generatedAt: Date.now(),
+    input,
+    candidates,
+    bestCandidate: best,
+    recommendation: {
+      reason: "Mock PPP recommendation generated without live worker data.",
+      runwayGapDays: 0,
+      protectionGapBps: best.protectionGapBps,
+      optimizedParticipationBps: best.optimizedParticipationBps
+    },
+    mock: true
+  };
+}
+
+export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCandidate {
+  const generatedAt = Date.now();
+  const investmentUsdt = overrides.investmentUsdt ?? 1000000;
+  const spotPrice = overrides.spotPrice ?? 77121;
+  const protectionLevel = overrides.protectionLevel ?? 0.8;
+  const optimizedParticipation = overrides.optimizedParticipation ?? 0.239;
+  const targetFirmMarginBps = overrides.targetFirmMarginBps ?? 500;
+  const dayCount = overrides.dayCount ?? 92;
+  const targetProfitUsdt = investmentUsdt * (targetFirmMarginBps / 10000) * (dayCount / 365);
+  const minScenarioPnlUsdt = overrides.minScenarioPnlUsdt ?? 31097;
+  const stressPrice = overrides.stressPrice ?? 77121;
+  const optimalCallContracts = overrides.optimalCallContracts ?? 3.1;
+  const putSpreadContracts = overrides.putSpreadContracts ?? 12.9;
+  const atmCallStrike = overrides.atmCallStrike ?? 76000;
+  const atmPutStrike = overrides.atmPutStrike ?? 76000;
+  const floorPutStrike = overrides.floorPutStrike ?? 62000;
+  const putSpreadImpliedFloor = overrides.putSpreadImpliedFloor ?? 0.8194;
+  const netOptionCashBtc = overrides.netOptionCashBtc ?? 0.3586;
+  const netOptionCashUsdt = overrides.netOptionCashUsdt ?? 27655;
+  const legs = [
+    mockPppLeg("long_call", "buy", "BTC-25DEC26-76000-C", atmCallStrike, optimalCallContracts, 0.152),
+    mockPppLeg("short_put", "sell", "BTC-25DEC26-76000-P", atmPutStrike, putSpreadContracts, 0.1185),
+    mockPppLeg("long_floor_put", "buy", "BTC-25DEC26-62000-P", floorPutStrike, putSpreadContracts, 0.0535)
+  ] satisfies PppCandidate["legs"];
+  const selectedScenario = overrides.selectedScenario ?? {
+    expiryPrice: spotPrice,
+    clientPayoutUsdt: investmentUsdt,
+    callPayoffUsdt: 3475,
+    shortPutPayoffUsdt: 0,
+    floorPutPayoffUsdt: 0,
+    grossHedgePayoffUsdt: 3475,
+    deliveryFeesUsdt: 36,
+    issuerPnlUsdt: minScenarioPnlUsdt
+  };
+  return {
+    formulaTemplate: {
+      id: "ppp-robust-model-v1",
+      version: "2026-05-18",
+      label: "Partial Principal Protected Robust Model",
+      sourceWorkbook: "Partial_Prin_Protected.xlsx",
+      sourceSheets: ["Robust Model", "Scenario PnL", "Optimization"]
+    },
+    productType: "ppp",
+    expirationTimestamp: overrides.expirationTimestamp ?? expiryTimestampFromDte(generatedAt, dayCount),
+    dayCount,
+    investmentUsdt,
+    spotPrice,
+    protectionLevel,
+    protectionLevelBps: Math.round(protectionLevel * 10000),
+    floorStrikeTarget: spotPrice * protectionLevel,
+    targetFirmMarginBps,
+    targetProfitUsdt,
+    optimizedParticipation,
+    optimizedParticipationBps: optimizedParticipation * 10000,
+    optimalCallContracts,
+    putSpreadContracts,
+    atmCallStrike,
+    atmPutStrike,
+    floorPutStrike,
+    putSpreadImpliedFloor,
+    protectionGapBps: Math.abs(putSpreadImpliedFloor - protectionLevel) * 10000,
+    minScenarioPnlUsdt,
+    stressPrice,
+    netOptionCashBtc,
+    netOptionCashUsdt,
+    quoteAgeSeconds: 3,
+    maxSlippagePct: 0,
+    eligible: true,
+    checks: {
+      spotValid: true,
+      expiryValid: true,
+      quoteFresh: true,
+      sufficientDepth: true,
+      slippageWithinLimit: true,
+      participationPositive: true,
+      targetProfitMet: true,
+      floorAtOrAboveProtection: true
+    },
+    legs,
+    selectedScenario,
+    scenarios: [],
+    formulaTrace: mockPppFormulaTrace({
+      investmentUsdt,
+      spotPrice,
+      protectionLevel,
+      optimizedParticipation,
+      targetFirmMarginBps,
+      targetProfitUsdt,
+      minScenarioPnlUsdt,
+      stressPrice,
+      optimalCallContracts,
+      putSpreadContracts,
+      atmCallStrike,
+      atmPutStrike,
+      floorPutStrike,
+      putSpreadImpliedFloor,
+      netOptionCashBtc,
+      netOptionCashUsdt,
+      legs,
+      selectedScenario
+    }),
+    ...overrides
+  };
+}
+
+function mockPppFormulaTrace(input: {
+  investmentUsdt: number;
+  spotPrice: number;
+  protectionLevel: number;
+  optimizedParticipation: number;
+  targetFirmMarginBps: number;
+  targetProfitUsdt: number;
+  minScenarioPnlUsdt: number;
+  stressPrice: number;
+  optimalCallContracts: number;
+  putSpreadContracts: number;
+  atmCallStrike: number;
+  atmPutStrike: number;
+  floorPutStrike: number;
+  putSpreadImpliedFloor: number;
+  netOptionCashBtc: number;
+  netOptionCashUsdt: number;
+  legs: PppCandidate["legs"];
+  selectedScenario: NonNullable<PppCandidate["selectedScenario"]>;
+}): PppCandidate["formulaTrace"] {
+  const [callLeg, putLeg, floorPutLeg] = input.legs;
+  const exactPutContracts = input.spotPrice > 0 ? input.investmentUsdt / input.spotPrice : null;
+  const exactCallContracts = input.spotPrice > 0 ? (input.investmentUsdt * input.optimizedParticipation) / input.spotPrice : null;
+  const actualCallHedgeParticipation =
+    input.investmentUsdt > 0 ? (input.optimalCallContracts * input.spotPrice) / input.investmentUsdt : null;
+  const buyFeesBtc = (callLeg.tradingFeeBtc ?? 0) + (floorPutLeg.tradingFeeBtc ?? 0);
+  const sellFeesBtc = putLeg.tradingFeeBtc ?? 0;
+  const grossPutSpreadCreditBtc =
+    input.putSpreadContracts * ((putLeg.averagePrice ?? 0) - (floorPutLeg.averagePrice ?? 0));
+  const callPremiumCostBtc = input.optimalCallContracts * (callLeg.averagePrice ?? 0);
+
+  return [
+    { cell: "Robust Model!B4", label: "Notional invested", formula: "user input", value: input.investmentUsdt },
+    { cell: "Robust Model!B5", label: "Product reference spot S0", formula: "Deribit BTC_USDC spot mid", value: input.spotPrice },
+    { cell: "Robust Model!B7", label: "Product floor return", formula: "selected protectionLevelBps / 10000", value: input.protectionLevel },
+    { cell: "Robust Model!B9", label: "Target firm margin", formula: "saved PPP targetFirmMarginBps / 10000", value: input.targetFirmMarginBps / 10000 },
+    { cell: "Robust Model!B10", label: "Target profit amount", formula: "dayCount / 365 * targetFirmMargin * notional", value: input.targetProfitUsdt },
+    { cell: "Robust Model!F4", label: "ATM call strike", formula: "closest listed call strike to S0", value: input.atmCallStrike },
+    { cell: "Robust Model!F5", label: "ATM call ask premium", formula: "depth-weighted executable ask", value: callLeg.averagePrice },
+    { cell: "Robust Model!F6", label: "ATM put strike", formula: "closest listed put strike to S0", value: input.atmPutStrike },
+    { cell: "Robust Model!F7", label: "ATM put bid premium", formula: "depth-weighted executable bid", value: putLeg.averagePrice },
+    { cell: "Robust Model!F8", label: "Floor put strike", formula: "closest listed put strike to S0 * protection", value: input.floorPutStrike },
+    { cell: "Robust Model!F9", label: "Floor put ask premium", formula: "depth-weighted executable ask", value: floorPutLeg.averagePrice },
+    { cell: "Robust Model!B19", label: "Put-spread contracts exact", formula: "notional / S0", value: exactPutContracts },
+    { cell: "Robust Model!B20", label: "Put-spread contracts used", formula: "FLOOR(notional / S0 / 0.1, 1) * 0.1", value: input.putSpreadContracts },
+    { cell: "Robust Model!B21", label: "Call contracts exact", formula: "notional * maxParticipation / S0", value: exactCallContracts },
+    { cell: "Robust Model!B44", label: "Optimal call contracts", formula: "last Optimization row where min PnL >= target profit", value: input.optimalCallContracts },
+    { cell: "Robust Model!B23", label: "Actual call hedge participation", formula: "optimalCallContracts * S0 / notional", value: actualCallHedgeParticipation },
+    { cell: "Robust Model!B43", label: "Max client participation", formula: "callContracts * S0 / notional * (1 - delivery fee cap)", value: input.optimizedParticipation },
+    { cell: "Robust Model!B24", label: "Put-spread implied floor", formula: "1 - putContracts * (atmPutStrike - floorPutStrike) / notional", value: input.putSpreadImpliedFloor },
+    { cell: "Robust Model!B25", label: "Protection gap", formula: "(putSpreadImpliedFloor - selectedFloorReturn) * 10000", value: (input.putSpreadImpliedFloor - input.protectionLevel) * 10000 },
+    { cell: "Robust Model!B30", label: "Buy-leg trading fees BTC", formula: "ATM call fee + floor put fee", value: buyFeesBtc },
+    { cell: "Robust Model!B31", label: "Sell-leg trading fees BTC", formula: "ATM put fee", value: sellFeesBtc },
+    { cell: "Robust Model!B32", label: "Total trading fees BTC", formula: "buy fees + sell fees", value: buyFeesBtc + sellFeesBtc },
+    { cell: "Robust Model!B33", label: "Gross put-spread credit BTC", formula: "putContracts * (atmPutBid - floorPutAsk)", value: grossPutSpreadCreditBtc },
+    { cell: "Robust Model!B34", label: "Call premium cost BTC", formula: "optimalCallContracts * atmCallAsk", value: callPremiumCostBtc },
+    { cell: "Robust Model!B35", label: "Net inception option cash", formula: "put spread credit - call cost - trading fees", value: input.netOptionCashBtc },
+    { cell: "Robust Model!B36", label: "Net inception option cash", formula: "netOptionCashBTC * BTC_USDC spot mid", value: input.netOptionCashUsdt },
+    { cell: "Robust Model!B45", label: "Minimum PnL at optimum", formula: "MIN(Optimization scenario checks)", value: input.minScenarioPnlUsdt },
+    { cell: "Robust Model!B38", label: "Stress price at minimum PnL", formula: "price where optimized scenario PnL is lowest", value: input.stressPrice },
+    { cell: "Robust Model!B39", label: "Target profit check", formula: "minimum scenario PnL >= target profit", value: input.minScenarioPnlUsdt >= input.targetProfitUsdt ? "PASS" : "FAIL" },
+    { cell: "Scenario PnL!C59", label: "Final BTC level", formula: "selected verification scenario expiry price", value: input.selectedScenario.expiryPrice },
+    { cell: "Scenario PnL!C70", label: "Client payout USDT", formula: "principal floor or upside participation payoff", value: input.selectedScenario.clientPayoutUsdt },
+    { cell: "Scenario PnL!C62", label: "ATM call payoff USDT", formula: "callContracts * MAX(expiryPrice - atmCallStrike, 0)", value: input.selectedScenario.callPayoffUsdt },
+    { cell: "Scenario PnL!C64", label: "Short ATM put payoff USDT", formula: "-putContracts * MAX(atmPutStrike - expiryPrice, 0)", value: input.selectedScenario.shortPutPayoffUsdt },
+    { cell: "Scenario PnL!C65", label: "Long floor put payoff USDT", formula: "putContracts * MAX(floorPutStrike - expiryPrice, 0)", value: input.selectedScenario.floorPutPayoffUsdt },
+    { cell: "Scenario PnL!C66", label: "Gross hedge payoff USDT", formula: "call payoff + short put payoff + floor put payoff", value: input.selectedScenario.grossHedgePayoffUsdt },
+    { cell: "Scenario PnL!C69", label: "Delivery fees USDT", formula: "Deribit delivery fee cap on exercised options", value: input.selectedScenario.deliveryFeesUsdt },
+    { cell: "Scenario PnL!C72", label: "Issuer PnL USDT", formula: "notional + net option cash + hedge payoff - delivery fees - client payout", value: input.selectedScenario.issuerPnlUsdt }
+  ];
+}
+
+function mockPppLeg(
+  role: PppCandidate["legs"][number]["role"],
+  side: PppCandidate["legs"][number]["side"],
+  instrumentName: string,
+  strike: number,
+  requiredContracts: number,
+  averagePrice: number
+): PppCandidate["legs"][number] {
+  return {
+    role,
+    side,
+    instrumentName,
+    optionType: role === "long_call" ? "call" : "put",
+    strike,
+    requiredContracts,
+    averagePrice,
+    bestPrice: averagePrice,
+    grossPremiumBtc: requiredContracts * averagePrice,
+    tradingFeeBtc: requiredContracts * 0.0003,
+    netCashBtc:
+      side === "buy"
+        ? -(requiredContracts * averagePrice + requiredContracts * 0.0003)
+        : requiredContracts * averagePrice - requiredContracts * 0.0003,
+    quoteAgeSeconds: 3,
+    depth: {
+      side,
+      requiredContracts,
+      filledContracts: requiredContracts,
+      grossPremiumBtc: requiredContracts * averagePrice,
+      averagePrice,
+      bestPrice: averagePrice,
+      bestAmount: requiredContracts,
+      sufficientDepth: true,
+      remainingContracts: 0,
+      slippagePct: 0,
+      fills: [{ price: averagePrice, amount: requiredContracts, notionalBtc: requiredContracts * averagePrice }]
+    }
   };
 }
 

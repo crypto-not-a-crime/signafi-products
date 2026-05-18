@@ -201,13 +201,13 @@ export function LandingPage() {
 
           <div className="explorer-band" id="products">
             <div className="section-tag">Product Explorer</div>
-            <h2 className="section-title">Depth-aware DCN pricing is live in the DCN Put and Call pages.</h2>
+            <h2 className="section-title">Depth-aware pricing is live across DCN Put, DCN Call, and PPP pages.</h2>
             <p className="section-sub">
-              The DCN sell-put flow uses Deribit option data, depth-weighted bid modelling, configured Put pricing, and issuer
-              profit checks before showing a proposed client yield.
+              The pricing flows use Deribit option data, depth-weighted execution modelling, configured product margins, and issuer
+              profit checks before showing proposed client terms.
             </p>
-            <Link className="btn-light" href="/DCN-put">
-              Explore live DCN pricing
+            <Link className="btn-light" href="/PPP">
+              Explore PPP pricing
             </Link>
           </div>
         </section>

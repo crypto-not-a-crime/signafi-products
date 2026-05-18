@@ -7,6 +7,7 @@ const mockPricingConfig = {
   firmMarginBps: 200,
   sellPutTargetFirmProfitBps: 500,
   sellCallTargetFirmProfitBps: 500,
+  pppTargetFirmMarginBps: 500,
   quoteFreshnessSeconds: 10,
   defaultOrderBookDepth: 100,
   maxDepthCandidates: 12,
@@ -30,6 +31,7 @@ export async function POST(request: NextRequest) {
     firmMarginBps?: number;
     sellPutTargetFirmProfitBps?: number;
     sellCallTargetFirmProfitBps?: number;
+    pppTargetFirmMarginBps?: number;
   };
   return proxyToWorker(request, "/api/admin/pricing-config", () => ({
     mock: true,
@@ -50,7 +52,11 @@ export async function POST(request: NextRequest) {
       sellCallTargetFirmProfitBps:
         typeof body.sellCallTargetFirmProfitBps === "number" && Number.isFinite(body.sellCallTargetFirmProfitBps)
           ? Math.max(0, Math.round(body.sellCallTargetFirmProfitBps))
-          : mockPricingConfig.sellCallTargetFirmProfitBps
+          : mockPricingConfig.sellCallTargetFirmProfitBps,
+      pppTargetFirmMarginBps:
+        typeof body.pppTargetFirmMarginBps === "number" && Number.isFinite(body.pppTargetFirmMarginBps)
+          ? Math.max(0, Math.round(body.pppTargetFirmMarginBps))
+          : mockPricingConfig.pppTargetFirmMarginBps
     }
   }));
 }

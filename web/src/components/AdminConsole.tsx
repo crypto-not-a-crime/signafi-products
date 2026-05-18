@@ -6,6 +6,7 @@ import type {
   DeribitMarginCheck,
   MarketExpirySummary,
   MarketOption,
+  PppCandidate,
   PricingConfig,
   SellPutPricingMethod
 } from "@/types";
@@ -28,9 +29,11 @@ interface Health {
   mock?: boolean;
 }
 
+type AdminProductType = "sell_put" | "sell_call" | "ppp";
+
 export function AdminConsole() {
   const [activeTab, setActiveTab] = useState<"audit" | "yield-surface">("audit");
-  const [selectedProductType, setSelectedProductType] = useState<"sell_put" | "sell_call">("sell_put");
+  const [selectedProductType, setSelectedProductType] = useState<AdminProductType>("sell_put");
   const [health, setHealth] = useState<Health | null>(null);
   const [options, setOptions] = useState<MarketOption[]>([]);
   const [expirySummaries, setExpirySummaries] = useState<MarketExpirySummary[]>([]);
@@ -42,6 +45,8 @@ export function AdminConsole() {
   const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [investmentBtc, setInvestmentBtc] = useState(10);
+  const [pppRunwayDays, setPppRunwayDays] = useState(92);
+  const [pppProtectionPct, setPppProtectionPct] = useState(80);
   const [sellPutPricingMethod, setSellPutPricingMethod] = useState<SellPutPricingMethod>("firm_margin");
   const [savedSellPutPricingMethod, setSavedSellPutPricingMethod] = useState<SellPutPricingMethod>("firm_margin");
   const [firmMarginPct, setFirmMarginPct] = useState(2);
@@ -50,8 +55,11 @@ export function AdminConsole() {
   const [savedSellPutTargetFirmProfitPct, setSavedSellPutTargetFirmProfitPct] = useState(5);
   const [sellCallTargetFirmProfitPct, setSellCallTargetFirmProfitPct] = useState(5);
   const [savedSellCallTargetFirmProfitPct, setSavedSellCallTargetFirmProfitPct] = useState(5);
+  const [pppTargetFirmMarginPct, setPppTargetFirmMarginPct] = useState(5);
+  const [savedPppTargetFirmMarginPct, setSavedPppTargetFirmMarginPct] = useState(5);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
+  const [pppAudit, setPppAudit] = useState<PppCandidate | null>(null);
   const [marginCheck, setMarginCheck] = useState<DeribitMarginCheck | null>(null);
   const [quoteVerification, setQuoteVerification] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
@@ -67,6 +75,12 @@ export function AdminConsole() {
   }, []);
 
   useEffect(() => {
+    if (selectedProductType === "ppp") {
+      setOptions([]);
+      setSelectedExpiry("");
+      setSelectedStrike("");
+      return;
+    }
     setSelectedOptionType(selectedProductType === "sell_call" ? "call" : "put");
     setSelectedExpiry("");
     setSelectedStrike("");
@@ -144,6 +158,7 @@ export function AdminConsole() {
 
   useEffect(() => {
     setAudit(null);
+    setPppAudit(null);
     setMarginCheck(null);
     setQuoteVerification(null);
     setConfigMessage(null);
@@ -157,6 +172,9 @@ export function AdminConsole() {
     firmMarginPct,
     sellPutTargetFirmProfitPct,
     sellCallTargetFirmProfitPct,
+    pppTargetFirmMarginPct,
+    pppRunwayDays,
+    pppProtectionPct,
     selectedProductType
   ]);
 
@@ -200,6 +218,12 @@ export function AdminConsole() {
       setSellCallTargetFirmProfitPct(callTarget);
       setSavedSellCallTargetFirmProfitPct(callTarget);
     }
+    const pppTargetBps = payload.pricingConfig?.pppTargetFirmMarginBps;
+    if (typeof pppTargetBps === "number" && Number.isFinite(pppTargetBps)) {
+      const pppTarget = pppTargetBps / 100;
+      setPppTargetFirmMarginPct(pppTarget);
+      setSavedPppTargetFirmMarginPct(pppTarget);
+    }
   }
 
   async function loadExpiryOptions() {
@@ -234,11 +258,14 @@ export function AdminConsole() {
   const savedSellPutTargetFirmProfitBps = Math.max(0, Math.round(savedSellPutTargetFirmProfitPct * 100));
   const sellCallTargetFirmProfitBps = Math.max(0, Math.round(sellCallTargetFirmProfitPct * 100));
   const savedSellCallTargetFirmProfitBps = Math.max(0, Math.round(savedSellCallTargetFirmProfitPct * 100));
+  const pppTargetFirmMarginBps = Math.max(0, Math.round(pppTargetFirmMarginPct * 100));
+  const savedPppTargetFirmMarginBps = Math.max(0, Math.round(savedPppTargetFirmMarginPct * 100));
   const pricingConfigChanged =
     sellPutPricingMethod !== savedSellPutPricingMethod ||
     firmMarginBps !== savedFirmMarginBps ||
     sellPutTargetFirmProfitBps !== savedSellPutTargetFirmProfitBps ||
-    sellCallTargetFirmProfitBps !== savedSellCallTargetFirmProfitBps;
+    sellCallTargetFirmProfitBps !== savedSellCallTargetFirmProfitBps ||
+    pppTargetFirmMarginBps !== savedPppTargetFirmMarginBps;
 
   async function savePricingConfig() {
     setSavingConfig(true);
@@ -251,7 +278,8 @@ export function AdminConsole() {
           sellPutPricingMethod,
           firmMarginBps,
           sellPutTargetFirmProfitBps,
-          sellCallTargetFirmProfitBps
+          sellCallTargetFirmProfitBps,
+          pppTargetFirmMarginBps
         })
       });
       const payload = (await response.json()) as { pricingConfig?: PricingConfig; error?: string };
@@ -274,6 +302,10 @@ export function AdminConsole() {
       const nextCallTargetPct = nextCallTargetBps / 100;
       setSellCallTargetFirmProfitPct(nextCallTargetPct);
       setSavedSellCallTargetFirmProfitPct(nextCallTargetPct);
+      const nextPppTargetBps = payload.pricingConfig?.pppTargetFirmMarginBps ?? pppTargetFirmMarginBps;
+      const nextPppTargetPct = nextPppTargetBps / 100;
+      setPppTargetFirmMarginPct(nextPppTargetPct);
+      setSavedPppTargetFirmMarginPct(nextPppTargetPct);
       setConfigMessage("Pricing configuration saved.");
     } finally {
       setSavingConfig(false);
@@ -286,6 +318,11 @@ export function AdminConsole() {
     setQuoteVerification(null);
     setRefreshError(null);
     try {
+      if (selectedProductType === "ppp") {
+        await requestPppAuditCalculation();
+        await refreshHealth();
+        return;
+      }
       const response = await fetch("/api/admin/refresh-selected-market", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -342,11 +379,30 @@ export function AdminConsole() {
     return calculation;
   }
 
+  async function requestPppAuditCalculation(): Promise<PppCandidate | null> {
+    const response = await fetch("/api/admin/ppp-audit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        investmentUsdt,
+        runwayDays: pppRunwayDays,
+        protectionLevelBps: Math.round(pppProtectionPct * 100),
+        targetFirmMarginBps: pppTargetFirmMarginBps,
+        orderBookDepth: 100
+      })
+    });
+    const payload = (await response.json()) as { calculation?: PppCandidate; bestCandidate?: PppCandidate; error?: string };
+    const calculation = payload.calculation ?? payload.bestCandidate ?? null;
+    setPppAudit(calculation);
+    return calculation;
+  }
+
   async function runAudit() {
     setLoading(true);
     setMarginCheck(null);
     try {
-      await requestAuditCalculation();
+      if (selectedProductType === "ppp") await requestPppAuditCalculation();
+      else await requestAuditCalculation();
     } finally {
       setLoading(false);
     }
@@ -468,11 +524,12 @@ export function AdminConsole() {
                 <select
                   className="admin-input"
                   value={selectedProductType}
-                  onChange={(event) => setSelectedProductType(event.target.value as "sell_put" | "sell_call")}
+                  onChange={(event) => setSelectedProductType(event.target.value as AdminProductType)}
                   disabled={optionsLoading}
                 >
                   <option value="sell_put">DCN Put</option>
                   <option value="sell_call">DCN Call</option>
+                  <option value="ppp">PPP</option>
                 </select>
               </label>
               {selectedProductType === "sell_put" ? (
@@ -488,36 +545,68 @@ export function AdminConsole() {
                   </select>
                 </label>
               ) : null}
-              <label>
-                <span className="field-label">Expiry date</span>
-                <select
-                  className="admin-input"
-                  value={selectedExpiry}
-                  onChange={(event) => setSelectedExpiry(event.target.value)}
-                  disabled={optionsLoading || expiryOptions.length === 0}
-                >
-                  {expiryOptions.map((expiry) => (
-                    <option key={expiry} value={expiry}>
-                      {formatExpiry(expiry)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span className="field-label">Strike</span>
-                <select
-                  className="admin-input"
-                  value={selectedStrike}
-                  onChange={(event) => setSelectedStrike(event.target.value)}
-                  disabled={optionsLoading || strikeOptions.length === 0}
-                >
-                  {strikeOptions.map((strike) => (
-                    <option key={strike} value={strike}>
-                      {formatUsd(strike)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {selectedProductType === "ppp" ? (
+                <>
+                  <label>
+                    <span className="field-label">Duration</span>
+                    <select
+                      className="admin-input"
+                      value={pppRunwayDays}
+                      onChange={(event) => setPppRunwayDays(Number(event.target.value))}
+                    >
+                      <option value={30}>1 month</option>
+                      <option value={92}>3 months</option>
+                      <option value={180}>6 months</option>
+                      <option value={365}>12 months</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span className="field-label">Protection level</span>
+                    <input
+                      className="admin-input"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={pppProtectionPct}
+                      onChange={(event) => setPppProtectionPct(Number(event.target.value))}
+                    />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label>
+                    <span className="field-label">Expiry date</span>
+                    <select
+                      className="admin-input"
+                      value={selectedExpiry}
+                      onChange={(event) => setSelectedExpiry(event.target.value)}
+                      disabled={optionsLoading || expiryOptions.length === 0}
+                    >
+                      {expiryOptions.map((expiry) => (
+                        <option key={expiry} value={expiry}>
+                          {formatExpiry(expiry)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="field-label">Strike</span>
+                    <select
+                      className="admin-input"
+                      value={selectedStrike}
+                      onChange={(event) => setSelectedStrike(event.target.value)}
+                      disabled={optionsLoading || strikeOptions.length === 0}
+                    >
+                      {strikeOptions.map((strike) => (
+                        <option key={strike} value={strike}>
+                          {formatUsd(strike)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              )}
               <label>
                 <span className="field-label">{selectedProductType === "sell_call" ? "Investment BTC" : "Investment USDT"}</span>
                 <input
@@ -535,7 +624,9 @@ export function AdminConsole() {
               </label>
               <label>
                 <span className="field-label">
-                  {selectedProductType === "sell_call"
+                  {selectedProductType === "ppp"
+                    ? "PPP target firm margin % p.a."
+                    : selectedProductType === "sell_call"
                     ? "Call target firm profit % p.a."
                     : sellPutPricingMethod === "target_firm_profit"
                       ? "PUT TARGET FIRM PROFIT % P.A."
@@ -547,15 +638,18 @@ export function AdminConsole() {
                   min={0}
                   step={0.1}
                   value={
-                    selectedProductType === "sell_call"
+                    selectedProductType === "ppp"
+                      ? pppTargetFirmMarginPct
+                      : selectedProductType === "sell_call"
                       ? sellCallTargetFirmProfitPct
                       : sellPutPricingMethod === "target_firm_profit"
                         ? sellPutTargetFirmProfitPct
                         : firmMarginPct
                   }
-                  onChange={(event) => {
-                    const next = Number(event.target.value);
-                    if (selectedProductType === "sell_call") setSellCallTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
+                onChange={(event) => {
+                  const next = Number(event.target.value);
+                    if (selectedProductType === "ppp") setPppTargetFirmMarginPct(Number.isFinite(next) ? next : 0);
+                    else if (selectedProductType === "sell_call") setSellCallTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
                     else if (sellPutPricingMethod === "target_firm_profit") {
                       setSellPutTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
                     }
@@ -574,14 +668,18 @@ export function AdminConsole() {
             ) : null}
             <div className="soft-row" style={{ marginTop: 12 }}>
               <span>
-                {selectedProductType === "sell_call"
+                {selectedProductType === "ppp"
+                  ? "Saved PPP target firm margin"
+                  : selectedProductType === "sell_call"
                   ? "Saved call target firm profit"
                   : sellPutPricingMethod === "target_firm_profit"
                     ? "Saved put target firm profit"
                     : "Saved firm margin"}
               </span>
               <strong className="mono">
-                {selectedProductType === "sell_call"
+                {selectedProductType === "ppp"
+                  ? savedPppTargetFirmMarginPct.toFixed(1)
+                  : selectedProductType === "sell_call"
                   ? savedSellCallTargetFirmProfitPct.toFixed(1)
                   : sellPutPricingMethod === "target_firm_profit"
                     ? savedSellPutTargetFirmProfitPct.toFixed(1)
@@ -590,14 +688,22 @@ export function AdminConsole() {
               </strong>
             </div>
             <div className="soft-row" style={{ marginTop: 12 }}>
-              <span>Selected instrument</span>
-              <strong className="mono">{optionsLoading ? "Loading..." : instrumentName || "-"}</strong>
+              <span>{selectedProductType === "ppp" ? "Selected package" : "Selected instrument"}</span>
+              <strong className="mono">
+                {selectedProductType === "ppp"
+                  ? pppAudit
+                    ? formatExpiry(pppAudit.expirationTimestamp)
+                    : "Auto-selected"
+                  : optionsLoading
+                    ? "Loading..."
+                    : instrumentName || "-"}
+              </strong>
             </div>
             <div className="quick-btns">
               <button
                 className="admin-button"
                 onClick={runAudit}
-                disabled={busy || savingConfig || !instrumentName}
+                disabled={busy || savingConfig || (selectedProductType !== "ppp" && !instrumentName)}
               >
                 Verify calculations
               </button>
@@ -611,17 +717,17 @@ export function AdminConsole() {
               <button
                 className="btn-ghost"
                 onClick={checkMargins}
-                disabled={busy || savingConfig || !instrumentName}
+                disabled={busy || savingConfig || selectedProductType === "ppp" || !instrumentName}
               >
                 {marginLoading ? "Checking..." : "Check margins"}
               </button>
-              <button className="btn-ghost" onClick={verifyQuote} disabled={busy || savingConfig || !instrumentName}>
+              <button className="btn-ghost" onClick={verifyQuote} disabled={busy || savingConfig || selectedProductType === "ppp" || !instrumentName}>
                 Verify Deribit quote
               </button>
               <button
                 className="btn-ghost"
                 onClick={() => void refreshMarket()}
-                disabled={busy || savingConfig || optionsLoading || syncingMarket || !instrumentName}
+                disabled={busy || savingConfig || optionsLoading || syncingMarket || (selectedProductType !== "ppp" && !instrumentName)}
               >
                 {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
@@ -636,6 +742,8 @@ export function AdminConsole() {
                 {refreshError}
               </p>
             ) : null}
+
+            {pppAudit ? <PppAdminAuditPanel audit={pppAudit} /> : null}
 
             {audit ? (
               <>
@@ -723,7 +831,22 @@ export function AdminConsole() {
           <div className="stack">
             <div className="admin-card">
               <h2 className="card-title">Depth and slippage</h2>
-              {audit ? (
+              {pppAudit ? (
+                <>
+                  {pppAudit.legs.map((leg) => (
+                    <div className="soft-row" key={leg.role}>
+                      <span>{formatPppLegRole(leg.role)}</span>
+                      <strong className="mono">
+                        {formatNumber(leg.depth.filledContracts, 1)} @ {formatNumber(leg.averagePrice, 5)}
+                      </strong>
+                    </div>
+                  ))}
+                  <div className="soft-row">
+                    <span>Max slippage</span>
+                    <strong className="mono">{formatPct(pppAudit.maxSlippagePct, 3)}</strong>
+                  </div>
+                </>
+              ) : audit ? (
                 <>
                   <div className="soft-row">
                     <span>Required contracts</span>
@@ -755,7 +878,22 @@ export function AdminConsole() {
 
             <div className="admin-card">
               <h2 className="card-title">Formula template</h2>
-              {audit?.formulaTemplate ? (
+              {pppAudit?.formulaTemplate ? (
+                <>
+                  <div className="soft-row">
+                    <span>Template</span>
+                    <strong>{pppAudit.formulaTemplate.label}</strong>
+                  </div>
+                  <div className="soft-row">
+                    <span>Version</span>
+                    <strong className="mono">{pppAudit.formulaTemplate.version}</strong>
+                  </div>
+                  <div className="soft-row">
+                    <span>Workbook</span>
+                    <strong>{pppAudit.formulaTemplate.sourceWorkbook}</strong>
+                  </div>
+                </>
+              ) : audit?.formulaTemplate ? (
                 <>
                   <div className="soft-row">
                     <span>Template</span>
@@ -777,7 +915,15 @@ export function AdminConsole() {
 
             <div className="admin-card">
               <h2 className="card-title">Pass/fail checks</h2>
-              {audit && selectedScenario ? (
+              {pppAudit ? (
+                <>
+                  <CheckRow label="Quote fresh" ok={pppAudit.checks.quoteFresh} />
+                  <CheckRow label="Sufficient hedge depth" ok={pppAudit.checks.sufficientDepth} />
+                  <CheckRow label="Slippage within limit" ok={pppAudit.checks.slippageWithinLimit} />
+                  <CheckRow label="Participation positive" ok={pppAudit.checks.participationPositive} />
+                  <CheckRow label="Target firm margin met" ok={pppAudit.checks.targetProfitMet} />
+                </>
+              ) : audit && selectedScenario ? (
                 <>
                   <CheckRow label="Quote fresh" ok={audit.checks.quoteFresh} />
                   <CheckRow label="Sufficient depth" ok={audit.checks.sufficientDepth} />
@@ -871,6 +1017,67 @@ function getAdminScenarioRange(candidate: DcnCandidate) {
     max: candidate.strike * 3,
     step: 1000
   });
+}
+
+function PppAdminAuditPanel({ audit }: { audit: PppCandidate }) {
+  return (
+    <>
+      <div className="metric-grid">
+        <Metric label="Client participation" value={formatPct(audit.optimizedParticipation, 2)} tone={audit.eligible ? "ok" : "warn"} />
+        <Metric label="BTC_USDC spot" value={formatUsd(audit.spotPrice)} />
+        <Metric
+          label="Minimum scenario P&L"
+          value={formatUsd(audit.minScenarioPnlUsdt)}
+          tone={(audit.minScenarioPnlUsdt ?? 0) >= audit.targetProfitUsdt ? "ok" : "fail"}
+        />
+        <Metric label="Target firm margin" value={formatPct(audit.targetFirmMarginBps / 10000, 1)} />
+      </div>
+
+      <div className="scenario-panel">
+        <div className="row-between">
+          <div>
+            <div className="field-label">PPP hedge package</div>
+            <strong>{formatExpiry(audit.expirationTimestamp)}</strong>
+          </div>
+          <strong className="mono">{audit.dayCount} days</strong>
+        </div>
+        <div className="metric-grid">
+          <Metric label="Protection level" value={formatPct(audit.protectionLevel, 0)} />
+          <Metric label="Implied hedge floor" value={formatPct(audit.putSpreadImpliedFloor, 2)} />
+          <Metric label="Call contracts" value={formatNumber(audit.optimalCallContracts, 1)} />
+          <Metric label="Put spread contracts" value={formatNumber(audit.putSpreadContracts, 1)} />
+        </div>
+      </div>
+
+      <h3 className="card-title" style={{ marginTop: 24 }}>Workbook formula trace</h3>
+      <table className="trace-table">
+        <thead>
+          <tr>
+            <th>Cell</th>
+            <th>Label</th>
+            <th>Formula</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {audit.formulaTrace.map((row) => (
+            <tr key={`${row.cell}-${row.label}`}>
+              <td className="mono">{row.cell}</td>
+              <td>{row.label}</td>
+              <td>{row.formula}</td>
+              <td className="mono">{String(row.value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+function formatPppLegRole(role: PppCandidate["legs"][number]["role"]): string {
+  if (role === "long_call") return "Buy ATM call";
+  if (role === "short_put") return "Sell ATM put";
+  return "Buy floor put";
 }
 
 function formatAge(seconds: number | null | undefined): string {

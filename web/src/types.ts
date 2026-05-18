@@ -29,6 +29,7 @@ export interface PricingConfig {
   firmMarginBps: number;
   sellPutTargetFirmProfitBps: number;
   sellCallTargetFirmProfitBps: number;
+  pppTargetFirmMarginBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
   maxDepthCandidates: number;
@@ -144,6 +145,112 @@ export interface DcnPricingResponse {
   candidates: DcnCandidate[];
   bestCandidate: DcnCandidate | null;
   recommendation?: DcnRecommendation;
+  mock?: boolean;
+}
+
+export interface PppDepthFill {
+  price: number;
+  amount: number;
+  notionalBtc: number;
+}
+
+export interface PppDepthModel {
+  side: "buy" | "sell";
+  requiredContracts: number;
+  filledContracts: number;
+  grossPremiumBtc: number;
+  averagePrice: number | null;
+  bestPrice: number | null;
+  bestAmount: number | null;
+  sufficientDepth: boolean;
+  remainingContracts: number;
+  slippagePct: number | null;
+  fills: PppDepthFill[];
+}
+
+export interface PppHedgeLeg {
+  role: "long_call" | "short_put" | "long_floor_put";
+  side: "buy" | "sell";
+  instrumentName: string;
+  optionType: "call" | "put";
+  strike: number;
+  requiredContracts: number;
+  averagePrice: number | null;
+  bestPrice: number | null;
+  grossPremiumBtc: number | null;
+  tradingFeeBtc: number | null;
+  netCashBtc: number | null;
+  quoteAgeSeconds: number | null;
+  depth: PppDepthModel;
+}
+
+export interface PppScenarioResult {
+  expiryPrice: number;
+  clientPayoutUsdt: number;
+  callPayoffUsdt: number;
+  shortPutPayoffUsdt: number;
+  floorPutPayoffUsdt: number;
+  grossHedgePayoffUsdt: number;
+  deliveryFeesUsdt: number;
+  issuerPnlUsdt: number;
+}
+
+export interface PppCandidate {
+  formulaTemplate?: FormulaTemplateSummary;
+  productType: "ppp";
+  expirationTimestamp: number;
+  dayCount: number;
+  investmentUsdt: number;
+  spotPrice: number;
+  protectionLevel: number;
+  protectionLevelBps: number;
+  floorStrikeTarget: number;
+  targetFirmMarginBps: number;
+  targetProfitUsdt: number;
+  optimizedParticipation: number | null;
+  optimizedParticipationBps: number | null;
+  optimalCallContracts: number;
+  putSpreadContracts: number;
+  atmCallStrike: number;
+  atmPutStrike: number;
+  floorPutStrike: number;
+  putSpreadImpliedFloor: number | null;
+  protectionGapBps: number | null;
+  minScenarioPnlUsdt: number | null;
+  stressPrice: number | null;
+  netOptionCashBtc: number | null;
+  netOptionCashUsdt: number | null;
+  quoteAgeSeconds: number | null;
+  maxSlippagePct: number | null;
+  eligible: boolean;
+  checks: Record<string, boolean>;
+  legs: PppHedgeLeg[];
+  selectedScenario: PppScenarioResult | null;
+  scenarios: PppScenarioResult[];
+  formulaTrace: FormulaTraceRow[];
+}
+
+export interface PppPricingRequest {
+  investmentUsdt?: number;
+  runwayDays?: number;
+  protectionLevelBps?: number;
+  targetFirmMarginBps?: number;
+  maxSlippageBps?: number;
+  quoteFreshnessSeconds?: number;
+  orderBookDepth?: number;
+}
+
+export interface PppPricingResponse {
+  generatedAt: number;
+  input: Record<string, unknown>;
+  candidates: PppCandidate[];
+  bestCandidate: PppCandidate | null;
+  recommendation?: {
+    reason: string;
+    runwayGapDays: number | null;
+    protectionGapBps: number | null;
+    optimizedParticipationBps: number | null;
+  };
   mock?: boolean;
 }
 
