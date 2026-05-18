@@ -2,12 +2,17 @@ import { dayCountFromExpiry, type BidAskLevel, type FormulaTraceRow } from "./dc
 
 export type PppLegRole = "long_call" | "short_put" | "long_floor_put";
 export type PppLegSide = "buy" | "sell";
+export type PppSelectorMode = "closest" | "auto_participation" | "auto_protection";
+export type PppRecommendedLever = "none" | "participation" | "protection";
 
 export interface PppPricingRequest {
   investmentUsdt?: number;
   runwayDays?: number;
   protectionLevelBps?: number;
+  participationLevelBps?: number;
+  selectorMode?: PppSelectorMode;
   targetFirmMarginBps?: number;
+  includeDeliveryFees?: boolean;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;
@@ -36,6 +41,7 @@ export interface PppMarketPackageInput {
   atmCall: PppMarketLegInput;
   atmPut: PppMarketLegInput;
   floorPut: PppMarketLegInput;
+  candidateProtectionLevel?: number;
 }
 
 export interface PppDepthFill {
@@ -125,6 +131,16 @@ export interface PppCandidate {
   selectedScenario: PppScenarioResult | null;
   scenarios: PppScenarioResult[];
   formulaTrace: FormulaTraceRow[];
+  selectorMode: PppSelectorMode;
+  recommendedLever: PppRecommendedLever;
+  includeDeliveryFees: boolean;
+  quotedParticipation: number | null;
+  quotedParticipationBps: number | null;
+  quotedProtection: number | null;
+  quotedProtectionBps: number | null;
+  optimizedProtection: number | null;
+  optimizedProtectionBps: number | null;
+  participationGapBps: number | null;
 }
 
 export interface PppPricingResponse {
@@ -134,9 +150,13 @@ export interface PppPricingResponse {
   bestCandidate: PppCandidate | null;
   recommendation: {
     reason: string;
+    selectorMode: PppSelectorMode;
+    recommendedLever: PppRecommendedLever;
     runwayGapDays: number | null;
     protectionGapBps: number | null;
+    participationGapBps: number | null;
     optimizedParticipationBps: number | null;
+    optimizedProtectionBps: number | null;
   };
   mock?: boolean;
 }
@@ -152,9 +172,15 @@ export const PPP_TEMPLATE = {
     investmentUsdt: "Robust Model!B4",
     spotPrice: "Robust Model!B5",
     protectionLevel: "Robust Model!B7",
+    selectedParticipation: "Robust Model!B8",
     clientParticipation: "Robust Model!B43",
+    maxProtection: "Robust Model!B46",
+    maxProtectionMinPnl: "Robust Model!B47",
+    maxProtectionFloorStrike: "Optimization!B218",
+    maxProtectionFloorAsk: "Optimization!C218",
     targetFirmMargin: "Robust Model!B9",
     targetProfit: "Robust Model!B10",
+    includeDeliveryFees: "Robust Model!B12",
     atmCallAsk: "Robust Model!F5",
     atmPutBid: "Robust Model!F7",
     floorPutAsk: "Robust Model!F9",
@@ -168,23 +194,39 @@ const CONTRACT_INCREMENT = 0.1;
 const TRADING_FEE_CAP_BTC = 0.0003;
 const DELIVERY_FEE_CAP_BTC = 0.00015;
 const FEE_CAP_RATIO = 0.125;
-const INCLUDE_DELIVERY_FEES = true;
 const USE_COMBO_FEE_DISCOUNT = false;
 const MAX_STRESS_MULTIPLIER = 3;
+const MIN_PROTECTION_LEVEL = 0.1;
+const AUTO_PROTECTION_MIN_BPS = 5000;
+const AUTO_PROTECTION_MAX_BPS = 9500;
+const AUTO_PROTECTION_STEP_BPS = 10;
 
 export function normalizePppPricingRequest(
   request: PppPricingRequest,
-  config: { pppTargetFirmMarginBps?: number; quoteFreshnessSeconds: number; defaultOrderBookDepth: number; maxSlippageBps: number }
+  config: {
+    pppTargetFirmMarginBps?: number;
+    pppIncludeDeliveryFees?: boolean;
+    quoteFreshnessSeconds: number;
+    defaultOrderBookDepth: number;
+    maxSlippageBps: number;
+  }
 ): Required<Omit<PppPricingRequest, "nowMs">> & { nowMs?: number } {
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
   return {
     investmentUsdt: positiveOr(request.investmentUsdt, 1_000_000),
     runwayDays: positiveOr(request.runwayDays, 92),
-    protectionLevelBps: clamp(Math.round(Number(request.protectionLevelBps ?? 8000)), 1000, 10000),
+    protectionLevelBps: clamp(Math.round(Number(request.protectionLevelBps ?? 8000)), MIN_PROTECTION_LEVEL * 10000, 10000),
+    participationLevelBps: clamp(Math.round(Number(request.participationLevelBps ?? 3000)), 0, 10000),
+    selectorMode,
     targetFirmMarginBps: clamp(
       Math.round(Number(request.targetFirmMarginBps ?? config.pppTargetFirmMarginBps ?? PPP_TEMPLATE.defaultTargetFirmMarginBps)),
       0,
       10_000
     ),
+    includeDeliveryFees:
+      typeof request.includeDeliveryFees === "boolean"
+        ? request.includeDeliveryFees
+        : config.pppIncludeDeliveryFees !== false,
     maxSlippageBps: clamp(Math.round(Number(request.maxSlippageBps ?? config.maxSlippageBps)), 0, 10_000),
     quoteFreshnessSeconds: positiveOr(request.quoteFreshnessSeconds, config.quoteFreshnessSeconds),
     orderBookDepth: Math.max(1, Math.round(positiveOr(request.orderBookDepth, config.defaultOrderBookDepth))),
@@ -268,9 +310,16 @@ export function modelExecutableDepth({
 
 export function calculatePppCandidate(request: PppPricingRequest, market: PppMarketPackageInput): PppCandidate {
   const nowMs = request.nowMs ?? Date.now();
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const includeDeliveryFees = request.includeDeliveryFees !== false;
   const investmentUsdt = positiveOr(request.investmentUsdt, 1_000_000);
   const spotPrice = positiveOr(market.spotPrice, 0);
-  const protectionLevel = clamp(Number(request.protectionLevelBps ?? 8000) / 10000, 0.1, 1);
+  const requestedProtectionLevel = clamp(Number(request.protectionLevelBps ?? 8000) / 10000, MIN_PROTECTION_LEVEL, 1);
+  const selectedParticipation = clamp(Number(request.participationLevelBps ?? 3000) / 10000, 0, 1);
+  const protectionLevel =
+    selectorMode === "auto_protection"
+      ? clamp(Number(market.candidateProtectionLevel ?? requestedProtectionLevel), 0.5, 0.95)
+      : requestedProtectionLevel;
   const targetFirmMarginBps = clamp(Math.round(Number(request.targetFirmMarginBps ?? PPP_TEMPLATE.defaultTargetFirmMarginBps)), 0, 10_000);
   const targetFirmMargin = targetFirmMarginBps / 10000;
   const maxSlippageBps = clamp(Math.round(Number(request.maxSlippageBps ?? 500)), 0, 10_000);
@@ -282,28 +331,56 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const floorPutAskDepth = modelLegDepth("buy", putSpreadContracts, market.floorPut);
   const basePutLeg = buildLeg("short_put", "sell", market.atmPut, putSpreadContracts, putBidDepth, nowMs);
   const baseFloorLeg = buildLeg("long_floor_put", "buy", market.floorPut, putSpreadContracts, floorPutAskDepth, nowMs);
-  const maxCallContracts = getMaxCallContracts(investmentUsdt, spotPrice);
   let bestOptimization: OptimizationRow | null = null;
 
-  for (let callContracts = 0; callContracts <= maxCallContracts + 1e-9; callContracts = roundToDecimals(callContracts + CONTRACT_INCREMENT, 10)) {
-    const callDepth = modelLegDepth("buy", callContracts, market.atmCall);
-    if (!callDepth.sufficientDepth || callDepth.averagePrice === null) continue;
-    const row = calculateOptimizationRow({
-      callContracts,
-      callAskPrice: callDepth.averagePrice,
-      putBidPrice: putBidDepth.averagePrice,
-      floorPutAskPrice: floorPutAskDepth.averagePrice,
-      investmentUsdt,
-      spotPrice,
-      protectionLevel,
-      targetProfitUsdt,
-      putSpreadContracts,
-      atmCallStrike: market.atmCall.strike,
-      atmPutStrike: market.atmPut.strike,
-      floorPutStrike: market.floorPut.strike
-    });
-    if (row.minScenarioPnlUsdt >= targetProfitUsdt) {
-      bestOptimization = row;
+  if (selectorMode === "auto_participation") {
+    const maxCallContracts = getMaxCallContracts(investmentUsdt, spotPrice);
+    for (let callContracts = 0; callContracts <= maxCallContracts + 1e-9; callContracts = roundToDecimals(callContracts + CONTRACT_INCREMENT, 10)) {
+      const callDepth = modelLegDepth("buy", callContracts, market.atmCall);
+      if (!callDepth.sufficientDepth || callDepth.averagePrice === null) continue;
+      const row = calculateOptimizationRow({
+        callContracts,
+        callAskPrice: callDepth.averagePrice,
+        putBidPrice: putBidDepth.averagePrice,
+        floorPutAskPrice: floorPutAskDepth.averagePrice,
+        investmentUsdt,
+        spotPrice,
+        protectionLevel,
+        targetProfitUsdt,
+        putSpreadContracts,
+        atmCallStrike: market.atmCall.strike,
+        atmPutStrike: market.atmPut.strike,
+        floorPutStrike: market.floorPut.strike,
+        includeDeliveryFees
+      });
+      if (row.minScenarioPnlUsdt >= targetProfitUsdt) {
+        bestOptimization = row;
+      }
+    }
+  } else {
+    const fixedCallContracts = ceilToIncrement(
+      spotPrice > 0 ? (investmentUsdt * selectedParticipation) / spotPrice : 0,
+      CONTRACT_INCREMENT
+    );
+    const callDepth = modelLegDepth("buy", fixedCallContracts, market.atmCall);
+    if (callDepth.sufficientDepth && callDepth.averagePrice !== null) {
+      bestOptimization = calculateFixedOptimizationRow({
+        callContracts: fixedCallContracts,
+        participation: selectedParticipation,
+        callAskPrice: callDepth.averagePrice,
+        putBidPrice: putBidDepth.averagePrice,
+        floorPutAskPrice: floorPutAskDepth.averagePrice,
+        investmentUsdt,
+        spotPrice,
+        protectionLevel,
+        targetProfitUsdt,
+        putSpreadContracts,
+        atmCallStrike: market.atmCall.strike,
+        atmPutStrike: market.atmPut.strike,
+        floorPutStrike: market.floorPut.strike,
+        includeDeliveryFees,
+        includeProductFloorScenario: true
+      });
     }
   }
 
@@ -317,23 +394,33 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const allDepthSufficient = legs.every((leg) => leg.depth.sufficientDepth);
   const quotesFresh = legs.every((leg) => leg.quoteAgeSeconds !== null && leg.quoteAgeSeconds <= quoteFreshnessSeconds);
   const participation = bestOptimization?.participation ?? null;
+  const quotedParticipation = selectorMode === "auto_participation" ? participation : selectedParticipation;
+  const actualCallHedgeParticipation =
+    investmentUsdt > 0
+      ? (optimalCallContracts * spotPrice) / investmentUsdt * (1 - (includeDeliveryFees ? DELIVERY_FEE_CAP_BTC : 0))
+      : null;
+  const participationGapBps =
+    selectorMode === "auto_participation" || quotedParticipation === null || actualCallHedgeParticipation === null
+      ? null
+      : Math.abs(actualCallHedgeParticipation - quotedParticipation) * 10000;
   const minScenarioPnlUsdt = bestOptimization?.minScenarioPnlUsdt ?? null;
   const stressPrice = bestOptimization?.stressPrice ?? null;
   const netOptionCashBtc = bestOptimization?.netOptionCashBtc ?? null;
   const netOptionCashUsdt = bestOptimization?.netOptionCashUsdt ?? null;
   const selectedScenario =
-    bestOptimization && participation !== null
+    bestOptimization && quotedParticipation !== null
       ? calculatePppScenario(market.atmPut.strike, {
           investmentUsdt,
           spotPrice,
           protectionLevel,
-          participation,
+          participation: quotedParticipation,
           callContracts: optimalCallContracts,
           putSpreadContracts,
           atmCallStrike: market.atmCall.strike,
           atmPutStrike: market.atmPut.strike,
           floorPutStrike: market.floorPut.strike,
-          initialOptionCashUsdt: netOptionCashUsdt ?? 0
+          initialOptionCashUsdt: netOptionCashUsdt ?? 0,
+          includeDeliveryFees
         })
       : null;
   const scenarios = bestOptimization?.scenarios ?? [];
@@ -347,11 +434,15 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     quoteFresh: quotesFresh,
     sufficientDepth: allDepthSufficient,
     slippageWithinLimit,
-    participationPositive: participation !== null && participation > 0,
+    participationPositive: quotedParticipation !== null && quotedParticipation > 0,
     targetProfitMet: minScenarioPnlUsdt !== null && minScenarioPnlUsdt >= targetProfitUsdt,
-    floorAtOrAboveProtection: putSpreadImpliedFloor !== null && putSpreadImpliedFloor >= protectionLevel
+    floorAtOrAboveProtection: putSpreadImpliedFloor !== null && putSpreadImpliedFloor >= protectionLevel,
+    callHedgeAtOrAboveParticipation:
+      selectorMode === "auto_participation" ||
+      (quotedParticipation !== null && actualCallHedgeParticipation !== null && actualCallHedgeParticipation + 1e-12 >= quotedParticipation)
   };
   const eligible = Object.values(checks).every(Boolean);
+  const recommendedLever = getPppRecommendedLever(selectorMode);
 
   return {
     formulaTemplate: {
@@ -372,8 +463,8 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     floorStrikeTarget: spotPrice * protectionLevel,
     targetFirmMarginBps,
     targetProfitUsdt,
-    optimizedParticipation: participation,
-    optimizedParticipationBps: participation === null ? null : participation * 10000,
+    optimizedParticipation: selectorMode === "auto_participation" ? participation : null,
+    optimizedParticipationBps: selectorMode === "auto_participation" && participation !== null ? participation * 10000 : null,
     optimalCallContracts,
     putSpreadContracts,
     atmCallStrike: market.atmCall.strike,
@@ -392,16 +483,29 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     legs,
     selectedScenario,
     scenarios,
+    selectorMode,
+    recommendedLever,
+    includeDeliveryFees,
+    quotedParticipation,
+    quotedParticipationBps: quotedParticipation === null ? null : quotedParticipation * 10000,
+    quotedProtection: protectionLevel,
+    quotedProtectionBps: protectionLevel * 10000,
+    optimizedProtection: selectorMode === "auto_protection" ? protectionLevel : null,
+    optimizedProtectionBps: selectorMode === "auto_protection" ? protectionLevel * 10000 : null,
+    participationGapBps,
     formulaTrace: buildFormulaTrace({
+      selectorMode,
+      includeDeliveryFees,
       investmentUsdt,
       spotPrice,
       protectionLevel,
+      selectedParticipation,
       targetFirmMargin,
       targetProfitUsdt,
       callLeg,
       putLeg: basePutLeg,
       floorPutLeg: baseFloorLeg,
-      participation,
+      participation: quotedParticipation,
       optimalCallContracts,
       putSpreadContracts,
       putSpreadImpliedFloor,
@@ -409,6 +513,9 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
       stressPrice,
       netOptionCashBtc,
       netOptionCashUsdt,
+      optimizedProtection: selectorMode === "auto_protection" ? protectionLevel : null,
+      autoProtectionFloorStrike: selectorMode === "auto_protection" ? market.floorPut.strike : null,
+      autoProtectionFloorAsk: selectorMode === "auto_protection" ? baseFloorLeg.averagePrice : null,
       selectedScenario
     })
   };
@@ -420,27 +527,45 @@ export function selectPppCandidate(
 ): PppPricingResponse["recommendation"] & { candidates: PppCandidate[]; bestCandidate: PppCandidate | null } {
   const sorted = [...candidates].sort((a, b) => comparePppCandidates(request, a, b));
   const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const recommendedLever = getPppRecommendedLever(selectorMode);
   return {
     candidates: sorted,
     bestCandidate,
     reason: bestCandidate
-      ? "Closest executable PPP package by duration and protection, with max client participation quoted."
-      : "No PPP package passed the duration, protection, depth, freshness, slippage, and target margin checks.",
+      ? selectorMode === "auto_protection"
+        ? "Closest executable PPP package by duration, with max client protection quoted for the selected participation."
+        : selectorMode === "closest"
+          ? "Closest executable PPP package by duration, protection, and participation."
+          : "Closest executable PPP package by duration and protection, with max client participation quoted."
+      : selectorMode === "auto_protection"
+        ? "No PPP package passed the duration, participation, depth, freshness, slippage, and target margin checks."
+        : "No PPP package passed the duration, protection, depth, freshness, slippage, and target margin checks.",
+    selectorMode,
+    recommendedLever,
     runwayGapDays: bestCandidate ? Math.abs(bestCandidate.dayCount - request.runwayDays) : null,
     protectionGapBps: bestCandidate?.protectionGapBps ?? null,
-    optimizedParticipationBps: bestCandidate?.optimizedParticipationBps ?? null
+    participationGapBps: bestCandidate?.participationGapBps ?? null,
+    optimizedParticipationBps: bestCandidate?.optimizedParticipationBps ?? null,
+    optimizedProtectionBps: bestCandidate?.optimizedProtectionBps ?? null
   };
 }
 
 export function scorePppPackageForShortlist(
-  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps">,
+  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "selectorMode">,
   market: PppMarketPackageInput,
   nowMs = Date.now()
 ): number {
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
   const runwayDays = positiveOr(request.runwayDays, 92);
-  const protection = clamp(Number(request.protectionLevelBps ?? 8000) / 10000, 0.1, 1);
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const protection = clamp(Number(request.protectionLevelBps ?? 8000) / 10000, MIN_PROTECTION_LEVEL, 1);
   const durationGap = Math.abs(dayCount - runwayDays) / Math.max(runwayDays, 1);
+  if (selectorMode === "auto_protection") {
+    const candidateProtection = finiteOr(market.candidateProtectionLevel, 0);
+    const atmGap = market.spotPrice > 0 ? Math.abs(market.atmCall.strike / market.spotPrice - 1) : Infinity;
+    return 1_000_000 - durationGap * 100_000 + candidateProtection * 50_000 - atmGap * 10_000;
+  }
   const floorStrikeGap = market.spotPrice > 0 ? Math.abs(market.floorPut.strike / market.spotPrice - protection) : Infinity;
   const atmGap = market.spotPrice > 0 ? Math.abs(market.atmCall.strike / market.spotPrice - 1) : Infinity;
   return 1_000_000 - durationGap * 100_000 - floorStrikeGap * 80_000 - atmGap * 10_000;
@@ -452,11 +577,22 @@ function comparePppCandidates(
   b: PppCandidate
 ): number {
   if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
   const aDurationGap = Math.abs(a.dayCount - request.runwayDays);
   const bDurationGap = Math.abs(b.dayCount - request.runwayDays);
   if (aDurationGap !== bDurationGap) return aDurationGap - bDurationGap;
+  if (selectorMode === "auto_protection") {
+    const protection = compareDesc(a.optimizedProtection ?? a.quotedProtection, b.optimizedProtection ?? b.quotedProtection);
+    if (protection !== 0) return protection;
+    const participationGap = compareAsc(a.participationGapBps, b.participationGapBps);
+    if (participationGap !== 0) return participationGap;
+  }
   const protectionGap = compareAsc(a.protectionGapBps, b.protectionGapBps);
   if (protectionGap !== 0) return protectionGap;
+  if (selectorMode === "closest") {
+    const participationGap = compareAsc(a.participationGapBps, b.participationGapBps);
+    if (participationGap !== 0) return participationGap;
+  }
   const participation = compareDesc(a.optimizedParticipation, b.optimizedParticipation);
   if (participation !== 0) return participation;
   const quoteAge = compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds);
@@ -476,7 +612,8 @@ function calculateOptimizationRow({
   putSpreadContracts,
   atmCallStrike,
   atmPutStrike,
-  floorPutStrike
+  floorPutStrike,
+  includeDeliveryFees
 }: {
   callContracts: number;
   callAskPrice: number | null;
@@ -490,6 +627,7 @@ function calculateOptimizationRow({
   atmCallStrike: number;
   atmPutStrike: number;
   floorPutStrike: number;
+  includeDeliveryFees: boolean;
 }): OptimizationRow {
   const buyFees =
     tradingFeeBtc(callAskPrice) * callContracts + tradingFeeBtc(floorPutAskPrice) * putSpreadContracts;
@@ -500,8 +638,8 @@ function calculateOptimizationRow({
   const netOptionCashBtc = grossPutSpreadCreditBtc - callPremiumCostBtc - tradingFeesBtc;
   const netOptionCashUsdt = netOptionCashBtc * spotPrice;
   const participation =
-    investmentUsdt > 0 ? callContracts * spotPrice / investmentUsdt * (1 - (INCLUDE_DELIVERY_FEES ? DELIVERY_FEE_CAP_BTC : 0)) : 0;
-  const scenarioPrices = getOptimizationScenarioPrices({ spotPrice, atmCallStrike, atmPutStrike, floorPutStrike });
+    investmentUsdt > 0 ? callContracts * spotPrice / investmentUsdt * (1 - (includeDeliveryFees ? DELIVERY_FEE_CAP_BTC : 0)) : 0;
+  const scenarioPrices = getOptimizationScenarioPrices({ spotPrice, atmCallStrike, atmPutStrike, floorPutStrike, includeDeliveryFees });
   const scenarioInputs = {
     investmentUsdt,
     spotPrice,
@@ -512,7 +650,8 @@ function calculateOptimizationRow({
     atmCallStrike,
     atmPutStrike,
     floorPutStrike,
-    initialOptionCashUsdt: netOptionCashUsdt
+    initialOptionCashUsdt: netOptionCashUsdt,
+    includeDeliveryFees
   };
   const scenarios = scenarioPrices.map((expiryPrice) => calculatePppScenario(expiryPrice, scenarioInputs));
   const minScenario = scenarios.reduce((min, scenario) => (scenario.issuerPnlUsdt < min.issuerPnlUsdt ? scenario : min), scenarios[0]);
@@ -525,6 +664,90 @@ function calculateOptimizationRow({
     minScenarioPnlUsdt: minScenario?.issuerPnlUsdt ?? -Infinity,
     stressPrice: minScenario?.expiryPrice ?? null,
     targetPass: (minScenario?.issuerPnlUsdt ?? -Infinity) >= targetProfitUsdt,
+    upsideSlopeSafe: true,
+    scenarios
+  };
+}
+
+function calculateFixedOptimizationRow({
+  callContracts,
+  participation,
+  callAskPrice,
+  putBidPrice,
+  floorPutAskPrice,
+  investmentUsdt,
+  spotPrice,
+  protectionLevel,
+  targetProfitUsdt,
+  putSpreadContracts,
+  atmCallStrike,
+  atmPutStrike,
+  floorPutStrike,
+  includeDeliveryFees,
+  includeProductFloorScenario
+}: {
+  callContracts: number;
+  participation: number;
+  callAskPrice: number | null;
+  putBidPrice: number | null;
+  floorPutAskPrice: number | null;
+  investmentUsdt: number;
+  spotPrice: number;
+  protectionLevel: number;
+  targetProfitUsdt: number;
+  putSpreadContracts: number;
+  atmCallStrike: number;
+  atmPutStrike: number;
+  floorPutStrike: number;
+  includeDeliveryFees: boolean;
+  includeProductFloorScenario: boolean;
+}): OptimizationRow {
+  const buyFees =
+    tradingFeeBtc(callAskPrice) * callContracts + tradingFeeBtc(floorPutAskPrice) * putSpreadContracts;
+  const sellFees = tradingFeeBtc(putBidPrice) * putSpreadContracts;
+  const tradingFeesBtc = USE_COMBO_FEE_DISCOUNT ? Math.max(buyFees, sellFees) : buyFees + sellFees;
+  const grossPutSpreadCreditBtc = putSpreadContracts * ((putBidPrice ?? 0) - (floorPutAskPrice ?? 0));
+  const callPremiumCostBtc = callContracts * (callAskPrice ?? 0);
+  const netOptionCashBtc = grossPutSpreadCreditBtc - callPremiumCostBtc - tradingFeesBtc;
+  const netOptionCashUsdt = netOptionCashBtc * spotPrice;
+  const actualCallHedgeParticipation =
+    investmentUsdt > 0 ? (callContracts * spotPrice) / investmentUsdt * (1 - (includeDeliveryFees ? DELIVERY_FEE_CAP_BTC : 0)) : 0;
+  const upsideSlopeSafe = participation <= actualCallHedgeParticipation + 1e-12;
+  const scenarioPrices = getOptimizationScenarioPrices({
+    spotPrice,
+    atmCallStrike,
+    atmPutStrike,
+    floorPutStrike,
+    protectionLevel,
+    includeDeliveryFees,
+    includeProductFloorScenario
+  });
+  const scenarioInputs = {
+    investmentUsdt,
+    spotPrice,
+    protectionLevel,
+    participation,
+    callContracts,
+    putSpreadContracts,
+    atmCallStrike,
+    atmPutStrike,
+    floorPutStrike,
+    initialOptionCashUsdt: netOptionCashUsdt,
+    includeDeliveryFees
+  };
+  const scenarios = scenarioPrices.map((expiryPrice) => calculatePppScenario(expiryPrice, scenarioInputs));
+  const minScenario = scenarios.reduce((min, scenario) => (scenario.issuerPnlUsdt < min.issuerPnlUsdt ? scenario : min), scenarios[0]);
+  const minScenarioPnlUsdt = upsideSlopeSafe ? minScenario?.issuerPnlUsdt ?? -Infinity : -Infinity;
+
+  return {
+    callContracts,
+    participation,
+    netOptionCashBtc,
+    netOptionCashUsdt,
+    minScenarioPnlUsdt,
+    stressPrice: minScenario?.expiryPrice ?? null,
+    targetPass: minScenarioPnlUsdt >= targetProfitUsdt,
+    upsideSlopeSafe,
     scenarios
   };
 }
@@ -542,6 +765,7 @@ function calculatePppScenario(
     atmPutStrike: number;
     floorPutStrike: number;
     initialOptionCashUsdt: number;
+    includeDeliveryFees: boolean;
   }
 ): PppScenarioResult {
   const clientPayoutUsdt =
@@ -552,7 +776,7 @@ function calculatePppScenario(
   const shortPutPayoffUsdt = -input.putSpreadContracts * Math.max(input.atmPutStrike - expiryPrice, 0);
   const floorPutPayoffUsdt = input.putSpreadContracts * Math.max(input.floorPutStrike - expiryPrice, 0);
   const grossHedgePayoffUsdt = callPayoffUsdt + shortPutPayoffUsdt + floorPutPayoffUsdt;
-  const deliveryFeesUsdt = INCLUDE_DELIVERY_FEES
+  const deliveryFeesUsdt = input.includeDeliveryFees
     ? deliveryFeeUsdt("call", expiryPrice, input.atmCallStrike, input.callContracts) +
       deliveryFeeUsdt("put", expiryPrice, input.atmPutStrike, input.putSpreadContracts) +
       deliveryFeeUsdt("put", expiryPrice, input.floorPutStrike, input.putSpreadContracts)
@@ -575,24 +799,37 @@ function getOptimizationScenarioPrices({
   spotPrice,
   atmCallStrike,
   atmPutStrike,
-  floorPutStrike
+  floorPutStrike,
+  protectionLevel,
+  includeDeliveryFees,
+  includeProductFloorScenario = false
 }: {
   spotPrice: number;
   atmCallStrike: number;
   atmPutStrike: number;
   floorPutStrike: number;
+  protectionLevel?: number;
+  includeDeliveryFees: boolean;
+  includeProductFloorScenario?: boolean;
 }): number[] {
   const prices = [
     0,
-    INCLUDE_DELIVERY_FEES ? floorPutStrike / (1 + DELIVERY_FEE_CAP_BTC / FEE_CAP_RATIO) : floorPutStrike,
+    includeProductFloorScenario && protectionLevel !== undefined ? protectionLevel * spotPrice : null,
+    includeDeliveryFees ? floorPutStrike / (1 + DELIVERY_FEE_CAP_BTC / FEE_CAP_RATIO) : floorPutStrike,
     floorPutStrike,
-    INCLUDE_DELIVERY_FEES ? atmPutStrike / (1 + DELIVERY_FEE_CAP_BTC / FEE_CAP_RATIO) : atmPutStrike,
+    includeDeliveryFees ? atmPutStrike / (1 + DELIVERY_FEE_CAP_BTC / FEE_CAP_RATIO) : atmPutStrike,
     atmPutStrike,
-    INCLUDE_DELIVERY_FEES ? atmCallStrike / (1 - DELIVERY_FEE_CAP_BTC / FEE_CAP_RATIO) : atmCallStrike,
+    includeDeliveryFees ? atmCallStrike / (1 - DELIVERY_FEE_CAP_BTC / FEE_CAP_RATIO) : atmCallStrike,
     spotPrice,
     MAX_STRESS_MULTIPLIER * spotPrice
   ];
-  return Array.from(new Set(prices.map((price) => roundToDecimals(Math.max(0, price), 8)))).sort((a, b) => a - b);
+  return Array.from(
+    new Set(
+      prices
+        .filter((price): price is number => typeof price === "number" && Number.isFinite(price))
+        .map((price) => roundToDecimals(Math.max(0, price), 8))
+    )
+  ).sort((a, b) => a - b);
 }
 
 function modelLegDepth(side: PppLegSide, requiredContracts: number, leg: PppMarketLegInput): PppDepthModel {
@@ -635,9 +872,12 @@ function buildLeg(
 }
 
 function buildFormulaTrace(input: {
+  selectorMode: PppSelectorMode;
+  includeDeliveryFees: boolean;
   investmentUsdt: number;
   spotPrice: number;
   protectionLevel: number;
+  selectedParticipation: number;
   targetFirmMargin: number;
   targetProfitUsdt: number;
   callLeg: PppHedgeLeg;
@@ -651,6 +891,9 @@ function buildFormulaTrace(input: {
   stressPrice: number | null;
   netOptionCashBtc: number | null;
   netOptionCashUsdt: number | null;
+  optimizedProtection: number | null;
+  autoProtectionFloorStrike: number | null;
+  autoProtectionFloorAsk: number | null;
   selectedScenario: PppScenarioResult | null;
 }): FormulaTraceRow[] {
   const exactPutSpreadContracts = input.spotPrice > 0 ? input.investmentUsdt / input.spotPrice : null;
@@ -680,8 +923,10 @@ function buildFormulaTrace(input: {
     { cell: PPP_TEMPLATE.cells.investmentUsdt, label: "Notional invested", formula: "user input", value: input.investmentUsdt },
     { cell: PPP_TEMPLATE.cells.spotPrice, label: "Product reference spot S0", formula: "Deribit BTC_USDC spot mid", value: input.spotPrice },
     { cell: PPP_TEMPLATE.cells.protectionLevel, label: "Product floor return", formula: "selected protectionLevelBps / 10000", value: input.protectionLevel },
+    { cell: PPP_TEMPLATE.cells.selectedParticipation, label: "Client participation quote", formula: "selected participationLevelBps / 10000", value: input.selectedParticipation },
     { cell: PPP_TEMPLATE.cells.targetFirmMargin, label: "Target firm margin", formula: "saved PPP targetFirmMarginBps / 10000", value: input.targetFirmMargin },
     { cell: PPP_TEMPLATE.cells.targetProfit, label: "Target profit amount", formula: "dayCount / 365 * targetFirmMargin * notional", value: input.targetProfitUsdt },
+    { cell: PPP_TEMPLATE.cells.includeDeliveryFees, label: "Include delivery fees", formula: "saved/admin PPP delivery-fee checkbox", value: input.includeDeliveryFees },
     { cell: "Robust Model!F4", label: "ATM call strike", formula: "closest listed call strike to S0", value: input.callLeg.strike },
     { cell: PPP_TEMPLATE.cells.atmCallAsk, label: "ATM call ask premium", formula: "depth-weighted executable ask", value: input.callLeg.averagePrice },
     { cell: "Robust Model!F6", label: "ATM put strike", formula: "closest listed put strike to S0", value: input.putLeg.strike },
@@ -707,6 +952,47 @@ function buildFormulaTrace(input: {
     { cell: "Robust Model!B38", label: "Stress price at minimum PnL", formula: "price where optimized scenario PnL is lowest", value: input.stressPrice },
     { cell: "Robust Model!B39", label: "Target profit check", formula: "minimum scenario PnL >= target profit", value: targetProfitMet ? "PASS" : "FAIL" }
   ];
+
+  if (input.selectorMode === "auto_protection") {
+    rows.push(
+      {
+        cell: PPP_TEMPLATE.cells.maxProtection,
+        label: "Given current participation: max floor",
+        formula: "Optimization!B216",
+        value: input.optimizedProtection
+      },
+      {
+        cell: PPP_TEMPLATE.cells.maxProtectionMinPnl,
+        label: "Given current participation: minimum PnL",
+        formula: "Optimization!B217",
+        value: input.minScenarioPnlUsdt
+      },
+      {
+        cell: PPP_TEMPLATE.cells.maxProtectionFloorStrike,
+        label: "Selected floor put strike at optimum",
+        formula: "INDEX(Optimization!Q220:Q670, MATCH(B46, A220:A670, 0))",
+        value: input.autoProtectionFloorStrike
+      },
+      {
+        cell: PPP_TEMPLATE.cells.maxProtectionFloorAsk,
+        label: "Selected floor put ask at optimum",
+        formula: "INDEX(Optimization!R220:R670, MATCH(B46, A220:A670, 0))",
+        value: input.autoProtectionFloorAsk
+      },
+      {
+        cell: "Optimization!A220:A670",
+        label: "Candidate floor grid",
+        formula: "50.0% to 95.0% in 0.1% steps",
+        value: "grid"
+      },
+      {
+        cell: "Optimization!O220:O670",
+        label: "Auto-protection PnL pass range",
+        formula: "row min PnL, gated by call hedge participation safety",
+        value: targetProfitMet ? "PASS" : "FAIL"
+      }
+    );
+  }
 
   if (input.selectedScenario) {
     rows.push(
@@ -768,6 +1054,20 @@ function positiveOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function finiteOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizePppSelectorMode(mode: PppPricingRequest["selectorMode"]): PppSelectorMode {
+  return mode === "closest" || mode === "auto_protection" ? mode : "auto_participation";
+}
+
+function getPppRecommendedLever(selectorMode: PppSelectorMode): PppRecommendedLever {
+  if (selectorMode === "auto_participation") return "participation";
+  if (selectorMode === "auto_protection") return "protection";
+  return "none";
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -808,5 +1108,6 @@ interface OptimizationRow {
   minScenarioPnlUsdt: number;
   stressPrice: number | null;
   targetPass: boolean;
+  upsideSlopeSafe: boolean;
   scenarios: PppScenarioResult[];
 }

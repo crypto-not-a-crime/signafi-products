@@ -303,21 +303,41 @@ export function mockPricingResponse(input: Record<string, unknown> = {}): DcnPri
 
 export function mockPppPricingResponse(input: Record<string, unknown> = {}): PppPricingResponse {
   const investmentUsdt = Number(input.investmentUsdt ?? 1000000);
+  const selectorMode =
+    input.selectorMode === "closest" || input.selectorMode === "auto_protection"
+      ? input.selectorMode
+      : "auto_participation";
   const protectionLevel = Number(input.protectionLevelBps ?? 8000) / 10000;
+  const participationLevel = Number(input.participationLevelBps ?? 3000) / 10000;
   const targetFirmMarginBps = Number(input.targetFirmMarginBps ?? 500);
+  const includeDeliveryFees = typeof input.includeDeliveryFees === "boolean" ? input.includeDeliveryFees : true;
   const best = mockPppCandidate({
     investmentUsdt,
-    protectionLevel,
-    protectionLevelBps: Math.round(protectionLevel * 10000),
-    targetFirmMarginBps
+    selectorMode,
+    protectionLevel: selectorMode === "auto_protection" ? 0.753 : protectionLevel,
+    protectionLevelBps: Math.round((selectorMode === "auto_protection" ? 0.753 : protectionLevel) * 10000),
+    targetFirmMarginBps,
+    includeDeliveryFees,
+    quotedParticipation: selectorMode === "auto_participation" ? undefined : participationLevel,
+    quotedParticipationBps: selectorMode === "auto_participation" ? undefined : participationLevel * 10000,
+    optimizedParticipation: selectorMode === "auto_participation" ? undefined : null,
+    optimizedParticipationBps: selectorMode === "auto_participation" ? undefined : null,
+    optimizedProtection: selectorMode === "auto_protection" ? 0.753 : null,
+    optimizedProtectionBps: selectorMode === "auto_protection" ? 7530 : null
   });
   const candidates = [
     best,
     mockPppCandidate({
+      selectorMode,
       expirationTimestamp: expiryTimestampFromDte(Date.now(), 180),
       dayCount: 180,
-      optimizedParticipation: 0.212,
-      optimizedParticipationBps: 2120,
+      optimizedParticipation: selectorMode === "auto_participation" ? 0.212 : null,
+      optimizedParticipationBps: selectorMode === "auto_participation" ? 2120 : null,
+      quotedParticipation: selectorMode === "auto_participation" ? 0.212 : participationLevel,
+      quotedParticipationBps: selectorMode === "auto_participation" ? 2120 : participationLevel * 10000,
+      optimizedProtection: selectorMode === "auto_protection" ? 0.742 : null,
+      optimizedProtectionBps: selectorMode === "auto_protection" ? 7420 : null,
+      protectionLevel: selectorMode === "auto_protection" ? 0.742 : protectionLevel,
       optimalCallContracts: 2.8,
       floorPutStrike: 62000,
       putSpreadImpliedFloor: 0.812,
@@ -326,10 +346,16 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       stressPrice: 80000
     }),
     mockPppCandidate({
+      selectorMode,
       expirationTimestamp: expiryTimestampFromDte(Date.now(), 365),
       dayCount: 365,
-      optimizedParticipation: 0.186,
-      optimizedParticipationBps: 1860,
+      optimizedParticipation: selectorMode === "auto_participation" ? 0.186 : null,
+      optimizedParticipationBps: selectorMode === "auto_participation" ? 1860 : null,
+      quotedParticipation: selectorMode === "auto_participation" ? 0.186 : participationLevel,
+      quotedParticipationBps: selectorMode === "auto_participation" ? 1860 : participationLevel * 10000,
+      optimizedProtection: selectorMode === "auto_protection" ? 0.728 : null,
+      optimizedProtectionBps: selectorMode === "auto_protection" ? 7280 : null,
+      protectionLevel: selectorMode === "auto_protection" ? 0.728 : protectionLevel,
       optimalCallContracts: 2.4,
       floorPutStrike: 60000,
       putSpreadImpliedFloor: 0.798,
@@ -346,9 +372,14 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
     bestCandidate: best,
     recommendation: {
       reason: "Mock PPP recommendation generated without live worker data.",
+      selectorMode,
+      recommendedLever:
+        selectorMode === "auto_protection" ? "protection" : selectorMode === "closest" ? "none" : "participation",
       runwayGapDays: 0,
       protectionGapBps: best.protectionGapBps,
-      optimizedParticipationBps: best.optimizedParticipationBps
+      participationGapBps: best.participationGapBps,
+      optimizedParticipationBps: best.optimizedParticipationBps,
+      optimizedProtectionBps: best.optimizedProtectionBps
     },
     mock: true
   };
@@ -356,10 +387,15 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
 
 export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCandidate {
   const generatedAt = Date.now();
+  const selectorMode = overrides.selectorMode ?? "auto_participation";
+  const includeDeliveryFees = overrides.includeDeliveryFees ?? true;
   const investmentUsdt = overrides.investmentUsdt ?? 1000000;
   const spotPrice = overrides.spotPrice ?? 77121;
   const protectionLevel = overrides.protectionLevel ?? 0.8;
-  const optimizedParticipation = overrides.optimizedParticipation ?? 0.239;
+  const optimizedParticipation =
+    overrides.optimizedParticipation ?? (selectorMode === "auto_participation" ? 0.239 : null);
+  const quotedParticipation =
+    overrides.quotedParticipation ?? (selectorMode === "auto_participation" ? optimizedParticipation : 0.3);
   const targetFirmMarginBps = overrides.targetFirmMarginBps ?? 500;
   const dayCount = overrides.dayCount ?? 92;
   const targetProfitUsdt = investmentUsdt * (targetFirmMarginBps / 10000) * (dayCount / 365);
@@ -373,6 +409,7 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
   const putSpreadImpliedFloor = overrides.putSpreadImpliedFloor ?? 0.8194;
   const netOptionCashBtc = overrides.netOptionCashBtc ?? 0.3586;
   const netOptionCashUsdt = overrides.netOptionCashUsdt ?? 27655;
+  const optimizedProtection = overrides.optimizedProtection ?? (selectorMode === "auto_protection" ? protectionLevel : null);
   const legs = [
     mockPppLeg("long_call", "buy", "BTC-25DEC26-76000-C", atmCallStrike, optimalCallContracts, 0.152),
     mockPppLeg("short_put", "sell", "BTC-25DEC26-76000-P", atmPutStrike, putSpreadContracts, 0.1185),
@@ -407,7 +444,8 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
     targetFirmMarginBps,
     targetProfitUsdt,
     optimizedParticipation,
-    optimizedParticipationBps: optimizedParticipation * 10000,
+    optimizedParticipationBps:
+      overrides.optimizedParticipationBps ?? (optimizedParticipation === null ? null : optimizedParticipation * 10000),
     optimalCallContracts,
     putSpreadContracts,
     atmCallStrike,
@@ -435,11 +473,28 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
     legs,
     selectedScenario,
     scenarios: [],
+    selectorMode,
+    recommendedLever:
+      overrides.recommendedLever ??
+      (selectorMode === "auto_protection" ? "protection" : selectorMode === "closest" ? "none" : "participation"),
+    includeDeliveryFees,
+    quotedParticipation,
+    quotedParticipationBps:
+      overrides.quotedParticipationBps ?? (quotedParticipation === null ? null : quotedParticipation * 10000),
+    quotedProtection: overrides.quotedProtection ?? protectionLevel,
+    quotedProtectionBps: overrides.quotedProtectionBps ?? protectionLevel * 10000,
+    optimizedProtection,
+    optimizedProtectionBps:
+      overrides.optimizedProtectionBps ?? (optimizedProtection === null ? null : optimizedProtection * 10000),
+    participationGapBps: overrides.participationGapBps ?? (selectorMode === "auto_participation" ? null : 8.5),
     formulaTrace: mockPppFormulaTrace({
+      selectorMode,
+      includeDeliveryFees,
       investmentUsdt,
       spotPrice,
       protectionLevel,
-      optimizedParticipation,
+      selectedParticipation: quotedParticipation ?? 0,
+      optimizedParticipation: optimizedParticipation ?? quotedParticipation ?? 0,
       targetFirmMarginBps,
       targetProfitUsdt,
       minScenarioPnlUsdt,
@@ -452,6 +507,7 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
       putSpreadImpliedFloor,
       netOptionCashBtc,
       netOptionCashUsdt,
+      optimizedProtection,
       legs,
       selectedScenario
     }),
@@ -460,9 +516,12 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
 }
 
 function mockPppFormulaTrace(input: {
+  selectorMode: PppCandidate["selectorMode"];
+  includeDeliveryFees: boolean;
   investmentUsdt: number;
   spotPrice: number;
   protectionLevel: number;
+  selectedParticipation: number;
   optimizedParticipation: number;
   targetFirmMarginBps: number;
   targetProfitUsdt: number;
@@ -476,6 +535,7 @@ function mockPppFormulaTrace(input: {
   putSpreadImpliedFloor: number;
   netOptionCashBtc: number;
   netOptionCashUsdt: number;
+  optimizedProtection: number | null;
   legs: PppCandidate["legs"];
   selectedScenario: NonNullable<PppCandidate["selectedScenario"]>;
 }): PppCandidate["formulaTrace"] {
@@ -494,8 +554,10 @@ function mockPppFormulaTrace(input: {
     { cell: "Robust Model!B4", label: "Notional invested", formula: "user input", value: input.investmentUsdt },
     { cell: "Robust Model!B5", label: "Product reference spot S0", formula: "Deribit BTC_USDC spot mid", value: input.spotPrice },
     { cell: "Robust Model!B7", label: "Product floor return", formula: "selected protectionLevelBps / 10000", value: input.protectionLevel },
+    { cell: "Robust Model!B8", label: "Client participation quote", formula: "selected participationLevelBps / 10000", value: input.selectedParticipation },
     { cell: "Robust Model!B9", label: "Target firm margin", formula: "saved PPP targetFirmMarginBps / 10000", value: input.targetFirmMarginBps / 10000 },
     { cell: "Robust Model!B10", label: "Target profit amount", formula: "dayCount / 365 * targetFirmMargin * notional", value: input.targetProfitUsdt },
+    { cell: "Robust Model!B12", label: "Include delivery fees", formula: "saved/admin PPP delivery-fee checkbox", value: input.includeDeliveryFees },
     { cell: "Robust Model!F4", label: "ATM call strike", formula: "closest listed call strike to S0", value: input.atmCallStrike },
     { cell: "Robust Model!F5", label: "ATM call ask premium", formula: "depth-weighted executable ask", value: callLeg.averagePrice },
     { cell: "Robust Model!F6", label: "ATM put strike", formula: "closest listed put strike to S0", value: input.atmPutStrike },
@@ -520,6 +582,15 @@ function mockPppFormulaTrace(input: {
     { cell: "Robust Model!B45", label: "Minimum PnL at optimum", formula: "MIN(Optimization scenario checks)", value: input.minScenarioPnlUsdt },
     { cell: "Robust Model!B38", label: "Stress price at minimum PnL", formula: "price where optimized scenario PnL is lowest", value: input.stressPrice },
     { cell: "Robust Model!B39", label: "Target profit check", formula: "minimum scenario PnL >= target profit", value: input.minScenarioPnlUsdt >= input.targetProfitUsdt ? "PASS" : "FAIL" },
+    ...(input.selectorMode === "auto_protection"
+      ? [
+          { cell: "Robust Model!B46", label: "Given current participation: max floor", formula: "Optimization!B216", value: input.optimizedProtection },
+          { cell: "Robust Model!B47", label: "Given current participation: minimum PnL", formula: "Optimization!B217", value: input.minScenarioPnlUsdt },
+          { cell: "Optimization!B218", label: "Selected floor put strike at optimum", formula: "INDEX(Optimization!Q220:Q670, MATCH(B46, A220:A670, 0))", value: input.floorPutStrike },
+          { cell: "Optimization!C218", label: "Selected floor put ask at optimum", formula: "INDEX(Optimization!R220:R670, MATCH(B46, A220:A670, 0))", value: floorPutLeg.averagePrice },
+          { cell: "Optimization!A220:A670", label: "Candidate floor grid", formula: "50.0% to 95.0% in 0.1% steps", value: "grid" }
+        ]
+      : []),
     { cell: "Scenario PnL!C59", label: "Final BTC level", formula: "selected verification scenario expiry price", value: input.selectedScenario.expiryPrice },
     { cell: "Scenario PnL!C70", label: "Client payout USDT", formula: "principal floor or upside participation payoff", value: input.selectedScenario.clientPayoutUsdt },
     { cell: "Scenario PnL!C62", label: "ATM call payoff USDT", formula: "callContracts * MAX(expiryPrice - atmCallStrike, 0)", value: input.selectedScenario.callPayoffUsdt },

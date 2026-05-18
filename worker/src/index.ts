@@ -476,6 +476,7 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
     sellPutTargetFirmProfitBps?: number;
     sellCallTargetFirmProfitBps?: number;
     pppTargetFirmMarginBps?: number;
+    pppIncludeDeliveryFees?: boolean;
   }>();
   if (
     payload.sellPutPricingMethod !== undefined &&
@@ -517,6 +518,9 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
   if (payload.pppTargetFirmMarginBps !== undefined && payload.pppTargetFirmMarginBps > 10_000) {
     return json({ error: "pppTargetFirmMarginBps must be less than or equal to 10000" }, 400);
   }
+  if (payload.pppIncludeDeliveryFees !== undefined && typeof payload.pppIncludeDeliveryFees !== "boolean") {
+    return json({ error: "pppIncludeDeliveryFees must be a boolean" }, 400);
+  }
 
   const pricingConfig = await updatePricingConfig(
     env.DB,
@@ -536,7 +540,8 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
           ? undefined
           : Math.round(payload.sellCallTargetFirmProfitBps),
       pppTargetFirmMarginBps:
-        payload.pppTargetFirmMarginBps === undefined ? undefined : Math.round(payload.pppTargetFirmMarginBps)
+        payload.pppTargetFirmMarginBps === undefined ? undefined : Math.round(payload.pppTargetFirmMarginBps),
+      pppIncludeDeliveryFees: payload.pppIncludeDeliveryFees
     },
     Date.now()
   );
@@ -750,15 +755,27 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
       bestCandidate: null,
       recommendation: {
         reason: "BTC_USDC spot price was unavailable.",
+        selectorMode: normalized.selectorMode,
+        recommendedLever:
+          normalized.selectorMode === "auto_protection"
+            ? "protection"
+            : normalized.selectorMode === "closest"
+              ? "none"
+              : "participation",
         runwayGapDays: null,
         protectionGapBps: null,
-        optimizedParticipationBps: null
+        participationGapBps: null,
+        optimizedParticipationBps: null,
+        optimizedProtectionBps: null
       }
     };
   }
 
   const packages = buildPppMarketPackages(rows, spotPrice, normalized, nowMs);
-  const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 4), 8);
+  const depthCandidateCount =
+    normalized.selectorMode === "auto_protection"
+      ? Math.min(Math.max(config.maxDepthCandidates, 8), 16)
+      : Math.min(Math.max(config.maxDepthCandidates, 4), 8);
   const shortlisted = packages
     .map((marketPackage) => ({
       marketPackage,
@@ -769,15 +786,24 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
     .slice(0, depthCandidateCount);
 
   const priced = [];
+  const bookCache = new Map<string, Promise<Awaited<ReturnType<DeribitClient["getOrderBook"]>>>>();
+  const getCachedOrderBook = (instrumentName: string) => {
+    const cached = bookCache.get(instrumentName);
+    if (cached) return cached;
+    const next = client.getOrderBook(instrumentName, normalized.orderBookDepth);
+    bookCache.set(instrumentName, next);
+    return next;
+  };
   for (const item of shortlisted) {
     const [callBook, atmPutBook, floorPutBook] = await Promise.all([
-      client.getOrderBook(item.marketPackage.atmCall.instrumentName, normalized.orderBookDepth),
-      client.getOrderBook(item.marketPackage.atmPut.instrumentName, normalized.orderBookDepth),
-      client.getOrderBook(item.marketPackage.floorPut.instrumentName, normalized.orderBookDepth)
+      getCachedOrderBook(item.marketPackage.atmCall.instrumentName),
+      getCachedOrderBook(item.marketPackage.atmPut.instrumentName),
+      getCachedOrderBook(item.marketPackage.floorPut.instrumentName)
     ]);
     const marketPackage: PppMarketPackageInput = {
       expirationTimestamp: item.marketPackage.expirationTimestamp,
       spotPrice,
+      candidateProtectionLevel: item.marketPackage.candidateProtectionLevel,
       atmCall: rowToPppMarketLeg(item.marketPackage.atmCall, callBook.bids, callBook.asks, callBook.timestamp),
       atmPut: rowToPppMarketLeg(item.marketPackage.atmPut, atmPutBook.bids, atmPutBook.asks, atmPutBook.timestamp),
       floorPut: rowToPppMarketLeg(item.marketPackage.floorPut, floorPutBook.bids, floorPutBook.asks, floorPutBook.timestamp)
@@ -793,9 +819,13 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
     bestCandidate: selected.bestCandidate,
     recommendation: {
       reason: selected.reason,
+      selectorMode: selected.selectorMode,
+      recommendedLever: selected.recommendedLever,
       runwayGapDays: selected.runwayGapDays,
       protectionGapBps: selected.protectionGapBps,
-      optimizedParticipationBps: selected.optimizedParticipationBps
+      participationGapBps: selected.participationGapBps,
+      optimizedParticipationBps: selected.optimizedParticipationBps,
+      optimizedProtectionBps: selected.optimizedProtectionBps
     }
   };
 }
@@ -862,9 +892,10 @@ function normalizeStrikeBufferPct(
 function buildPppMarketPackages(
   rows: JoinedPutRow[],
   spotPrice: number,
-  request: Pick<PppPricingRequest, "protectionLevelBps">,
-  _nowMs: number
+  request: PppPricingRequest,
+  nowMs: number
 ): PppMarketPackageInput[] {
+  const selectorMode = request.selectorMode === "closest" || request.selectorMode === "auto_protection" ? request.selectorMode : "auto_participation";
   const protectionLevel = Math.min(1, Math.max(0.1, Number(request.protectionLevelBps ?? 8000) / 10000));
   const targetFloorStrike = spotPrice * protectionLevel;
   const byExpiry = new Map<number, JoinedPutRow[]>();
@@ -882,8 +913,41 @@ function buildPppMarketPackages(
     const askPuts = expiryRows.filter((row) => row.option_type === "put" && isPositiveFinite(row.ask_price));
     const atmCall = findHighestStrikeAtOrBelow(calls, spotPrice);
     const atmPut = findHighestStrikeAtOrBelow(bidPuts, spotPrice);
+    if (!atmCall || !atmPut) continue;
+
+    if (selectorMode === "auto_protection") {
+      for (let floorBps = 5000; floorBps <= 9500; floorBps += 10) {
+        const candidateProtectionLevel = floorBps / 10000;
+        const floorPut = findLowestStrikeAtOrAbove(askPuts, spotPrice * candidateProtectionLevel);
+        if (!floorPut) continue;
+        const roughPackage = withRoughPppDepth({
+          expirationTimestamp,
+          spotPrice,
+          candidateProtectionLevel,
+          atmCall: pppRowToMarketLeg(atmCall),
+          atmPut: pppRowToMarketLeg(atmPut),
+          floorPut: pppRowToMarketLeg(floorPut)
+        });
+        const roughCandidate = calculatePppCandidate(
+          { ...request, protectionLevelBps: floorBps, selectorMode: "auto_protection", nowMs },
+          roughPackage
+        );
+        if (roughCandidate.checks.targetProfitMet && roughCandidate.checks.callHedgeAtOrAboveParticipation) {
+          packages.push({
+            expirationTimestamp,
+            spotPrice,
+            candidateProtectionLevel,
+            atmCall: pppRowToMarketLeg(atmCall),
+            atmPut: pppRowToMarketLeg(atmPut),
+            floorPut: pppRowToMarketLeg(floorPut)
+          });
+        }
+      }
+      continue;
+    }
+
     const floorPut = findLowestStrikeAtOrAbove(askPuts, targetFloorStrike);
-    if (!atmCall || !atmPut || !floorPut) continue;
+    if (!floorPut) continue;
 
     packages.push({
       expirationTimestamp,
@@ -895,6 +959,25 @@ function buildPppMarketPackages(
   }
 
   return packages;
+}
+
+function withRoughPppDepth(packageInput: PppMarketPackageInput): PppMarketPackageInput {
+  const depth = 1_000_000_000;
+  return {
+    ...packageInput,
+    atmCall: {
+      ...packageInput.atmCall,
+      asks: packageInput.atmCall.askPrice ? [[packageInput.atmCall.askPrice, depth]] : packageInput.atmCall.asks
+    },
+    atmPut: {
+      ...packageInput.atmPut,
+      bids: packageInput.atmPut.bidPrice ? [[packageInput.atmPut.bidPrice, depth]] : packageInput.atmPut.bids
+    },
+    floorPut: {
+      ...packageInput.floorPut,
+      asks: packageInput.floorPut.askPrice ? [[packageInput.floorPut.askPrice, depth]] : packageInput.floorPut.asks
+    }
+  };
 }
 
 function findHighestStrikeAtOrBelow(rows: JoinedPutRow[], target: number): JoinedPutRow | null {

@@ -7,6 +7,7 @@ import type {
   MarketExpirySummary,
   MarketOption,
   PppCandidate,
+  PppSelectorMode,
   PricingConfig,
   SellPutPricingMethod
 } from "@/types";
@@ -46,7 +47,9 @@ export function AdminConsole() {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [investmentBtc, setInvestmentBtc] = useState(10);
   const [pppRunwayDays, setPppRunwayDays] = useState(92);
+  const [pppSelectorMode, setPppSelectorMode] = useState<PppSelectorMode>("auto_participation");
   const [pppProtectionPct, setPppProtectionPct] = useState(80);
+  const [pppParticipationPct, setPppParticipationPct] = useState(30);
   const [sellPutPricingMethod, setSellPutPricingMethod] = useState<SellPutPricingMethod>("firm_margin");
   const [savedSellPutPricingMethod, setSavedSellPutPricingMethod] = useState<SellPutPricingMethod>("firm_margin");
   const [firmMarginPct, setFirmMarginPct] = useState(2);
@@ -57,6 +60,8 @@ export function AdminConsole() {
   const [savedSellCallTargetFirmProfitPct, setSavedSellCallTargetFirmProfitPct] = useState(5);
   const [pppTargetFirmMarginPct, setPppTargetFirmMarginPct] = useState(5);
   const [savedPppTargetFirmMarginPct, setSavedPppTargetFirmMarginPct] = useState(5);
+  const [pppIncludeDeliveryFees, setPppIncludeDeliveryFees] = useState(true);
+  const [savedPppIncludeDeliveryFees, setSavedPppIncludeDeliveryFees] = useState(true);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
   const [pppAudit, setPppAudit] = useState<PppCandidate | null>(null);
@@ -173,8 +178,11 @@ export function AdminConsole() {
     sellPutTargetFirmProfitPct,
     sellCallTargetFirmProfitPct,
     pppTargetFirmMarginPct,
+    pppSelectorMode,
     pppRunwayDays,
     pppProtectionPct,
+    pppParticipationPct,
+    pppIncludeDeliveryFees,
     selectedProductType
   ]);
 
@@ -224,6 +232,10 @@ export function AdminConsole() {
       setPppTargetFirmMarginPct(pppTarget);
       setSavedPppTargetFirmMarginPct(pppTarget);
     }
+    if (typeof payload.pricingConfig?.pppIncludeDeliveryFees === "boolean") {
+      setPppIncludeDeliveryFees(payload.pricingConfig.pppIncludeDeliveryFees);
+      setSavedPppIncludeDeliveryFees(payload.pricingConfig.pppIncludeDeliveryFees);
+    }
   }
 
   async function loadExpiryOptions() {
@@ -265,7 +277,8 @@ export function AdminConsole() {
     firmMarginBps !== savedFirmMarginBps ||
     sellPutTargetFirmProfitBps !== savedSellPutTargetFirmProfitBps ||
     sellCallTargetFirmProfitBps !== savedSellCallTargetFirmProfitBps ||
-    pppTargetFirmMarginBps !== savedPppTargetFirmMarginBps;
+    pppTargetFirmMarginBps !== savedPppTargetFirmMarginBps ||
+    pppIncludeDeliveryFees !== savedPppIncludeDeliveryFees;
 
   async function savePricingConfig() {
     setSavingConfig(true);
@@ -279,7 +292,8 @@ export function AdminConsole() {
           firmMarginBps,
           sellPutTargetFirmProfitBps,
           sellCallTargetFirmProfitBps,
-          pppTargetFirmMarginBps
+          pppTargetFirmMarginBps,
+          pppIncludeDeliveryFees
         })
       });
       const payload = (await response.json()) as { pricingConfig?: PricingConfig; error?: string };
@@ -306,6 +320,9 @@ export function AdminConsole() {
       const nextPppTargetPct = nextPppTargetBps / 100;
       setPppTargetFirmMarginPct(nextPppTargetPct);
       setSavedPppTargetFirmMarginPct(nextPppTargetPct);
+      const nextPppIncludeDeliveryFees = payload.pricingConfig?.pppIncludeDeliveryFees ?? pppIncludeDeliveryFees;
+      setPppIncludeDeliveryFees(nextPppIncludeDeliveryFees);
+      setSavedPppIncludeDeliveryFees(nextPppIncludeDeliveryFees);
       setConfigMessage("Pricing configuration saved.");
     } finally {
       setSavingConfig(false);
@@ -386,8 +403,11 @@ export function AdminConsole() {
       body: JSON.stringify({
         investmentUsdt,
         runwayDays: pppRunwayDays,
+        selectorMode: pppSelectorMode,
         protectionLevelBps: Math.round(pppProtectionPct * 100),
+        participationLevelBps: Math.round(pppParticipationPct * 100),
         targetFirmMarginBps: pppTargetFirmMarginBps,
+        includeDeliveryFees: pppIncludeDeliveryFees,
         orderBookDepth: 100
       })
     });
@@ -548,6 +568,18 @@ export function AdminConsole() {
               {selectedProductType === "ppp" ? (
                 <>
                   <label>
+                    <span className="field-label">PPP solver mode</span>
+                    <select
+                      className="admin-input"
+                      value={pppSelectorMode}
+                      onChange={(event) => setPppSelectorMode(event.target.value as PppSelectorMode)}
+                    >
+                      <option value="closest">Closest Match</option>
+                      <option value="auto_participation">Auto Participation</option>
+                      <option value="auto_protection">Auto Protection</option>
+                    </select>
+                  </label>
+                  <label>
                     <span className="field-label">Duration</span>
                     <select
                       className="admin-input"
@@ -569,7 +601,21 @@ export function AdminConsole() {
                       max={100}
                       step={1}
                       value={pppProtectionPct}
+                      disabled={pppSelectorMode === "auto_protection"}
                       onChange={(event) => setPppProtectionPct(Number(event.target.value))}
+                    />
+                  </label>
+                  <label>
+                    <span className="field-label">Participation level</span>
+                    <input
+                      className="admin-input"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={pppParticipationPct}
+                      disabled={pppSelectorMode === "auto_participation"}
+                      onChange={(event) => setPppParticipationPct(Number(event.target.value))}
                     />
                   </label>
                 </>
@@ -643,20 +689,32 @@ export function AdminConsole() {
                       : selectedProductType === "sell_call"
                       ? sellCallTargetFirmProfitPct
                       : sellPutPricingMethod === "target_firm_profit"
-                        ? sellPutTargetFirmProfitPct
-                        : firmMarginPct
+                      ? sellPutTargetFirmProfitPct
+                      : firmMarginPct
                   }
-                onChange={(event) => {
-                  const next = Number(event.target.value);
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
                     if (selectedProductType === "ppp") setPppTargetFirmMarginPct(Number.isFinite(next) ? next : 0);
                     else if (selectedProductType === "sell_call") setSellCallTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
                     else if (sellPutPricingMethod === "target_firm_profit") {
                       setSellPutTargetFirmProfitPct(Number.isFinite(next) ? next : 0);
-                    }
-                    else setFirmMarginPct(Number.isFinite(next) ? next : 0);
+                    } else setFirmMarginPct(Number.isFinite(next) ? next : 0);
                   }}
                 />
               </label>
+              {selectedProductType === "ppp" ? (
+                <label>
+                  <span className="field-label">Include delivery fees</span>
+                  <div className="soft-row">
+                    <span>Deribit delivery-fee stress</span>
+                    <input
+                      type="checkbox"
+                      checked={pppIncludeDeliveryFees}
+                      onChange={(event) => setPppIncludeDeliveryFees(event.target.checked)}
+                    />
+                  </div>
+                </label>
+              ) : null}
             </div>
             {selectedProductType === "sell_put" ? (
               <div className="soft-row" style={{ marginTop: 12 }}>
@@ -687,6 +745,12 @@ export function AdminConsole() {
                 % p.a.
               </strong>
             </div>
+            {selectedProductType === "ppp" ? (
+              <div className="soft-row" style={{ marginTop: 12 }}>
+                <span>Saved PPP delivery-fee stress</span>
+                <strong className="mono">{savedPppIncludeDeliveryFees ? "On" : "Off"}</strong>
+              </div>
+            ) : null}
             <div className="soft-row" style={{ marginTop: 12 }}>
               <span>{selectedProductType === "ppp" ? "Selected package" : "Selected instrument"}</span>
               <strong className="mono">
@@ -921,6 +985,7 @@ export function AdminConsole() {
                   <CheckRow label="Sufficient hedge depth" ok={pppAudit.checks.sufficientDepth} />
                   <CheckRow label="Slippage within limit" ok={pppAudit.checks.slippageWithinLimit} />
                   <CheckRow label="Participation positive" ok={pppAudit.checks.participationPositive} />
+                  <CheckRow label="Call hedge covers participation" ok={pppAudit.checks.callHedgeAtOrAboveParticipation ?? true} />
                   <CheckRow label="Target firm margin met" ok={pppAudit.checks.targetProfitMet} />
                 </>
               ) : audit && selectedScenario ? (
@@ -1023,7 +1088,16 @@ function PppAdminAuditPanel({ audit }: { audit: PppCandidate }) {
   return (
     <>
       <div className="metric-grid">
-        <Metric label="Client participation" value={formatPct(audit.optimizedParticipation, 2)} tone={audit.eligible ? "ok" : "warn"} />
+        <Metric
+          label={audit.recommendedLever === "participation" ? "Max participation" : "Client participation"}
+          value={formatPct(audit.quotedParticipation, 2)}
+          tone={audit.eligible ? "ok" : "warn"}
+        />
+        <Metric
+          label={audit.recommendedLever === "protection" ? "Max protection" : "Protection"}
+          value={formatPct(audit.quotedProtection, 2)}
+          tone={audit.eligible ? "ok" : "warn"}
+        />
         <Metric label="BTC_USDC spot" value={formatUsd(audit.spotPrice)} />
         <Metric
           label="Minimum scenario P&L"
@@ -1046,6 +1120,8 @@ function PppAdminAuditPanel({ audit }: { audit: PppCandidate }) {
           <Metric label="Implied hedge floor" value={formatPct(audit.putSpreadImpliedFloor, 2)} />
           <Metric label="Call contracts" value={formatNumber(audit.optimalCallContracts, 1)} />
           <Metric label="Put spread contracts" value={formatNumber(audit.putSpreadContracts, 1)} />
+          <Metric label="Solver mode" value={audit.selectorMode.replace("_", " ")} />
+          <Metric label="Delivery fees" value={audit.includeDeliveryFees ? "On" : "Off"} />
         </div>
       </div>
 

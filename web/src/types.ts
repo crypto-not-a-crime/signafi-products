@@ -30,6 +30,7 @@ export interface PricingConfig {
   sellPutTargetFirmProfitBps: number;
   sellCallTargetFirmProfitBps: number;
   pppTargetFirmMarginBps: number;
+  pppIncludeDeliveryFees: boolean;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
   maxDepthCandidates: number;
@@ -228,13 +229,29 @@ export interface PppCandidate {
   selectedScenario: PppScenarioResult | null;
   scenarios: PppScenarioResult[];
   formulaTrace: FormulaTraceRow[];
+  selectorMode: PppSelectorMode;
+  recommendedLever: PppRecommendedLever;
+  includeDeliveryFees: boolean;
+  quotedParticipation: number | null;
+  quotedParticipationBps: number | null;
+  quotedProtection: number | null;
+  quotedProtectionBps: number | null;
+  optimizedProtection: number | null;
+  optimizedProtectionBps: number | null;
+  participationGapBps: number | null;
 }
+
+export type PppSelectorMode = "closest" | "auto_participation" | "auto_protection";
+export type PppRecommendedLever = "none" | "participation" | "protection";
 
 export interface PppPricingRequest {
   investmentUsdt?: number;
   runwayDays?: number;
   protectionLevelBps?: number;
+  participationLevelBps?: number;
+  selectorMode?: PppSelectorMode;
   targetFirmMarginBps?: number;
+  includeDeliveryFees?: boolean;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;
@@ -247,9 +264,13 @@ export interface PppPricingResponse {
   bestCandidate: PppCandidate | null;
   recommendation?: {
     reason: string;
+    selectorMode: PppSelectorMode;
+    recommendedLever: PppRecommendedLever;
     runwayGapDays: number | null;
     protectionGapBps: number | null;
+    participationGapBps: number | null;
     optimizedParticipationBps: number | null;
+    optimizedProtectionBps: number | null;
   };
   mock?: boolean;
 }

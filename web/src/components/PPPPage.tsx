@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { PppCandidate, PppPricingRequest, PppPricingResponse } from "@/types";
+import type { PppCandidate, PppPricingRequest, PppPricingResponse, PppSelectorMode } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { SiteNav } from "./Logo";
 
@@ -14,11 +14,14 @@ const durationOptions = [
 
 const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
 const protectionOptions = [70, 75, 80, 85, 90, 95, 100];
+const participationOptions = [15, 20, 25, 30, 35, 40, 50];
 
 export function PPPPage() {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [duration, setDuration] = useState("3m");
+  const [selectorMode, setSelectorMode] = useState<PppSelectorMode>("auto_participation");
   const [protectionPct, setProtectionPct] = useState(80);
+  const [participationPct, setParticipationPct] = useState(30);
   const [data, setData] = useState<PppPricingResponse | null>(null);
   const [selectedExpiry, setSelectedExpiry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -36,7 +39,7 @@ export function PPPPage() {
       void fetchPricing();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [investmentUsdt, runwayDays, protectionPct]);
+  }, [investmentUsdt, runwayDays, protectionPct, participationPct, selectorMode]);
 
   useEffect(() => {
     if (!data) {
@@ -58,6 +61,8 @@ export function PPPPage() {
         investmentUsdt,
         runwayDays,
         protectionLevelBps: Math.round(protectionPct * 100),
+        participationLevelBps: Math.round(participationPct * 100),
+        selectorMode,
         maxSlippageBps: 500,
         quoteFreshnessSeconds: 10,
         orderBookDepth: 100
@@ -89,8 +94,8 @@ export function PPPPage() {
               <em>Quoted upside.</em>
             </h1>
             <p className="hero-sub">
-              Select the investment size, target duration, and principal protection level. The PPP engine checks live
-              executable Deribit depth before quoting client participation.
+              Select the investment size, target duration, and solver mode. The PPP engine checks live executable
+              Deribit depth before quoting client participation or protection.
             </p>
           </div>
         </section>
@@ -100,8 +105,33 @@ export function PPPPage() {
             <div className="lever-panel">
               <h2 className="lever-title">Set your PPP terms</h2>
               <p className="card-copy">
-                The matching engine prioritizes duration and protection fit, then quotes the maximum client participation.
+                Select the solve mode, then set the terms the engine should hold fixed for the live hedge quote.
               </p>
+
+              <div className="control-block">
+                <div className="row-between">
+                  <div>
+                    <div className="field-label">Selector</div>
+                    <strong>What should the engine solve for?</strong>
+                  </div>
+                </div>
+                <div className="pill-row">
+                  {[
+                    ["closest", "Closest Match"],
+                    ["auto_participation", "Auto Participation"],
+                    ["auto_protection", "Auto Protection"]
+                  ].map(([id, label]) => (
+                    <button
+                      className={`choice-pill ${selectorMode === id ? "active" : ""}`}
+                      key={id}
+                      onClick={() => setSelectorMode(id as PppSelectorMode)}
+                      type="button"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               <div className="control-block">
                 <div className="row-between">
@@ -157,9 +187,13 @@ export function PPPPage() {
                 <div className="row-between">
                   <div>
                     <div className="field-label">Protection level</div>
-                    <strong>Minimum principal return</strong>
+                    <strong>{selectorMode === "auto_protection" ? "Engine output" : "Minimum principal return"}</strong>
                   </div>
-                  <strong className="mono">{protectionPct}%</strong>
+                  <strong className="mono">
+                    {selectorMode === "auto_protection" && selectedCandidate
+                      ? formatPct(selectedCandidate.quotedProtection, 2)
+                      : `${protectionPct}%`}
+                  </strong>
                 </div>
                 <input
                   type="range"
@@ -167,14 +201,53 @@ export function PPPPage() {
                   max={100}
                   step={1}
                   value={protectionPct}
+                  disabled={selectorMode === "auto_protection"}
                   onChange={(event) => setProtectionPct(Number(event.target.value))}
                 />
                 <div className="pill-row">
                   {protectionOptions.map((pct) => (
                     <button
                       className={`choice-pill ${protectionPct === pct ? "active" : ""}`}
+                      disabled={selectorMode === "auto_protection"}
                       key={pct}
                       onClick={() => setProtectionPct(pct)}
+                      type="button"
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="control-block">
+                <div className="row-between">
+                  <div>
+                    <div className="field-label">Participation level</div>
+                    <strong>{selectorMode === "auto_participation" ? "Engine output" : "Client upside participation"}</strong>
+                  </div>
+                  <strong className="mono">
+                    {selectorMode === "auto_participation" && selectedCandidate
+                      ? formatPct(selectedCandidate.quotedParticipation, 2)
+                      : `${participationPct}%`}
+                  </strong>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={participationPct}
+                  disabled={selectorMode === "auto_participation"}
+                  onChange={(event) => setParticipationPct(Number(event.target.value))}
+                />
+                <div className="pill-row">
+                  {participationOptions.map((pct) => (
+                    <button
+                      className={`choice-pill ${participationPct === pct ? "active" : ""}`}
+                      disabled={selectorMode === "auto_participation"}
+                      key={pct}
+                      onClick={() => setParticipationPct(pct)}
+                      type="button"
                     >
                       {pct}%
                     </button>
@@ -220,10 +293,17 @@ export function PPPPage() {
           <div className="rail-detail-grid">
             <aside className="result-panel rail-summary-panel">
               <div className="result-card">
-                <div className="sum-lbl">Quoted client participation</div>
-                <div className="result-figure">{formatPct(selectedCandidate?.optimizedParticipation, 2)}</div>
+                <div className="sum-lbl">
+                  {selectorMode === "auto_protection" ? "Quoted client protection" : "Quoted client participation"}
+                </div>
+                <div className="result-figure">
+                  {selectorMode === "auto_protection"
+                    ? formatPct(selectedCandidate?.quotedProtection, 2)
+                    : formatPct(selectedCandidate?.quotedParticipation, 2)}
+                </div>
                 <p className="small-muted">
-                  on {formatUsd(investmentUsdt)} with {protectionPct}% protection
+                  on {formatUsd(investmentUsdt)} with{" "}
+                  {selectorMode === "auto_protection" ? `${participationPct}% participation` : `${protectionPct}% protection`}
                 </p>
                 <div className="metric-grid">
                   <Metric label="Duration" value={`${selectedCandidate?.dayCount ?? runwayDays} days`} />
@@ -276,13 +356,13 @@ function PppRecommendationCard({
       <h3 className="recommendation-name">PPP {formatDate(candidate.expirationTimestamp)}</h3>
       <div className="recommendation-yield-row">
         <span>Participation</span>
-        <strong>{formatPct(candidate.optimizedParticipation, 2)}</strong>
+        <strong>{formatPct(candidate.quotedParticipation, 2)}</strong>
       </div>
       <dl className="recommendation-terms">
         <div>
           <dt>Protection</dt>
           <dd>
-            {formatPct(candidate.protectionLevel, 0)}
+            {formatPct(candidate.quotedProtection, 2)}
             <span>floor strike {formatUsd(candidate.floorPutStrike)}</span>
           </dd>
         </div>
@@ -311,8 +391,8 @@ function PppDetailCard({ candidate }: { candidate: PppCandidate }) {
         </span>
       </div>
       <div className="metric-grid">
-        <Metric label="Max participation" value={formatPct(candidate.optimizedParticipation, 2)} tone="ok" />
-        <Metric label="Protection" value={formatPct(candidate.protectionLevel, 0)} />
+        <Metric label={candidate.recommendedLever === "protection" ? "Max protection" : "Protection"} value={formatPct(candidate.quotedProtection, 2)} tone={candidate.recommendedLever === "protection" ? "ok" : undefined} />
+        <Metric label={candidate.recommendedLever === "participation" ? "Max participation" : "Participation"} value={formatPct(candidate.quotedParticipation, 2)} tone={candidate.recommendedLever === "participation" ? "ok" : undefined} />
         <Metric label="Min scenario P&L" value={formatUsd(candidate.minScenarioPnlUsdt)} tone={(candidate.minScenarioPnlUsdt ?? 0) >= candidate.targetProfitUsdt ? "ok" : "fail"} />
         <Metric label="Stress price" value={formatUsd(candidate.stressPrice)} />
       </div>
