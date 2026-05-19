@@ -298,7 +298,7 @@ export function PPPPage() {
               <div className="rail-header">
                 <div>
                   <div className="pc-label">Top matches</div>
-                  <h2 className="rail-title">PPP recommendations</h2>
+                  <h2 className="rail-title">Product recommendations</h2>
                 </div>
                 <div className="rail-actions">
                   <button
