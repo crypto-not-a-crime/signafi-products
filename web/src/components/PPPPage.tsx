@@ -37,6 +37,7 @@ export function PPPPage() {
     : priorityOptions[0]?.id;
   const best = data?.bestCandidate ?? null;
   const targetProtectionBps = Math.round(protectionPct * 100);
+  const targetParticipationBps = Math.round(participationPct * 100);
   const candidates = useMemo(
     () =>
       getPppRecommendations({
@@ -45,9 +46,10 @@ export function PPPPage() {
         selectorMode,
         priorityLever: effectivePriorityLever,
         targetProtectionBps,
+        targetParticipationBps,
         limit: 3
       }),
-    [best, data?.candidates, effectivePriorityLever, selectorMode, targetProtectionBps]
+    [best, data?.candidates, effectivePriorityLever, selectorMode, targetParticipationBps, targetProtectionBps]
   );
   const selectedCandidate = selectedCandidateKey
     ? candidates.find((candidate) => getPppCandidateKey(candidate) === selectedCandidateKey) ?? best

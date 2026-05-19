@@ -46,6 +46,7 @@ export interface PppMarketPackageInput {
   atmPut: PppMarketLegInput;
   floorPut: PppMarketLegInput;
   candidateProtectionLevel?: number;
+  candidateParticipationLevel?: number;
 }
 
 export interface PppDepthFill {
@@ -211,6 +212,8 @@ const MIN_PROTECTION_LEVEL = 0.1;
 const AUTO_PROTECTION_MIN_BPS = 5000;
 const AUTO_PROTECTION_MAX_BPS = 9500;
 const AUTO_PROTECTION_STEP_BPS = 10;
+const AUTO_PROTECTION_PARTICIPATION_STEP_BPS = 500;
+const AUTO_PROTECTION_PARTICIPATION_MAX_OFFSET_BPS = 2000;
 const AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS = 1000;
 const AUTO_PARTICIPATION_PROTECTION_STEP_BPS = 100;
 
@@ -340,7 +343,11 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const investmentUsdt = positiveOr(request.investmentUsdt, 1_000_000);
   const spotPrice = positiveOr(market.spotPrice, 0);
   const requestedProtectionLevel = clamp(Number(request.protectionLevelBps ?? 8000) / 10000, MIN_PROTECTION_LEVEL, 1);
-  const selectedParticipation = clamp(Number(request.participationLevelBps ?? 3000) / 10000, 0, 1);
+  const requestedParticipationLevel = clamp(Number(request.participationLevelBps ?? 3000) / 10000, 0, 1);
+  const selectedParticipation =
+    selectorMode === "auto_protection" && typeof market.candidateParticipationLevel === "number"
+      ? clamp(market.candidateParticipationLevel, 0, 1)
+      : requestedParticipationLevel;
   const protectionLevel =
     selectorMode === "auto_protection"
       ? clamp(Number(market.candidateProtectionLevel ?? requestedProtectionLevel), 0.5, 0.95)
@@ -453,9 +460,13 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
       ? (optimalCallContracts * spotPrice) / investmentUsdt * (1 - (includeDeliveryFees ? DELIVERY_FEE_CAP_BTC : 0))
       : null;
   const participationGapBps =
-    selectorMode === "auto_participation" || quotedParticipation === null || actualCallHedgeParticipation === null
+    selectorMode === "auto_participation" || quotedParticipation === null
       ? null
-      : Math.abs(actualCallHedgeParticipation - quotedParticipation) * 10000;
+      : selectorMode === "auto_protection"
+        ? Math.abs(quotedParticipation - requestedParticipationLevel) * 10000
+        : actualCallHedgeParticipation === null
+          ? null
+          : Math.abs(actualCallHedgeParticipation - quotedParticipation) * 10000;
   const minScenarioPnlUsdt = displayOptimization?.minScenarioPnlUsdt ?? null;
   const stressPrice = displayOptimization?.stressPrice ?? null;
   const netOptionCashBtc = displayOptimization?.netOptionCashBtc ?? null;
@@ -581,9 +592,9 @@ export function selectPppCandidate(
   request: NormalizedPppPricingRequest,
   candidates: PppCandidate[]
 ): PppPricingResponse["recommendation"] & { candidates: PppCandidate[]; bestCandidate: PppCandidate | null } {
-  const sorted = [...candidates].sort((a, b) => comparePppCandidates(request, a, b));
-  const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const sorted = collapsePppCandidatesForSelection(selectorMode, candidates).sort((a, b) => comparePppCandidates(request, a, b));
+  const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
   const recommendedLever = getPppRecommendedLever(selectorMode);
   const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
   return {
@@ -609,8 +620,33 @@ export function selectPppCandidate(
   };
 }
 
+function collapsePppCandidatesForSelection(selectorMode: PppSelectorMode, candidates: PppCandidate[]): PppCandidate[] {
+  if (selectorMode !== "auto_protection") return [...candidates];
+  const byFixedInputs = new Map<string, PppCandidate>();
+  for (const candidate of candidates) {
+    const key = [
+      candidate.expirationTimestamp,
+      Math.round((candidate.quotedParticipation ?? 0) * 10000)
+    ].join(":");
+    const existing = byFixedInputs.get(key);
+    if (!existing || compareAutoProtectionFixedInputCandidate(candidate, existing) < 0) {
+      byFixedInputs.set(key, candidate);
+    }
+  }
+  return [...byFixedInputs.values()];
+}
+
+function compareAutoProtectionFixedInputCandidate(a: PppCandidate, b: PppCandidate): number {
+  if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+  return compareBy([
+    () => compareDesc(a.optimizedProtection ?? a.quotedProtection, b.optimizedProtection ?? b.quotedProtection),
+    () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+    () => compareAsc(a.maxSlippagePct, b.maxSlippagePct)
+  ]);
+}
+
 export function scorePppPackageForShortlist(
-  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "selectorMode" | "priorityLever">,
+  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "participationLevelBps" | "selectorMode" | "priorityLever">,
   market: PppMarketPackageInput,
   nowMs = Date.now()
 ): number {
@@ -622,9 +658,19 @@ export function scorePppPackageForShortlist(
   const durationGap = Math.abs(dayCount - runwayDays) / Math.max(runwayDays, 1);
   if (selectorMode === "auto_protection") {
     const candidateProtection = finiteOr(market.candidateProtectionLevel, 0);
+    const participation = clamp(Number(request.participationLevelBps ?? 3000) / 10000, 0, 1);
+    const candidateParticipation = finiteOr(market.candidateParticipationLevel, participation);
+    const participationGap = Math.abs(candidateParticipation - participation);
     const atmGap = market.spotPrice > 0 ? Math.abs(market.atmCall.strike / market.spotPrice - 1) : Infinity;
-    const durationPenalty = priorityLever === "duration" ? 100_000 : 10_000;
-    return 1_000_000 - durationGap * durationPenalty + candidateProtection * 50_000 - atmGap * 10_000;
+    const durationPenalty = priorityLever === "duration" ? 1_000_000 : 25_000;
+    const participationPenalty = priorityLever === "participation" ? 1_000_000 : 25_000;
+    return (
+      1_000_000 -
+      durationGap * durationPenalty -
+      participationGap * participationPenalty +
+      candidateProtection * 10_000 -
+      atmGap * 10_000
+    );
   }
   const candidateProtection = finiteOr(market.candidateProtectionLevel, protection);
   const productProtectionGap = Math.abs(candidateProtection - protection);
@@ -1219,6 +1265,20 @@ export function buildPppAutoParticipationProtectionBps(targetProtectionBps: numb
     levels.add(Math.round(bps));
   }
   return [...levels].sort((a, b) => a - b);
+}
+
+export function buildPppAutoProtectionParticipationBps(targetParticipationBps: number): number[] {
+  const targetBps = clamp(Math.round(targetParticipationBps), 0, 10000);
+  const levels = new Set<number>([targetBps]);
+  for (
+    let offset = AUTO_PROTECTION_PARTICIPATION_STEP_BPS;
+    offset <= AUTO_PROTECTION_PARTICIPATION_MAX_OFFSET_BPS;
+    offset += AUTO_PROTECTION_PARTICIPATION_STEP_BPS
+  ) {
+    levels.add(clamp(targetBps - offset, 0, 10000));
+    levels.add(clamp(targetBps + offset, 0, 10000));
+  }
+  return [...levels];
 }
 
 function clamp(value: number, min: number, max: number): number {

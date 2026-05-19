@@ -30,6 +30,7 @@ import {
   type PutMarketInput
 } from "./pricing/dcn";
 import {
+  buildPppAutoProtectionParticipationBps,
   buildPppAutoParticipationProtectionBps,
   calculatePppCandidate,
   normalizePppPricingRequest,
@@ -1004,7 +1005,7 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   const packages = buildPppMarketPackages(rows, spotPrice, normalized, nowMs);
   const depthCandidateCount =
     normalized.selectorMode === "auto_protection"
-      ? Math.min(Math.max(config.maxDepthCandidates, 8), 16)
+      ? Math.min(Math.max(config.maxDepthCandidates, 24), 36)
       : normalized.selectorMode === "auto_participation"
         ? Math.min(Math.max(config.maxDepthCandidates, 12), 24)
         : Math.min(Math.max(config.maxDepthCandidates, 4), 8);
@@ -1036,6 +1037,7 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
       expirationTimestamp: item.marketPackage.expirationTimestamp,
       spotPrice,
       candidateProtectionLevel: item.marketPackage.candidateProtectionLevel,
+      candidateParticipationLevel: item.marketPackage.candidateParticipationLevel,
       atmCall: rowToPppMarketLeg(item.marketPackage.atmCall, callBook.bids, callBook.asks, callBook.timestamp),
       atmPut: rowToPppMarketLeg(item.marketPackage.atmPut, atmPutBook.bids, atmPutBook.asks, atmPutBook.timestamp),
       floorPut: rowToPppMarketLeg(item.marketPackage.floorPut, floorPutBook.bids, floorPutBook.asks, floorPutBook.timestamp)
@@ -1132,6 +1134,7 @@ function buildPppMarketPackages(
   const requestedExpirationTimestamp = Number(request.expirationTimestamp);
   const protectionLevelBps = Math.round(Math.min(10000, Math.max(1000, Number(request.protectionLevelBps ?? 8000))));
   const protectionLevel = protectionLevelBps / 10000;
+  const participationLevelBps = Math.round(Math.min(10000, Math.max(0, Number(request.participationLevelBps ?? 3000))));
   const targetFloorStrike = spotPrice * protectionLevel;
   const byExpiry = new Map<number, JoinedPutRow[]>();
 
@@ -1158,31 +1161,45 @@ function buildPppMarketPackages(
     if (!atmCall || !atmPut) continue;
 
     if (selectorMode === "auto_protection") {
-      for (let floorBps = 5000; floorBps <= 9500; floorBps += 10) {
-        const candidateProtectionLevel = floorBps / 10000;
-        const floorPut = findLowestStrikeAtOrAbove(askPuts, spotPrice * candidateProtectionLevel);
-        if (!floorPut) continue;
-        const roughPackage = withRoughPppDepth({
-          expirationTimestamp,
-          spotPrice,
-          candidateProtectionLevel,
-          atmCall: pppRowToMarketLeg(atmCall),
-          atmPut: pppRowToMarketLeg(atmPut),
-          floorPut: pppRowToMarketLeg(floorPut)
-        });
-        const roughCandidate = calculatePppCandidate(
-          { ...request, protectionLevelBps: floorBps, selectorMode: "auto_protection", nowMs },
-          roughPackage
-        );
-        if (roughCandidate.checks.targetProfitMet && roughCandidate.checks.callHedgeAtOrAboveParticipation) {
-          packages.push({
+      for (const candidateParticipationBps of buildPppAutoProtectionParticipationBps(participationLevelBps)) {
+        const candidateParticipationLevel = candidateParticipationBps / 10000;
+        let fallbackCount = 0;
+        for (let floorBps = 9500; floorBps >= 5000; floorBps -= 10) {
+          const candidateProtectionLevel = floorBps / 10000;
+          const floorPut = findLowestStrikeAtOrAbove(askPuts, spotPrice * candidateProtectionLevel);
+          if (!floorPut) continue;
+          const roughPackage = withRoughPppDepth({
             expirationTimestamp,
             spotPrice,
             candidateProtectionLevel,
+            candidateParticipationLevel,
             atmCall: pppRowToMarketLeg(atmCall),
             atmPut: pppRowToMarketLeg(atmPut),
             floorPut: pppRowToMarketLeg(floorPut)
           });
+          const roughCandidate = calculatePppCandidate(
+            {
+              ...request,
+              participationLevelBps: candidateParticipationBps,
+              protectionLevelBps: floorBps,
+              selectorMode: "auto_protection",
+              nowMs
+            },
+            roughPackage
+          );
+          if (roughCandidate.checks.targetProfitMet && roughCandidate.checks.callHedgeAtOrAboveParticipation) {
+            packages.push({
+              expirationTimestamp,
+              spotPrice,
+              candidateProtectionLevel,
+              candidateParticipationLevel,
+              atmCall: pppRowToMarketLeg(atmCall),
+              atmPut: pppRowToMarketLeg(atmPut),
+              floorPut: pppRowToMarketLeg(floorPut)
+            });
+            fallbackCount += 1;
+            if (fallbackCount >= 3) break;
+          }
         }
       }
       continue;
