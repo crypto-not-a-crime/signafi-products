@@ -46,7 +46,6 @@ export function AdminConsole() {
   const [selectedStrike, setSelectedStrike] = useState("");
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [investmentBtc, setInvestmentBtc] = useState(10);
-  const [pppRunwayDays, setPppRunwayDays] = useState(92);
   const [pppSelectorMode, setPppSelectorMode] = useState<PppSelectorMode>("auto_participation");
   const [pppProtectionPct, setPppProtectionPct] = useState(80);
   const [pppParticipationPct, setPppParticipationPct] = useState(30);
@@ -81,8 +80,8 @@ export function AdminConsole() {
 
   useEffect(() => {
     if (selectedProductType === "ppp") {
+      setSelectedOptionType("put");
       setOptions([]);
-      setSelectedExpiry("");
       setSelectedStrike("");
       return;
     }
@@ -114,17 +113,38 @@ export function AdminConsole() {
     [expirySummaries, selectedOptionType]
   );
 
-  useEffect(() => {
-    if (expiryOptions.length === 0) return;
-    if (!expiryOptions.some((expiry) => String(expiry) === selectedExpiry)) {
-      setSelectedExpiry(String(expiryOptions[0]));
+  const pppExpiryOptions = useMemo(() => {
+    const optionTypesByExpiry = new Map<number, Set<MarketExpirySummary["option_type"]>>();
+    for (const item of expirySummaries) {
+      if (!item.expiration_timestamp) continue;
+      const optionTypes = optionTypesByExpiry.get(item.expiration_timestamp) ?? new Set<MarketExpirySummary["option_type"]>();
+      optionTypes.add(item.option_type);
+      optionTypesByExpiry.set(item.expiration_timestamp, optionTypes);
     }
-  }, [expiryOptions, selectedExpiry]);
+    return Array.from(optionTypesByExpiry.entries())
+      .filter(([, optionTypes]) => optionTypes.has("call") && optionTypes.has("put"))
+      .map(([expiry]) => expiry)
+      .sort((a, b) => a - b);
+  }, [expirySummaries]);
+
+  const activeExpiryOptions = selectedProductType === "ppp" ? pppExpiryOptions : expiryOptions;
+  const selectedPppExpirationTimestamp = Number(selectedExpiry);
+  const selectedPppRunwayDays =
+    Number.isFinite(selectedPppExpirationTimestamp) && selectedPppExpirationTimestamp > 0
+      ? dayCountFromExpiryTimestamp(selectedPppExpirationTimestamp)
+      : 92;
 
   useEffect(() => {
-    if (!selectedExpiry) return;
+    if (activeExpiryOptions.length === 0) return;
+    if (!activeExpiryOptions.some((expiry) => String(expiry) === selectedExpiry)) {
+      setSelectedExpiry(String(activeExpiryOptions[0]));
+    }
+  }, [activeExpiryOptions, selectedExpiry]);
+
+  useEffect(() => {
+    if (!selectedExpiry || selectedProductType === "ppp") return;
     void loadOptions(selectedOptionType, selectedExpiry);
-  }, [selectedExpiry, selectedOptionType]);
+  }, [selectedExpiry, selectedOptionType, selectedProductType]);
 
   const strikeOptions = useMemo(() => {
     const expiry = Number(selectedExpiry);
@@ -179,7 +199,7 @@ export function AdminConsole() {
     sellCallTargetFirmProfitPct,
     pppTargetFirmMarginPct,
     pppSelectorMode,
-    pppRunwayDays,
+    selectedExpiry,
     pppProtectionPct,
     pppParticipationPct,
     pppIncludeDeliveryFees,
@@ -402,7 +422,11 @@ export function AdminConsole() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         investmentUsdt,
-        runwayDays: pppRunwayDays,
+        runwayDays: selectedPppRunwayDays,
+        expirationTimestamp:
+          Number.isFinite(selectedPppExpirationTimestamp) && selectedPppExpirationTimestamp > 0
+            ? selectedPppExpirationTimestamp
+            : undefined,
         selectorMode: pppSelectorMode,
         protectionLevelBps: Math.round(pppProtectionPct * 100),
         participationLevelBps: Math.round(pppParticipationPct * 100),
@@ -580,16 +604,18 @@ export function AdminConsole() {
                     </select>
                   </label>
                   <label>
-                    <span className="field-label">Duration</span>
+                    <span className="field-label">Expiry date</span>
                     <select
                       className="admin-input"
-                      value={pppRunwayDays}
-                      onChange={(event) => setPppRunwayDays(Number(event.target.value))}
+                      value={selectedExpiry}
+                      onChange={(event) => setSelectedExpiry(event.target.value)}
+                      disabled={optionsLoading || pppExpiryOptions.length === 0}
                     >
-                      <option value={30}>1 month</option>
-                      <option value={92}>3 months</option>
-                      <option value={180}>6 months</option>
-                      <option value={365}>12 months</option>
+                      {pppExpiryOptions.map((expiry) => (
+                        <option key={expiry} value={expiry}>
+                          {formatExpiry(expiry)}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <label>
@@ -755,9 +781,9 @@ export function AdminConsole() {
               <span>{selectedProductType === "ppp" ? "Selected package" : "Selected instrument"}</span>
               <strong className="mono">
                 {selectedProductType === "ppp"
-                  ? pppAudit
-                    ? formatExpiry(pppAudit.expirationTimestamp)
-                    : "Auto-selected"
+                  ? selectedExpiry
+                    ? formatExpiry(Number(selectedExpiry))
+                    : "-"
                   : optionsLoading
                     ? "Loading..."
                     : instrumentName || "-"}
@@ -767,7 +793,13 @@ export function AdminConsole() {
               <button
                 className="admin-button"
                 onClick={runAudit}
-                disabled={busy || savingConfig || (selectedProductType !== "ppp" && !instrumentName)}
+                disabled={
+                  busy ||
+                  savingConfig ||
+                  (selectedProductType === "ppp"
+                    ? !selectedExpiry || pppExpiryOptions.length === 0
+                    : !instrumentName)
+                }
               >
                 Verify calculations
               </button>
@@ -791,7 +823,15 @@ export function AdminConsole() {
               <button
                 className="btn-ghost"
                 onClick={() => void refreshMarket()}
-                disabled={busy || savingConfig || optionsLoading || syncingMarket || (selectedProductType !== "ppp" && !instrumentName)}
+                disabled={
+                  busy ||
+                  savingConfig ||
+                  optionsLoading ||
+                  syncingMarket ||
+                  (selectedProductType === "ppp"
+                    ? !selectedExpiry || pppExpiryOptions.length === 0
+                    : !instrumentName)
+                }
               >
                 {syncingMarket ? "Refreshing..." : "Refresh market"}
               </button>
@@ -1063,6 +1103,15 @@ function formatExpiry(timestamp: number): string {
     .format(new Date(timestamp))
     .replace(",", "")
     .toUpperCase();
+}
+
+function dayCountFromExpiryTimestamp(expirationTimestamp: number): number {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const now = new Date();
+  const expiry = new Date(expirationTimestamp);
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const expiryUtc = Date.UTC(expiry.getUTCFullYear(), expiry.getUTCMonth(), expiry.getUTCDate());
+  return Math.max(0, Math.round((expiryUtc - todayUtc) / msPerDay));
 }
 
 function getAdminScenarioRange(candidate: DcnCandidate) {

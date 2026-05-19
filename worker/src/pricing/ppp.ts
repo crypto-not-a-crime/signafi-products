@@ -8,6 +8,7 @@ export type PppRecommendedLever = "none" | "participation" | "protection";
 export interface PppPricingRequest {
   investmentUsdt?: number;
   runwayDays?: number;
+  expirationTimestamp?: number;
   protectionLevelBps?: number;
   participationLevelBps?: number;
   selectorMode?: PppSelectorMode;
@@ -215,6 +216,10 @@ export function normalizePppPricingRequest(
   return {
     investmentUsdt: positiveOr(request.investmentUsdt, 1_000_000),
     runwayDays: positiveOr(request.runwayDays, 92),
+    expirationTimestamp:
+      Number.isFinite(Number(request.expirationTimestamp)) && Number(request.expirationTimestamp) > 0
+        ? Number(request.expirationTimestamp)
+        : 0,
     protectionLevelBps: clamp(Math.round(Number(request.protectionLevelBps ?? 8000)), MIN_PROTECTION_LEVEL * 10000, 10000),
     participationLevelBps: clamp(Math.round(Number(request.participationLevelBps ?? 3000)), 0, 10000),
     selectorMode,

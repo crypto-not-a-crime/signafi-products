@@ -247,6 +247,7 @@ export type PppRecommendedLever = "none" | "participation" | "protection";
 export interface PppPricingRequest {
   investmentUsdt?: number;
   runwayDays?: number;
+  expirationTimestamp?: number;
   protectionLevelBps?: number;
   participationLevelBps?: number;
   selectorMode?: PppSelectorMode;

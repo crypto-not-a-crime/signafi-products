@@ -311,8 +311,13 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
   const participationLevel = Number(input.participationLevelBps ?? 3000) / 10000;
   const targetFirmMarginBps = Number(input.targetFirmMarginBps ?? 500);
   const includeDeliveryFees = typeof input.includeDeliveryFees === "boolean" ? input.includeDeliveryFees : true;
+  const expirationTimestamp =
+    typeof input.expirationTimestamp === "number" && Number.isFinite(input.expirationTimestamp)
+      ? input.expirationTimestamp
+      : undefined;
   const best = mockPppCandidate({
     investmentUsdt,
+    expirationTimestamp,
     selectorMode,
     protectionLevel: selectorMode === "auto_protection" ? 0.753 : protectionLevel,
     protectionLevelBps: Math.round((selectorMode === "auto_protection" ? 0.753 : protectionLevel) * 10000),

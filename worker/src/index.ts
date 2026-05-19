@@ -896,6 +896,7 @@ function buildPppMarketPackages(
   nowMs: number
 ): PppMarketPackageInput[] {
   const selectorMode = request.selectorMode === "closest" || request.selectorMode === "auto_protection" ? request.selectorMode : "auto_participation";
+  const requestedExpirationTimestamp = Number(request.expirationTimestamp);
   const protectionLevel = Math.min(1, Math.max(0.1, Number(request.protectionLevelBps ?? 8000) / 10000));
   const targetFloorStrike = spotPrice * protectionLevel;
   const byExpiry = new Map<number, JoinedPutRow[]>();
@@ -908,6 +909,13 @@ function buildPppMarketPackages(
 
   const packages: PppMarketPackageInput[] = [];
   for (const [expirationTimestamp, expiryRows] of byExpiry) {
+    if (
+      Number.isFinite(requestedExpirationTimestamp) &&
+      requestedExpirationTimestamp > 0 &&
+      expirationTimestamp !== requestedExpirationTimestamp
+    ) {
+      continue;
+    }
     const calls = expiryRows.filter((row) => row.option_type === "call" && isPositiveFinite(row.ask_price));
     const bidPuts = expiryRows.filter((row) => row.option_type === "put" && isPositiveFinite(row.bid_price));
     const askPuts = expiryRows.filter((row) => row.option_type === "put" && isPositiveFinite(row.ask_price));
