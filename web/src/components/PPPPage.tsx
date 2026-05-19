@@ -21,7 +21,7 @@ export function PPPPage() {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [duration, setDuration] = useState("3m");
   const [selectorMode, setSelectorMode] = useState<PppSelectorMode>("auto_participation");
-  const [priorityLever, setPriorityLever] = useState<PppPriorityLever>("duration");
+  const [priorityLever, setPriorityLever] = useState<PppPriorityLever>("protection");
   const [protectionPct, setProtectionPct] = useState(80);
   const [participationPct, setParticipationPct] = useState(30);
   const [data, setData] = useState<PppPricingResponse | null>(null);
@@ -543,8 +543,8 @@ function getProductFloorPrice(candidate: PppCandidate) {
 function getPppPriorityOptions(selectorMode: PppSelectorMode): Array<{ id: PppPriorityLever; label: string }> {
   if (selectorMode === "auto_participation") {
     return [
-      { id: "duration", label: "Prioritize Duration" },
-      { id: "protection", label: "Prioritize Protection" }
+      { id: "protection", label: "Prioritize Protection" },
+      { id: "duration", label: "Prioritize Duration" }
     ];
   }
   if (selectorMode === "auto_protection") {
