@@ -13,6 +13,7 @@ import type {
 } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
+import { calculatePppScenario, getPppScenarioRange, type PppAdminScenarioResult } from "@/lib/ppp-scenario";
 import {
   buildDcnVerificationGuide,
   buildPppVerificationGuide,
@@ -229,6 +230,14 @@ export function AdminConsole() {
       current === null || current < range.min || current > range.max ? range.defaultPrice : current
     );
   }, [audit?.instrumentName, audit?.strike]);
+
+  useEffect(() => {
+    if (!pppAudit) return;
+    const range = getPppScenarioRange(pppAudit);
+    setExpiryPrice((current) =>
+      current === null || current < range.min || current > range.max ? range.defaultPrice : current
+    );
+  }, [pppAudit?.expirationTimestamp, pppAudit?.spotPrice]);
 
   async function refreshHealth() {
     const response = await fetch("/api/admin/market-health", { cache: "no-store" });
@@ -466,6 +475,7 @@ export function AdminConsole() {
     const payload = (await response.json()) as { calculation?: PppCandidate; bestCandidate?: PppCandidate; error?: string };
     const calculation = payload.calculation ?? payload.bestCandidate ?? null;
     setPppAudit(calculation);
+    setExpiryPrice(null);
     setVerificationRunId((current) => current + 1);
     return calculation;
   }
@@ -542,6 +552,12 @@ export function AdminConsole() {
   const selectedScenario = useMemo(
     () => (audit && selectedExpiryPrice !== null ? calculateScenario(audit, selectedExpiryPrice) : null),
     [audit, selectedExpiryPrice]
+  );
+  const pppScenarioRange = pppAudit ? getPppScenarioRange(pppAudit) : null;
+  const selectedPppExpiryPrice = pppScenarioRange ? expiryPrice ?? pppScenarioRange.defaultPrice : null;
+  const selectedPppScenario = useMemo(
+    () => (pppAudit && selectedPppExpiryPrice !== null ? calculatePppScenario(pppAudit, selectedPppExpiryPrice) : null),
+    [pppAudit, selectedPppExpiryPrice]
   );
   const dcnVerificationSteps = useMemo(
     () => (audit ? buildDcnVerificationGuide(audit, selectedScenario) : []),
@@ -906,7 +922,16 @@ export function AdminConsole() {
               </p>
             ) : null}
 
-            {pppAudit ? <PppAdminAuditPanel audit={pppAudit} verificationRunId={verificationRunId} /> : null}
+            {pppAudit ? (
+              <PppAdminAuditPanel
+                audit={pppAudit}
+                verificationRunId={verificationRunId}
+                scenarioRange={pppScenarioRange}
+                selectedExpiryPrice={selectedPppExpiryPrice}
+                selectedScenario={selectedPppScenario}
+                onExpiryPriceChange={setExpiryPrice}
+              />
+            ) : null}
 
             {audit ? (
               <>
@@ -1081,6 +1106,9 @@ export function AdminConsole() {
                   <CheckRow label="Participation positive" ok={pppAudit.checks.participationPositive} />
                   <CheckRow label="Call hedge covers participation" ok={pppAudit.checks.callHedgeAtOrAboveParticipation ?? true} />
                   <CheckRow label="Target firm margin met" ok={pppAudit.checks.targetProfitMet} />
+                  {selectedPppScenario ? (
+                    <CheckRow label="Selected firm P&L positive" ok={selectedPppScenario.issuerPnlUsdt > 0} />
+                  ) : null}
                 </>
               ) : audit && selectedScenario ? (
                 <>
@@ -1351,8 +1379,27 @@ function CalculationVerificationGuide({
   );
 }
 
-function PppAdminAuditPanel({ audit, verificationRunId }: { audit: PppCandidate; verificationRunId: number }) {
+function PppAdminAuditPanel({
+  audit,
+  verificationRunId,
+  scenarioRange,
+  selectedExpiryPrice,
+  selectedScenario,
+  onExpiryPriceChange
+}: {
+  audit: PppCandidate;
+  verificationRunId: number;
+  scenarioRange: ReturnType<typeof getPppScenarioRange> | null;
+  selectedExpiryPrice: number | null;
+  selectedScenario: PppAdminScenarioResult | null;
+  onExpiryPriceChange: (value: number) => void;
+}) {
   const verificationSteps = useMemo(() => buildPppVerificationGuide(audit), [audit]);
+  const traceRows = useMemo(() => {
+    if (!selectedScenario) return audit.formulaTrace;
+    const baseTrace = audit.formulaTrace.filter((row) => !row.cell.startsWith("Scenario PnL!"));
+    return [...baseTrace, ...selectedScenario.formulaTrace];
+  }, [audit.formulaTrace, selectedScenario]);
 
   return (
     <>
@@ -1367,6 +1414,12 @@ function PppAdminAuditPanel({ audit, verificationRunId }: { audit: PppCandidate;
           value={formatPct(audit.quotedProtection, 2)}
           tone={audit.eligible ? "ok" : "warn"}
         />
+        <Metric
+          label="Selected firm P&L"
+          value={formatUsd(selectedScenario?.issuerPnlUsdt)}
+          tone={(selectedScenario?.issuerPnlUsdt ?? 0) > 0 ? "ok" : "fail"}
+        />
+        <Metric label="Client payout" value={formatUsd(selectedScenario?.clientPayoutUsdt, 2)} />
         <Metric label="BTC_USDC spot" value={formatUsd(audit.spotPrice)} />
         <Metric
           label="Minimum scenario P&L"
@@ -1375,6 +1428,37 @@ function PppAdminAuditPanel({ audit, verificationRunId }: { audit: PppCandidate;
         />
         <Metric label="Target firm margin" value={formatPct(audit.targetFirmMarginBps / 10000, 1)} />
       </div>
+
+      {scenarioRange && selectedExpiryPrice !== null && selectedScenario ? (
+        <div className="scenario-panel">
+          <div className="row-between">
+            <div>
+              <div className="field-label">BTC expiry price</div>
+              <strong>{selectedScenario.scenarioLabel}</strong>
+            </div>
+            <strong className="mono">{formatUsd(selectedExpiryPrice)}</strong>
+          </div>
+          <input
+            type="range"
+            min={scenarioRange.min}
+            max={scenarioRange.max}
+            step={scenarioRange.step}
+            value={selectedExpiryPrice}
+            onChange={(event) => onExpiryPriceChange(Number(event.target.value))}
+          />
+          <div className="range-labels">
+            <span>{formatUsd(scenarioRange.min)}</span>
+            <span>Spot {formatUsd(audit.spotPrice)}</span>
+            <span>{formatUsd(scenarioRange.max)}</span>
+          </div>
+          <div className="metric-grid">
+            <Metric label="Annualized firm P&L" value={formatPct(selectedScenario.annualizedFirmPnl)} />
+            <Metric label="Net hedge payoff" value={formatUsd(selectedScenario.netHedgePayoffUsdt, 2)} />
+            <Metric label="Delivery fees" value={formatUsd(selectedScenario.deliveryFeesUsdt, 2)} />
+            <Metric label="Client payout" value={formatUsd(selectedScenario.clientPayoutUsdt, 2)} />
+          </div>
+        </div>
+      ) : null}
 
       <div className="scenario-panel">
         <div className="row-between">
@@ -1439,8 +1523,8 @@ function PppAdminAuditPanel({ audit, verificationRunId }: { audit: PppCandidate;
           </tr>
         </thead>
         <tbody>
-          {audit.formulaTrace.map((row) => (
-            <tr key={`${row.cell}-${row.label}`}>
+          {traceRows.map((row, index) => (
+            <tr key={`${row.cell}-${row.label}-${index}`}>
               <td className="mono">{row.cell}</td>
               <td>{row.label}</td>
               <td>{row.formula}</td>
