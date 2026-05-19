@@ -34,6 +34,9 @@ export function getPppRecommendations({
   if (selectorMode === "auto_participation" && priorityLever === "duration") {
     return shapeDurationPriorityRecommendations(pool, best, targetProtectionBps, limit);
   }
+  if (selectorMode === "auto_participation" && priorityLever === "protection") {
+    return shapeAutoParticipationProtectionPriorityRecommendations(pool, targetProtectionBps, limit);
+  }
   if (selectorMode === "auto_protection" && priorityLever === "duration") {
     return shapeAutoProtectionDurationPriorityRecommendations(pool, best, targetParticipationBps ?? 0, limit);
   }
@@ -99,6 +102,35 @@ function nearestProtectionCandidate(
     }
   });
   return best;
+}
+
+function shapeAutoParticipationProtectionPriorityRecommendations(
+  candidates: PppCandidate[],
+  targetProtectionBps: number,
+  limit: number
+): PppCandidate[] {
+  const selected: PppCandidate[] = [];
+  const selectedKeys = new Set<string>();
+  const expiryOrder = [...new Set(candidates.map((candidate) => candidate.expirationTimestamp))];
+
+  for (const expirationTimestamp of expiryOrder) {
+    const sameExpiry = candidates.filter((candidate) => candidate.expirationTimestamp === expirationTimestamp);
+    const next = nearestProtectionCandidate(sameExpiry, targetProtectionBps, targetProtectionBps, selectedKeys);
+    if (!next) continue;
+    selected.push(next);
+    selectedKeys.add(getPppCandidateKey(next));
+    if (selected.length >= limit) return selected;
+  }
+
+  for (const candidate of candidates) {
+    const key = getPppCandidateKey(candidate);
+    if (selectedKeys.has(key)) continue;
+    selected.push(candidate);
+    selectedKeys.add(key);
+    if (selected.length >= limit) break;
+  }
+
+  return selected;
 }
 
 function shapeAutoProtectionDurationPriorityRecommendations(
@@ -211,6 +243,10 @@ function collapseRecommendationCandidates(
   selectorMode: PppSelectorMode,
   candidates: Array<PppCandidate | null>
 ): PppCandidate[] {
+  if (selectorMode === "auto_participation") {
+    return pruneAutoParticipationDominatedCandidates(uniqueByCandidateKey(candidates));
+  }
+
   if (selectorMode !== "auto_protection") return uniqueByCandidateKey(candidates);
 
   const byFixedInputs = new Map<string, PppCandidate>();
@@ -226,6 +262,30 @@ function collapseRecommendationCandidates(
     }
   }
   return [...byFixedInputs.values()];
+}
+
+function pruneAutoParticipationDominatedCandidates(candidates: PppCandidate[]): PppCandidate[] {
+  return candidates.filter(
+    (candidate, index) =>
+      !candidates.some(
+        (other, otherIndex) => otherIndex !== index && autoParticipationDisplayDominates(other, candidate)
+      )
+  );
+}
+
+function autoParticipationDisplayDominates(a: PppCandidate, b: PppCandidate): boolean {
+  if (a.expirationTimestamp !== b.expirationTimestamp) return false;
+  if (!a.eligible && b.eligible) return false;
+
+  const aProtection = normalizeBps(a.quotedProtectionBps, a.quotedProtection ?? a.protectionLevel);
+  const bProtection = normalizeBps(b.quotedProtectionBps, b.quotedProtection ?? b.protectionLevel);
+  const aParticipation = normalizeBps(a.quotedParticipationBps, a.quotedParticipation);
+  const bParticipation = normalizeBps(b.quotedParticipationBps, b.quotedParticipation);
+  if (aProtection < 0 || bProtection < 0 || aParticipation < 0 || bParticipation < 0) return false;
+
+  const atLeastAsGood = aProtection >= bProtection && aParticipation >= bParticipation;
+  const visiblyBetter = aProtection > bProtection || aParticipation > bParticipation || (a.eligible && !b.eligible);
+  return atLeastAsGood && visiblyBetter;
 }
 
 function compareProtectionQuote(a: PppCandidate, b: PppCandidate): number {

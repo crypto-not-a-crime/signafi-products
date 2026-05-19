@@ -593,7 +593,7 @@ export function selectPppCandidate(
   candidates: PppCandidate[]
 ): PppPricingResponse["recommendation"] & { candidates: PppCandidate[]; bestCandidate: PppCandidate | null } {
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
-  const sorted = collapsePppCandidatesForSelection(selectorMode, candidates).sort((a, b) => comparePppCandidates(request, a, b));
+  const sorted = collapsePppCandidatesForSelection(request, candidates).sort((a, b) => comparePppCandidates(request, a, b));
   const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
   const recommendedLever = getPppRecommendedLever(selectorMode);
   const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
@@ -620,7 +620,9 @@ export function selectPppCandidate(
   };
 }
 
-function collapsePppCandidatesForSelection(selectorMode: PppSelectorMode, candidates: PppCandidate[]): PppCandidate[] {
+function collapsePppCandidatesForSelection(request: NormalizedPppPricingRequest, candidates: PppCandidate[]): PppCandidate[] {
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  if (selectorMode === "auto_participation") return pruneAutoParticipationDominatedCandidates(candidates);
   if (selectorMode !== "auto_protection") return [...candidates];
   const byFixedInputs = new Map<string, PppCandidate>();
   for (const candidate of candidates) {
@@ -643,6 +645,46 @@ function compareAutoProtectionFixedInputCandidate(a: PppCandidate, b: PppCandida
     () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
     () => compareAsc(a.maxSlippagePct, b.maxSlippagePct)
   ]);
+}
+
+function pruneAutoParticipationDominatedCandidates(candidates: PppCandidate[]): PppCandidate[] {
+  return candidates.filter(
+    (candidate, index) =>
+      !candidates.some(
+        (other, otherIndex) => otherIndex !== index && autoParticipationDisplayDominates(other, candidate)
+      )
+  );
+}
+
+function autoParticipationDisplayDominates(a: PppCandidate, b: PppCandidate): boolean {
+  if (a.expirationTimestamp !== b.expirationTimestamp) return false;
+  if (!a.eligible && b.eligible) return false;
+
+  const aProtection = candidateQuotedProtectionBps(a);
+  const bProtection = candidateQuotedProtectionBps(b);
+  const aParticipation = candidateQuotedParticipationBps(a);
+  const bParticipation = candidateQuotedParticipationBps(b);
+  if (aProtection === null || bProtection === null || aParticipation === null || bParticipation === null) return false;
+
+  const atLeastAsGood = aProtection >= bProtection && aParticipation >= bParticipation;
+  const visiblyBetter = aProtection > bProtection || aParticipation > bParticipation || (a.eligible && !b.eligible);
+  return atLeastAsGood && visiblyBetter;
+}
+
+function candidateQuotedProtectionBps(candidate: PppCandidate): number | null {
+  if (typeof candidate.quotedProtectionBps === "number" && Number.isFinite(candidate.quotedProtectionBps)) {
+    return Math.round(candidate.quotedProtectionBps);
+  }
+  const value = candidate.quotedProtection ?? candidate.protectionLevel;
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 10000) : null;
+}
+
+function candidateQuotedParticipationBps(candidate: PppCandidate): number | null {
+  if (typeof candidate.quotedParticipationBps === "number" && Number.isFinite(candidate.quotedParticipationBps)) {
+    return Math.round(candidate.quotedParticipationBps);
+  }
+  const value = candidate.quotedParticipation;
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 10000) : null;
 }
 
 export function scorePppPackageForShortlist(
@@ -699,7 +741,10 @@ function comparePppCandidates(
   const solvedProtectionComparator = () =>
     compareDesc(a.optimizedProtection ?? a.quotedProtection, b.optimizedProtection ?? b.quotedProtection);
   const solvedParticipationComparator = () =>
-    compareDesc(a.optimizedParticipation ?? a.quotedParticipation, b.optimizedParticipation ?? b.quotedParticipation);
+    compareBy([
+      () => compareDesc(a.quotedParticipation, b.quotedParticipation),
+      () => compareDesc(a.optimizedParticipation, b.optimizedParticipation)
+    ]);
 
   if (selectorMode === "auto_participation") {
     return compareBy([
