@@ -269,15 +269,21 @@ export function PPPPage() {
                   <h2 className="rail-title">PPP recommendations</h2>
                 </div>
                 <div className="rail-actions">
-                  <button className="rail-refresh-btn" disabled={loading} onClick={() => void fetchPricing()} type="button">
-                    {loading ? "Refreshing..." : "Refresh quotes"}
+                  <button
+                    aria-busy={loading}
+                    aria-label={loading ? "Refreshing quotes" : "Refresh quotes"}
+                    className="rail-refresh-btn"
+                    disabled={loading}
+                    onClick={() => void fetchPricing()}
+                    type="button"
+                  >
+                    {loading ? <span className="loading-spinner" aria-hidden="true" /> : "Refresh quotes"}
                   </button>
                   <span className={`status-badge ${data?.mock || !data ? "status-warn" : "status-live"}`}>
                     {data?.mock ? "Mock" : data ? "Live" : "Checking"}
                   </span>
                 </div>
               </div>
-              {loading ? <div className="rail-state">Refreshing Deribit depth and pricing...</div> : null}
               {error ? <div className="rail-state rail-error">{error}</div> : null}
               {data && !loading && candidates.length === 0 ? (
                 <div className="rail-state">No eligible PPP package passed the current checks.</div>

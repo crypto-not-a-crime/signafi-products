@@ -4,6 +4,7 @@ import { DeribitClient } from "../src/deribit";
 describe("Deribit private RPC", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("uses the proxy bearer for Vercel and forwards Deribit auth separately for margin checks", async () => {
@@ -60,5 +61,66 @@ describe("Deribit private RPC", () => {
         })
       })
     );
+  });
+
+  it("retries Deribit JSON-RPC rate-limit errors", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: 10028, message: "too_many_requests" }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            result: { instrument_name: "BTC_USDC", timestamp: 1779156600000, best_bid_price: 100, best_ask_price: 102 }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new DeribitClient("https://www.deribit.com/api/v2");
+    const resultPromise = client.ticker("BTC_USDC");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
+
+    expect(result.instrument_name).toBe("BTC_USDC");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries transient HTTP failures", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            result: { instrument_name: "BTC_USDC", timestamp: 1779156600000, best_bid_price: 100, best_ask_price: 102 }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new DeribitClient("https://www.deribit.com/api/v2");
+    const resultPromise = client.ticker("BTC_USDC");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
+
+    expect(result.best_bid_price).toBe(100);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

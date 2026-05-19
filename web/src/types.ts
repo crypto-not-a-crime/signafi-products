@@ -25,6 +25,7 @@ export interface FormulaTraceRow {
 }
 
 export interface PricingConfig {
+  marketDataMode: "legacy_rest" | "hybrid_cache";
   sellPutPricingMethod: SellPutPricingMethod;
   firmMarginBps: number;
   sellPutTargetFirmProfitBps: number;

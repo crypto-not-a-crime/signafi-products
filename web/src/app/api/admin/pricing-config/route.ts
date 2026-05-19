@@ -3,6 +3,7 @@ import { proxyToWorker, readJson } from "@/lib/server/backend";
 import { requireAdminApi } from "@/lib/server/admin";
 
 const mockPricingConfig = {
+  marketDataMode: "legacy_rest",
   sellPutPricingMethod: "firm_margin",
   firmMarginBps: 200,
   sellPutTargetFirmProfitBps: 500,
@@ -28,6 +29,7 @@ export async function POST(request: NextRequest) {
   const auth = await requireAdminApi();
   if (auth) return auth;
   const body = (await readJson(request.clone())) as {
+    marketDataMode?: string;
     sellPutPricingMethod?: string;
     firmMarginBps?: number;
     sellPutTargetFirmProfitBps?: number;
@@ -39,6 +41,10 @@ export async function POST(request: NextRequest) {
     mock: true,
     pricingConfig: {
       ...mockPricingConfig,
+      marketDataMode:
+        body.marketDataMode === "legacy_rest" || body.marketDataMode === "hybrid_cache"
+          ? body.marketDataMode
+          : mockPricingConfig.marketDataMode,
       sellPutPricingMethod:
         body.sellPutPricingMethod === "target_firm_profit" || body.sellPutPricingMethod === "firm_margin"
           ? body.sellPutPricingMethod

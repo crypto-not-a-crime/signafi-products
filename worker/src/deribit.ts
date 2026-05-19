@@ -100,6 +100,9 @@ interface DeribitRpcResponse<T> {
   };
 }
 
+const MAX_RPC_ATTEMPTS = 4;
+const RPC_TIMEOUT_MS = 8_000;
+
 export class DeribitClient {
   private accessToken: { token: string; expiresAt: number } | null = null;
 
@@ -179,34 +182,59 @@ export class DeribitClient {
   private async rpc<T>(method: string, params: Record<string, unknown>, deribitAccessToken?: string): Promise<T> {
     const url = `${this.baseUrl.replace(/\/$/, "")}/`;
     let response: Response | null = null;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      response = await fetch(url, {
-        method: "POST",
-        headers: this.headers(deribitAccessToken),
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: Date.now(),
-          method,
-          params
-        })
-      });
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < MAX_RPC_ATTEMPTS; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: this.headers(deribitAccessToken),
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: Date.now(),
+            method,
+            params
+          }),
+          signal: controller.signal
+        });
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : "network error";
+        if (attempt === MAX_RPC_ATTEMPTS - 1) {
+          throw new Error(`Deribit ${method} failed after ${MAX_RPC_ATTEMPTS} attempts: ${lastError}`);
+        }
+        await sleep(retryDelayMs(attempt));
+        continue;
+      } finally {
+        clearTimeout(timeout);
+      }
 
-      if (response.ok || !isRetryableStatus(response.status) || attempt === 3) break;
-      await sleep(500 * 2 ** attempt);
+      if (!response.ok) {
+        lastError = `HTTP ${response.status}`;
+        if (!isRetryableStatus(response.status) || attempt === MAX_RPC_ATTEMPTS - 1) break;
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+
+      const payload = (await response.json()) as DeribitRpcResponse<T>;
+      if (payload.error) {
+        lastError = `error ${payload.error.code}: ${payload.error.message}`;
+        if (!isRetryableErrorCode(payload.error.code) || attempt === MAX_RPC_ATTEMPTS - 1) {
+          throw new Error(`Deribit ${method} ${lastError}`);
+        }
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      if (payload.result === undefined) {
+        throw new Error(`Deribit ${method} returned no result`);
+      }
+      return payload.result;
     }
 
     if (!response?.ok) {
-      throw new Error(`Deribit ${method} failed with ${response?.status ?? "unknown"}`);
+      throw new Error(`Deribit ${method} failed after ${MAX_RPC_ATTEMPTS} attempts: ${lastError ?? "unknown"}`);
     }
-
-    const payload = (await response.json()) as DeribitRpcResponse<T>;
-    if (payload.error) {
-      throw new Error(`Deribit ${method} error ${payload.error.code}: ${payload.error.message}`);
-    }
-    if (payload.result === undefined) {
-      throw new Error(`Deribit ${method} returned no result`);
-    }
-    return payload.result;
+    throw new Error(`Deribit ${method} failed after ${MAX_RPC_ATTEMPTS} attempts`);
   }
 
   private headers(deribitAccessToken?: string): Record<string, string> {
@@ -246,6 +274,14 @@ function finitePositive(value: number | null | undefined): number | null {
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || (status >= 500 && status < 600);
+}
+
+function isRetryableErrorCode(code: number): boolean {
+  return code === 10028 || code === 10066 || code === 10067;
+}
+
+function retryDelayMs(attempt: number): number {
+  return 400 * 2 ** attempt + Math.floor(Math.random() * 150);
 }
 
 function sleep(ms: number): Promise<void> {

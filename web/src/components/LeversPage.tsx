@@ -439,7 +439,6 @@ export function LeversPage({
 
   const statusCards = (
     <>
-      {loading ? <div className="candidate-card">Refreshing Deribit depth and pricing...</div> : null}
       {error ? (
         <div className="candidate-card">
           <span className="status-badge status-fail">{error}</span>
@@ -612,14 +611,20 @@ function RecommendationRail({
           <h2 className="rail-title">Product recommendations</h2>
         </div>
         <div className="rail-actions">
-          <button className="rail-refresh-btn" disabled={loading} onClick={onRefresh} type="button">
-            {loading ? "Refreshing..." : "Refresh quotes"}
+          <button
+            aria-busy={loading}
+            aria-label={loading ? "Refreshing quotes" : "Refresh quotes"}
+            className="rail-refresh-btn"
+            disabled={loading}
+            onClick={onRefresh}
+            type="button"
+          >
+            {loading ? <span className="loading-spinner" aria-hidden="true" /> : "Refresh quotes"}
           </button>
           <span className={`status-badge ${statusClassName}`}>{statusLabel}</span>
         </div>
       </div>
       <p className="card-copy rail-copy">The best fit stays in view while you adjust the levers.</p>
-      {loading ? <div className="rail-state">Refreshing Deribit depth and pricing...</div> : null}
       {error ? <div className="rail-state rail-error">{error}</div> : null}
       {!hasData && !loading && !error ? <div className="rail-state">Calculating recommendations...</div> : null}
       {hasData && !loading && candidates.length === 0 ? (

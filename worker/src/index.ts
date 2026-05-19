@@ -1,6 +1,7 @@
 import {
   getCallCandidates,
   getInstrumentQuote,
+  getMarketDataSyncStatus,
   getPppOptionCandidates,
   getPricingConfig,
   getPutCandidates,
@@ -8,12 +9,14 @@ import {
   type JoinedPutRow,
   insertAudit,
   insertOrderBookSnapshot,
+  recordMarketDataSync,
   updatePricingConfig,
   upsertBookSummaries,
   upsertInstruments,
   upsertTicker
 } from "./db";
-import { DeribitClient, spotPriceFromTicker, type DeribitTicker } from "./deribit";
+import { DeribitClient, spotPriceFromTicker, type DeribitOrderBook, type DeribitTicker } from "./deribit";
+import { OrderBookCache, type CachedOrderBookResult } from "./market-data-cache";
 import {
   calculateDcnSellCall,
   calculateDcnSellPut,
@@ -36,6 +39,12 @@ import {
   type PppPricingRequest
 } from "./pricing/ppp";
 import { buildYieldSurface, type YieldSurfaceOptionType } from "./pricing/yield-surface";
+
+const DEFAULT_DEPTH_CACHE_MAX_AGE_MS = 5_000;
+const STREAM_TICKER_PERSIST_INTERVAL_MS = 15 * 60 * 1000;
+const DEPTH_REQUEST_SPACING_MS = 75;
+const INSTRUMENT_SYNC_INTERVAL_MS = 60 * 60 * 1000;
+const SUMMARY_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 
 export interface Env {
   DB: D1Database;
@@ -98,6 +107,11 @@ export default {
 export class MarketDataDurableObject {
   private ws: WebSocket | null = null;
   private quotes = new Map<string, DeribitTicker>();
+  private quoteReceivedAt = new Map<string, number>();
+  private quotePersistedAt = new Map<string, number>();
+  private orderBookCache: OrderBookCache | null = null;
+  private depthQueue: Promise<void> = Promise.resolve();
+  private lastDepthRequestAt = 0;
   private lastConnectAt = 0;
   private subscribed: string[] = [];
 
@@ -109,20 +123,47 @@ export class MarketDataDurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.endsWith("/status")) {
+      const nowMs = Date.now();
+      const subscribedSet = new Set(this.subscribed);
+      let freshStreamQuoteCount = 0;
+      for (const [instrument, receivedAt] of this.quoteReceivedAt) {
+        if (subscribedSet.has(instrument) && nowMs - receivedAt <= 10_000) freshStreamQuoteCount += 1;
+      }
       return json({
         connected: this.ws?.readyState === WebSocket.OPEN,
         lastConnectAt: this.lastConnectAt,
         subscribed: this.subscribed,
-        memoryQuoteCount: this.quotes.size
+        subscribedCount: this.subscribed.length,
+        memoryQuoteCount: this.quotes.size,
+        freshStreamQuoteCount,
+        latestStreamQuoteAt: maxNumber(Array.from(this.quoteReceivedAt.values())),
+        ...this.getOrderBookCache().status(DEFAULT_DEPTH_CACHE_MAX_AGE_MS)
       });
     }
 
     if (url.pathname.endsWith("/quote")) {
       const instrument = url.searchParams.get("instrument");
+      const quote = instrument ? this.quotes.get(instrument) ?? null : null;
+      const receivedAt = instrument ? this.quoteReceivedAt.get(instrument) ?? null : null;
       return json({
         instrument,
-        quote: instrument ? this.quotes.get(instrument) ?? null : null
+        quote,
+        receivedAt,
+        ageMs: receivedAt === null ? null : Math.max(0, Date.now() - receivedAt)
       });
+    }
+
+    if (url.pathname.endsWith("/order-book")) {
+      const instrument = url.searchParams.get("instrument");
+      if (!instrument) return json({ error: "instrument is required" }, 400);
+      const depth = normalizeDepth(Number(url.searchParams.get("depth") ?? 100));
+      const maxAgeMs = Math.max(1_000, Math.min(10_000, Number(url.searchParams.get("maxAgeMs") ?? DEFAULT_DEPTH_CACHE_MAX_AGE_MS)));
+      try {
+        const result = await this.getOrderBookCache().get(instrument, depth, maxAgeMs);
+        return json(result);
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "Order book fetch failed" }, 502);
+      }
     }
 
     if (url.pathname.endsWith("/start")) {
@@ -181,8 +222,45 @@ export class MarketDataDurableObject {
     const payload = JSON.parse(message) as { method?: string; params?: { data?: DeribitTicker } };
     const data = payload.params?.data;
     if (!data?.instrument_name) return;
+    const nowMs = Date.now();
     this.quotes.set(data.instrument_name, data);
-    await upsertTicker(this.env.DB, data, Date.now());
+    this.quoteReceivedAt.set(data.instrument_name, nowMs);
+    if (!this.shouldPersistTicker(data.instrument_name, nowMs)) return;
+    await upsertTicker(this.env.DB, data, nowMs);
+    this.quotePersistedAt.set(data.instrument_name, nowMs);
+  }
+
+  private shouldPersistTicker(instrumentName: string, nowMs: number): boolean {
+    const lastPersistedAt = this.quotePersistedAt.get(instrumentName) ?? 0;
+    return nowMs - lastPersistedAt >= STREAM_TICKER_PERSIST_INTERVAL_MS;
+  }
+
+  private getOrderBookCache(): OrderBookCache {
+    if (!this.orderBookCache) {
+      const client = new DeribitClient(this.env.DERIBIT_BASE_URL, this.env.DERIBIT_PROXY_TOKEN);
+      this.orderBookCache = new OrderBookCache((instrumentName, depth) =>
+        this.throttleDepthRequest(() => client.getOrderBook(instrumentName, depth))
+      );
+    }
+    return this.orderBookCache;
+  }
+
+  private async throttleDepthRequest<T>(request: () => Promise<T>): Promise<T> {
+    const previous = this.depthQueue;
+    let release!: () => void;
+    this.depthQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      const nowMs = Date.now();
+      const waitMs = Math.max(0, this.lastDepthRequestAt + DEPTH_REQUEST_SPACING_MS - nowMs);
+      if (waitMs > 0) await sleep(waitMs);
+      this.lastDepthRequestAt = Date.now();
+      return await request();
+    } finally {
+      release();
+    }
   }
 }
 
@@ -279,12 +357,12 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
   let candidates = await getPutCandidates(env.DB, nowMs);
 
   if (candidates.length === 0) {
-    await syncMarketData(env);
+    await syncMarketData(env, { force: true });
     candidates = await getPutCandidates(env.DB, nowMs);
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(client);
+  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
   const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 6), 12);
   const shortlisted = candidates
     .map((row) => ({ row, score: scorePutCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
@@ -295,7 +373,13 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
   const priced = [];
 
   for (const item of shortlisted) {
-    const book = await client.getOrderBook(item.row.instrument_name, normalized.orderBookDepth ?? config.defaultOrderBookDepth);
+    const book = await getOrderBookForPricing(
+      env,
+      client,
+      config,
+      item.row.instrument_name,
+      normalized.orderBookDepth ?? config.defaultOrderBookDepth
+    );
     const calculation = priceCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
     priced.push({ score: item.score, snapshotId: null, ...calculation });
   }
@@ -319,12 +403,12 @@ async function handleSellCallPrice(request: Request, env: Env): Promise<Response
   let candidates = await getCallCandidates(env.DB, nowMs);
 
   if (candidates.length === 0) {
-    await syncMarketData(env);
+    await syncMarketData(env, { force: true });
     candidates = await getCallCandidates(env.DB, nowMs);
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(client);
+  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
   const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 6), 12);
   const shortlisted = candidates
     .map((row) => ({ row, score: scoreCallCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
@@ -335,7 +419,13 @@ async function handleSellCallPrice(request: Request, env: Env): Promise<Response
   const priced = [];
 
   for (const item of shortlisted) {
-    const book = await client.getOrderBook(item.row.instrument_name, normalized.orderBookDepth ?? config.defaultOrderBookDepth);
+    const book = await getOrderBookForPricing(
+      env,
+      client,
+      config,
+      item.row.instrument_name,
+      normalized.orderBookDepth ?? config.defaultOrderBookDepth
+    );
     const calculation = priceCallCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
     priced.push({ score: item.score, snapshotId: null, ...calculation });
   }
@@ -378,8 +468,8 @@ async function handleDcnAudit(request: Request, env: Env): Promise<Response> {
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const [book, spotPrice] = await Promise.all([
-    client.getOrderBook(payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth),
-    getBtcUsdcSpotPrice(client)
+    getOrderBookForPricing(env, client, config, payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth),
+    getBtcUsdcSpotPrice(env, client, config)
   ]);
   const snapshotId = await insertOrderBookSnapshot(
     env.DB,
@@ -400,13 +490,19 @@ async function handleVerifyQuote(request: Request, env: Env): Promise<Response> 
   const payload = await request.json<{ instrumentName?: string; depth?: number }>();
   if (!payload.instrumentName) return json({ error: "instrumentName is required" }, 400);
 
+  const config = await getPricingConfig(env.DB);
   const stored = await getInstrumentQuote(env.DB, payload.instrumentName);
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const [ticker, book, memory] = await Promise.all([
+  const [ticker, memory] = await Promise.all([
     client.ticker(payload.instrumentName),
-    client.getOrderBook(payload.instrumentName, payload.depth ?? 100),
     getDurableObjectQuote(env, payload.instrumentName)
   ]);
+  const depth = normalizeDepth(payload.depth ?? config.defaultOrderBookDepth);
+  const cachedBook =
+    config.marketDataMode === "hybrid_cache"
+      ? await getDurableObjectOrderBook(env, payload.instrumentName, depth, DEFAULT_DEPTH_CACHE_MAX_AGE_MS)
+      : null;
+  const book = cachedBook?.book ?? (await client.getOrderBook(payload.instrumentName, depth));
 
   const nowMs = Date.now();
   const storedBid = stored?.bid_price ?? null;
@@ -422,9 +518,14 @@ async function handleVerifyQuote(request: Request, env: Env): Promise<Response> 
     checks: {
       storedExists: stored !== null,
       liveExists: liveBid !== null,
-      storedFresh: stored?.ingested_at ? (nowMs - stored.ingested_at) / 1000 <= 10 : false,
+      storedFresh: stored?.ingested_at ? (nowMs - stored.ingested_at) / 1000 <= config.quoteFreshnessSeconds : false,
       bidDriftUnder10Bps: bidDriftPct !== null ? bidDriftPct <= 0.001 : false,
       depthAvailable: (book.bids ?? []).length > 0
+    },
+    source: {
+      marketDataMode: config.marketDataMode,
+      orderBook: cachedBook?.source ?? "deribit_rest",
+      orderBookAgeMs: cachedBook?.ageMs ?? null
     },
     drift: {
       storedBid,
@@ -471,6 +572,7 @@ async function handleGetPricingConfig(_request: Request, env: Env): Promise<Resp
 
 async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Response> {
   const payload = await request.json<{
+    marketDataMode?: string;
     sellPutPricingMethod?: string;
     firmMarginBps?: number;
     sellPutTargetFirmProfitBps?: number;
@@ -478,6 +580,13 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
     pppTargetFirmMarginBps?: number;
     pppIncludeDeliveryFees?: boolean;
   }>();
+  if (
+    payload.marketDataMode !== undefined &&
+    payload.marketDataMode !== "legacy_rest" &&
+    payload.marketDataMode !== "hybrid_cache"
+  ) {
+    return json({ error: "marketDataMode must be legacy_rest or hybrid_cache" }, 400);
+  }
   if (
     payload.sellPutPricingMethod !== undefined &&
     payload.sellPutPricingMethod !== "firm_margin" &&
@@ -525,6 +634,10 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
   const pricingConfig = await updatePricingConfig(
     env.DB,
     {
+      marketDataMode:
+        payload.marketDataMode === "legacy_rest" || payload.marketDataMode === "hybrid_cache"
+          ? payload.marketDataMode
+          : undefined,
       sellPutPricingMethod:
         payload.sellPutPricingMethod === "target_firm_profit" || payload.sellPutPricingMethod === "firm_margin"
           ? payload.sellPutPricingMethod
@@ -561,7 +674,7 @@ async function handleRefreshSelectedMarket(request: Request, env: Env): Promise<
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const [ticker, book, spotTicker] = await Promise.all([
     client.ticker(payload.instrumentName),
-    client.getOrderBook(payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth),
+    getOrderBookForPricing(env, client, config, payload.instrumentName, normalized.orderBookDepth ?? config.defaultOrderBookDepth),
     client.btcUsdcSpotTicker()
   ]);
   const nowMs = Date.now();
@@ -601,49 +714,92 @@ async function handleMarketHealth(_request: Request, env: Env): Promise<Response
   const nowMs = Date.now();
   const summaryFreshnessSeconds = 180;
   const liveFreshnessSeconds = 10;
-  const [instrumentStats, quoteStats, summaryStaleStats, liveTickerStats, latestAudit, streamStatus] = await Promise.all([
-    env.DB.prepare("SELECT COUNT(*) AS count FROM option_instruments WHERE is_active = 1").first<{ count: number }>(),
-    env.DB.prepare("SELECT COUNT(*) AS count, MAX(ingested_at) AS latest FROM option_quotes_latest").first<{
-      count: number;
-      latest: number;
-    }>(),
+  const [
+    config,
+    syncStatus,
+    instrumentStats,
+    quoteStats,
+    summaryStaleStats,
+    latestAudit,
+    streamStatus
+  ] = await Promise.all([
+    getPricingConfig(env.DB),
+    getMarketDataSyncStatus(env.DB),
     env.DB
-      .prepare("SELECT COUNT(*) AS count FROM option_quotes_latest WHERE ingested_at < ?")
-      .bind(nowMs - summaryFreshnessSeconds * 1000)
+      .prepare("SELECT COUNT(*) AS count FROM option_instruments WHERE is_active = 1 AND expiration_timestamp > ?")
+      .bind(nowMs)
       .first<{ count: number }>(),
     env.DB
-      .prepare("SELECT COUNT(*) AS count FROM option_quotes_latest WHERE ingested_at >= ?")
-      .bind(nowMs - liveFreshnessSeconds * 1000)
+      .prepare(
+        `SELECT COUNT(q.instrument_name) AS count, MAX(q.ingested_at) AS latest, MAX(q.deribit_timestamp) AS latestDeribit
+        FROM option_instruments i
+        LEFT JOIN option_quotes_latest q ON q.instrument_name = i.instrument_name
+        WHERE i.is_active = 1
+          AND i.expiration_timestamp > ?`
+      )
+      .bind(nowMs)
+      .first<{
+      count: number;
+      latest: number;
+      latestDeribit: number | null;
+    }>(),
+    env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+        FROM option_instruments i
+        LEFT JOIN option_quotes_latest q ON q.instrument_name = i.instrument_name
+        WHERE i.is_active = 1
+          AND i.expiration_timestamp > ?
+          AND (q.instrument_name IS NULL OR q.ingested_at < ?)`
+      )
+      .bind(nowMs, nowMs - summaryFreshnessSeconds * 1000)
       .first<{ count: number }>(),
     env.DB.prepare("SELECT MAX(created_at) AS latest FROM dcn_quote_audit").first<{ latest: number | null }>(),
     getDurableObjectStatus(env)
   ]);
   const latestQuoteAt = quoteStats?.latest ?? null;
+  const latestDeribitQuoteAt = quoteStats?.latestDeribit ?? null;
+  const streamRecord = isRecord(streamStatus) ? streamStatus : {};
+  const liveTickerFreshCount = numberFromUnknown(streamRecord.freshStreamQuoteCount) ?? 0;
+  const subscribedStreamCount = numberFromUnknown(streamRecord.subscribedCount) ?? 0;
+  const depthCacheCount = numberFromUnknown(streamRecord.depthCacheCount) ?? 0;
+  const freshDepthCacheCount = numberFromUnknown(streamRecord.freshDepthCacheCount) ?? 0;
+  const summarySyncAgeSeconds =
+    syncStatus.lastSummarySyncAt === null ? null : Math.max(0, (nowMs - syncStatus.lastSummarySyncAt) / 1000);
+  const instrumentSyncAgeSeconds =
+    syncStatus.lastInstrumentSyncAt === null ? null : Math.max(0, (nowMs - syncStatus.lastInstrumentSyncAt) / 1000);
 
   return json({
     nowMs,
+    marketDataMode: config.marketDataMode,
     activeInstrumentCount: instrumentStats?.count ?? 0,
     quoteCount: quoteStats?.count ?? 0,
     latestQuoteAt,
-    latestSyncAt: latestQuoteAt,
-    catalogSyncAgeSeconds: latestQuoteAt === null ? null : Math.max(0, (nowMs - latestQuoteAt) / 1000),
+    latestDeribitQuoteAt,
+    latestSyncAt: syncStatus.lastSummarySyncAt,
+    catalogSyncAgeSeconds: instrumentSyncAgeSeconds,
+    instrumentSyncAgeSeconds,
+    summarySyncAgeSeconds,
     summaryFreshnessSeconds,
     summaryStaleCount: summaryStaleStats?.count ?? 0,
     liveFreshnessSeconds,
-    liveTickerFreshCount: liveTickerStats?.count ?? 0,
+    liveTickerFreshCount,
+    subscribedStreamCount,
+    depthCacheCount,
+    freshDepthCacheCount,
     staleQuoteCount: summaryStaleStats?.count ?? 0,
     latestAuditAt: latestAudit?.latest ?? null,
     streamStatus,
     d1FreeTierGuard: {
-      quotePersistence: "deduped/throttled in Worker design",
-      depthStorage: "only admin/pricing snapshots",
+      quotePersistence: `summary writes are throttled to ${SUMMARY_SYNC_INTERVAL_MS / 60000}m and stream writes to ${STREAM_TICKER_PERSIST_INTERVAL_MS / 60000}m per instrument`,
+      depthStorage: "hybrid depth cache is in Durable Object memory; only admin/pricing snapshots are persisted",
       rowsWrittenDailyLimit: 100000
     }
   });
 }
 
 async function handleSyncMarketData(_request: Request, env: Env): Promise<Response> {
-  const result = await syncMarketData(env);
+  const result = await syncMarketData(env, { force: true });
   const stream = await ensurePricingStream(env);
   return json({ ...result, stream });
 }
@@ -692,15 +848,40 @@ async function getPricingStreamInstruments(env: Env): Promise<string[]> {
       return a.expiration_timestamp - b.expiration_timestamp;
     })
     .slice(0, 200);
-  return Array.from(new Set([...puts, ...calls].map((row) => row.instrument_name))).slice(0, 500);
+  const optionInstruments = Array.from(new Set([...puts, ...calls].map((row) => row.instrument_name))).slice(0, 499);
+  return ["BTC_USDC", ...optionInstruments];
 }
 
-async function getBtcUsdcSpotPrice(client: DeribitClient): Promise<number | null> {
+async function getBtcUsdcSpotPrice(
+  env: Env,
+  client: DeribitClient,
+  config: Awaited<ReturnType<typeof getPricingConfig>>
+): Promise<number | null> {
+  if (config.marketDataMode === "hybrid_cache") {
+    const streamed = await getDurableObjectTicker(env, "BTC_USDC");
+    const spotPrice = spotPriceFromTicker(streamed?.quote);
+    if (spotPrice) return spotPrice;
+  }
   try {
     return spotPriceFromTicker(await client.btcUsdcSpotTicker());
   } catch {
     return null;
   }
+}
+
+async function getOrderBookForPricing(
+  env: Env,
+  client: DeribitClient,
+  config: Awaited<ReturnType<typeof getPricingConfig>>,
+  instrumentName: string,
+  depth: number
+): Promise<DeribitOrderBook> {
+  if (config.marketDataMode !== "hybrid_cache") {
+    return client.getOrderBook(instrumentName, depth);
+  }
+
+  const cached = await getDurableObjectOrderBook(env, instrumentName, depth, DEFAULT_DEPTH_CACHE_MAX_AGE_MS);
+  return cached?.book ?? client.getOrderBook(instrumentName, depth);
 }
 
 async function getBtcUsdcSpotMetadata(client: DeribitClient): Promise<
@@ -723,15 +904,48 @@ async function getBtcUsdcSpotMetadata(client: DeribitClient): Promise<
   }
 }
 
-async function syncMarketData(env: Env): Promise<{ instruments: number; quotes: number; syncedAt: number }> {
+async function syncMarketData(
+  env: Env,
+  options: { force?: boolean } = {}
+): Promise<{
+  instruments: number;
+  quotes: number;
+  syncedAt: number;
+  instrumentSyncSkipped: boolean;
+  summarySyncSkipped: boolean;
+}> {
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const nowMs = Date.now();
-  const instruments = await client.getInstruments("BTC");
-  await sleep(250);
-  const summaries = await client.getBookSummaryByCurrency("BTC");
-  const instrumentCount = await upsertInstruments(env.DB, instruments, nowMs);
-  const quoteCount = await upsertBookSummaries(env.DB, summaries, nowMs);
-  return { instruments: instrumentCount, quotes: quoteCount, syncedAt: nowMs };
+  const syncStatus = await getMarketDataSyncStatus(env.DB);
+  const shouldSyncInstruments =
+    options.force ||
+    syncStatus.lastInstrumentSyncAt === null ||
+    nowMs - syncStatus.lastInstrumentSyncAt >= INSTRUMENT_SYNC_INTERVAL_MS;
+  const shouldSyncSummaries =
+    options.force ||
+    syncStatus.lastSummarySyncAt === null ||
+    nowMs - syncStatus.lastSummarySyncAt >= SUMMARY_SYNC_INTERVAL_MS;
+
+  let instrumentCount = 0;
+  let quoteCount = 0;
+  if (shouldSyncInstruments) {
+    const instruments = await client.getInstruments("BTC");
+    instrumentCount = await upsertInstruments(env.DB, instruments, nowMs);
+    await recordMarketDataSync(env.DB, { instrumentSyncedAt: nowMs }, nowMs);
+  }
+  if (shouldSyncSummaries) {
+    if (shouldSyncInstruments) await sleep(250);
+    const summaries = await client.getBookSummaryByCurrency("BTC");
+    quoteCount = await upsertBookSummaries(env.DB, summaries, nowMs);
+    await recordMarketDataSync(env.DB, { summarySyncedAt: nowMs }, nowMs);
+  }
+  return {
+    instruments: instrumentCount,
+    quotes: quoteCount,
+    syncedAt: nowMs,
+    instrumentSyncSkipped: !shouldSyncInstruments,
+    summarySyncSkipped: !shouldSyncSummaries
+  };
 }
 
 async function pricePppRequest(payload: PppPricingRequest, env: Env) {
@@ -741,12 +955,12 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   let rows = await getPppOptionCandidates(env.DB, nowMs);
 
   if (rows.length === 0) {
-    await syncMarketData(env);
+    await syncMarketData(env, { force: true });
     rows = await getPppOptionCandidates(env.DB, nowMs);
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(client);
+  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
   if (!spotPrice) {
     return {
       generatedAt: nowMs,
@@ -790,7 +1004,7 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   const getCachedOrderBook = (instrumentName: string) => {
     const cached = bookCache.get(instrumentName);
     if (cached) return cached;
-    const next = client.getOrderBook(instrumentName, normalized.orderBookDepth);
+    const next = getOrderBookForPricing(env, client, config, instrumentName, normalized.orderBookDepth);
     bookCache.set(instrumentName, next);
     return next;
   };
@@ -1067,13 +1281,47 @@ async function getDurableObjectStatus(env: Env): Promise<unknown> {
   return stub.fetch("https://durable-object/status").then((response) => response.json()).catch(() => null);
 }
 
-async function getDurableObjectQuote(env: Env, instrumentName: string): Promise<unknown> {
+async function getDurableObjectTicker(
+  env: Env,
+  instrumentName: string
+): Promise<{ instrument: string | null; quote: DeribitTicker | null; receivedAt: number | null; ageMs: number | null } | null> {
   const id = env.MARKET_DATA.idFromName("btc-options");
   const stub = env.MARKET_DATA.get(id);
   return stub
     .fetch(`https://durable-object/quote?instrument=${encodeURIComponent(instrumentName)}`)
-    .then((response) => response.json())
+    .then((response) =>
+      response.json().then(
+        (data) =>
+          data as {
+            instrument: string | null;
+            quote: DeribitTicker | null;
+            receivedAt: number | null;
+            ageMs: number | null;
+          }
+      )
+    )
     .catch(() => null);
+}
+
+async function getDurableObjectQuote(env: Env, instrumentName: string): Promise<unknown> {
+  return getDurableObjectTicker(env, instrumentName);
+}
+
+async function getDurableObjectOrderBook(
+  env: Env,
+  instrumentName: string,
+  depth: number,
+  maxAgeMs: number
+): Promise<CachedOrderBookResult | null> {
+  const id = env.MARKET_DATA.idFromName("btc-options");
+  const stub = env.MARKET_DATA.get(id);
+  const url = new URL("https://durable-object/order-book");
+  url.searchParams.set("instrument", instrumentName);
+  url.searchParams.set("depth", String(depth));
+  url.searchParams.set("maxAgeMs", String(maxAgeMs));
+  const response = await stub.fetch(url.toString()).catch(() => null);
+  if (!response?.ok) return null;
+  return response.json().then((data) => data as CachedOrderBookResult).catch(() => null);
 }
 
 function isAuthorized(request: Request, env: Env): boolean {
@@ -1088,6 +1336,25 @@ function isPositiveFinite(value: unknown): value is number {
 
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function normalizeDepth(value: number): number {
+  const allowed = [1, 5, 10, 20, 50, 100, 1000, 10000];
+  if (!Number.isFinite(value)) return 100;
+  return allowed.includes(value) ? value : 100;
+}
+
+function maxNumber(values: number[]): number | null {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  return finiteValues.length === 0 ? null : Math.max(...finiteValues);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function numberFromUnknown(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function optionalNonNegativeParam(url: URL, names: string[]): number | undefined | null {

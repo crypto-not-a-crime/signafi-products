@@ -2,8 +2,10 @@ import type { DeribitBookSummary, DeribitInstrument, DeribitOrderBook, DeribitTi
 import type { YieldSurfaceOptionType, YieldSurfaceSourceRow } from "./pricing/yield-surface";
 
 export type SellPutPricingMethod = "firm_margin" | "target_firm_profit";
+export type MarketDataMode = "legacy_rest" | "hybrid_cache";
 
 export interface PricingConfig {
+  marketDataMode: MarketDataMode;
   sellPutPricingMethod: SellPutPricingMethod;
   firmMarginBps: number;
   sellPutTargetFirmProfitBps: number;
@@ -67,7 +69,19 @@ export async function upsertInstruments(db: D1Database, instruments: DeribitInst
       state = excluded.state,
       is_active = excluded.is_active,
       raw_json = excluded.raw_json,
-      updated_at = excluded.updated_at`
+      updated_at = excluded.updated_at
+    WHERE option_instruments.instrument_id IS NOT excluded.instrument_id
+      OR option_instruments.base_currency IS NOT excluded.base_currency
+      OR option_instruments.quote_currency IS NOT excluded.quote_currency
+      OR option_instruments.settlement_currency IS NOT excluded.settlement_currency
+      OR option_instruments.option_type IS NOT excluded.option_type
+      OR option_instruments.strike IS NOT excluded.strike
+      OR option_instruments.expiration_timestamp IS NOT excluded.expiration_timestamp
+      OR option_instruments.contract_size IS NOT excluded.contract_size
+      OR option_instruments.min_trade_amount IS NOT excluded.min_trade_amount
+      OR option_instruments.tick_size IS NOT excluded.tick_size
+      OR option_instruments.state IS NOT excluded.state
+      OR option_instruments.is_active IS NOT excluded.is_active`
   );
 
   await runInChunks(
@@ -119,7 +133,18 @@ export async function upsertBookSummaries(db: D1Database, summaries: DeribitBook
       interest_rate = excluded.interest_rate,
       deribit_timestamp = excluded.deribit_timestamp,
       ingested_at = excluded.ingested_at,
-      raw_json = excluded.raw_json`
+      raw_json = excluded.raw_json
+    WHERE option_quotes_latest.bid_price IS NOT excluded.bid_price
+      OR option_quotes_latest.ask_price IS NOT excluded.ask_price
+      OR option_quotes_latest.mid_price IS NOT excluded.mid_price
+      OR option_quotes_latest.mark_price IS NOT excluded.mark_price
+      OR option_quotes_latest.last_price IS NOT excluded.last_price
+      OR option_quotes_latest.mark_iv IS NOT excluded.mark_iv
+      OR option_quotes_latest.open_interest IS NOT excluded.open_interest
+      OR option_quotes_latest.volume IS NOT excluded.volume
+      OR option_quotes_latest.underlying_price IS NOT excluded.underlying_price
+      OR option_quotes_latest.underlying_index IS NOT excluded.underlying_index
+      OR option_quotes_latest.interest_rate IS NOT excluded.interest_rate`
   );
 
   await runInChunks(
@@ -247,6 +272,7 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
   const rows = await db.prepare("SELECT key, value FROM pricing_config").all<{ key: string; value: string }>();
   const map = new Map(rows.results.map((row) => [row.key, row.value]));
   return {
+    marketDataMode: normalizeMarketDataMode(map.get("market_data_mode")),
     sellPutPricingMethod: normalizeSellPutPricingMethod(map.get("sell_put_pricing_method")),
     firmMarginBps: Number(map.get("firm_margin_bps") ?? 200),
     sellPutTargetFirmProfitBps: Number(map.get("sell_put_target_firm_profit_bps") ?? 500),
@@ -265,6 +291,7 @@ export async function updatePricingConfig(
   updates: Partial<
     Pick<
       PricingConfig,
+      | "marketDataMode"
       | "sellPutPricingMethod"
       | "firmMarginBps"
       | "sellPutTargetFirmProfitBps"
@@ -277,6 +304,9 @@ export async function updatePricingConfig(
 ): Promise<PricingConfig> {
   const statements: D1PreparedStatement[] = [];
 
+  if (typeof updates.marketDataMode === "string") {
+    statements.push(upsertPricingConfigStatement(db, "market_data_mode", normalizeMarketDataMode(updates.marketDataMode), nowMs));
+  }
   if (typeof updates.sellPutPricingMethod === "string") {
     statements.push(
       upsertPricingConfigStatement(db, "sell_put_pricing_method", normalizeSellPutPricingMethod(updates.sellPutPricingMethod), nowMs)
@@ -321,6 +351,35 @@ export async function updatePricingConfig(
   }
 
   return getPricingConfig(db);
+}
+
+export async function getMarketDataSyncStatus(db: D1Database): Promise<{
+  lastInstrumentSyncAt: number | null;
+  lastSummarySyncAt: number | null;
+}> {
+  const rows = await db
+    .prepare("SELECT key, value FROM pricing_config WHERE key IN ('last_instrument_sync_at', 'last_summary_sync_at')")
+    .all<{ key: string; value: string }>();
+  const map = new Map(rows.results.map((row) => [row.key, Number(row.value)]));
+  return {
+    lastInstrumentSyncAt: finitePositiveOrNull(map.get("last_instrument_sync_at")),
+    lastSummarySyncAt: finitePositiveOrNull(map.get("last_summary_sync_at"))
+  };
+}
+
+export async function recordMarketDataSync(
+  db: D1Database,
+  updates: { instrumentSyncedAt?: number; summarySyncedAt?: number },
+  nowMs: number
+): Promise<void> {
+  const statements: D1PreparedStatement[] = [];
+  if (updates.instrumentSyncedAt !== undefined) {
+    statements.push(upsertPricingConfigStatement(db, "last_instrument_sync_at", String(updates.instrumentSyncedAt), nowMs));
+  }
+  if (updates.summarySyncedAt !== undefined) {
+    statements.push(upsertPricingConfigStatement(db, "last_summary_sync_at", String(updates.summarySyncedAt), nowMs));
+  }
+  if (statements.length > 0) await db.batch(statements);
 }
 
 export async function getPutCandidates(db: D1Database, nowMs: number): Promise<JoinedPutRow[]> {
@@ -552,6 +611,14 @@ function upsertPricingConfigStatement(db: D1Database, key: string, value: string
 
 function normalizeSellPutPricingMethod(value: unknown): SellPutPricingMethod {
   return value === "target_firm_profit" ? "target_firm_profit" : "firm_margin";
+}
+
+function normalizeMarketDataMode(value: unknown): MarketDataMode {
+  return value === "hybrid_cache" ? "hybrid_cache" : "legacy_rest";
+}
+
+function finitePositiveOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 async function runInChunks(db: D1Database, statements: D1PreparedStatement[], chunkSize: number): Promise<void> {

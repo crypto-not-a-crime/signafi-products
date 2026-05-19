@@ -22,12 +22,18 @@ import {
 import { AdminYieldSurface } from "@/components/AdminYieldSurface";
 
 interface Health {
+  marketDataMode?: PricingConfig["marketDataMode"];
   activeInstrumentCount?: number;
   quoteCount?: number;
   staleQuoteCount?: number;
   summaryStaleCount?: number;
   liveTickerFreshCount?: number;
+  subscribedStreamCount?: number;
+  depthCacheCount?: number;
+  freshDepthCacheCount?: number;
   catalogSyncAgeSeconds?: number | null;
+  summarySyncAgeSeconds?: number | null;
+  instrumentSyncAgeSeconds?: number | null;
   summaryFreshnessSeconds?: number;
   liveFreshnessSeconds?: number;
   latestQuoteAt?: number;
@@ -37,11 +43,14 @@ interface Health {
 }
 
 type AdminProductType = "sell_put" | "sell_call" | "ppp";
+type MarketDataMode = PricingConfig["marketDataMode"];
 
 export function AdminConsole() {
   const [activeTab, setActiveTab] = useState<"audit" | "yield-surface">("audit");
   const [selectedProductType, setSelectedProductType] = useState<AdminProductType>("sell_put");
   const [health, setHealth] = useState<Health | null>(null);
+  const [marketDataMode, setMarketDataMode] = useState<MarketDataMode>("legacy_rest");
+  const [savedMarketDataMode, setSavedMarketDataMode] = useState<MarketDataMode>("legacy_rest");
   const [options, setOptions] = useState<MarketOption[]>([]);
   const [expirySummaries, setExpirySummaries] = useState<MarketExpirySummary[]>([]);
   const [optionsLoading, setOptionsLoading] = useState(false);
@@ -230,6 +239,11 @@ export function AdminConsole() {
     const response = await fetch("/api/admin/pricing-config", { cache: "no-store" });
     if (!response.ok) return;
     const payload = (await response.json()) as { pricingConfig?: PricingConfig };
+    const mode = payload.pricingConfig?.marketDataMode;
+    if (mode === "legacy_rest" || mode === "hybrid_cache") {
+      setMarketDataMode(mode);
+      setSavedMarketDataMode(mode);
+    }
     const putMethod = payload.pricingConfig?.sellPutPricingMethod;
     if (putMethod === "firm_margin" || putMethod === "target_firm_profit") {
       setSellPutPricingMethod(putMethod);
@@ -300,6 +314,7 @@ export function AdminConsole() {
   const pppTargetFirmMarginBps = Math.max(0, Math.round(pppTargetFirmMarginPct * 100));
   const savedPppTargetFirmMarginBps = Math.max(0, Math.round(savedPppTargetFirmMarginPct * 100));
   const pricingConfigChanged =
+    marketDataMode !== savedMarketDataMode ||
     sellPutPricingMethod !== savedSellPutPricingMethod ||
     firmMarginBps !== savedFirmMarginBps ||
     sellPutTargetFirmProfitBps !== savedSellPutTargetFirmProfitBps ||
@@ -315,6 +330,7 @@ export function AdminConsole() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          marketDataMode,
           sellPutPricingMethod,
           firmMarginBps,
           sellPutTargetFirmProfitBps,
@@ -328,6 +344,9 @@ export function AdminConsole() {
         setConfigMessage(payload.error ?? `Save failed with HTTP ${response.status}`);
         return;
       }
+      const nextMarketDataMode = payload.pricingConfig?.marketDataMode ?? marketDataMode;
+      setMarketDataMode(nextMarketDataMode);
+      setSavedMarketDataMode(nextMarketDataMode);
       const nextMarginBps = payload.pricingConfig?.firmMarginBps ?? firmMarginBps;
       const nextMarginPct = nextMarginBps / 100;
       setFirmMarginPct(nextMarginPct);
@@ -543,6 +562,11 @@ export function AdminConsole() {
 
       <section className="admin-shell">
         <div className="admin-grid">
+          <Metric
+            label="Market data mode"
+            value={formatMarketDataMode(health?.marketDataMode ?? savedMarketDataMode)}
+            tone={(health?.marketDataMode ?? savedMarketDataMode) === "hybrid_cache" ? "ok" : "warn"}
+          />
           <Metric label="Active instruments" value={health?.activeInstrumentCount ?? "-"} />
           <Metric label="Stored quotes" value={health?.quoteCount ?? "-"} />
           <Metric
@@ -555,7 +579,10 @@ export function AdminConsole() {
             value={health?.liveTickerFreshCount ?? "-"}
             tone={health?.liveTickerFreshCount ? "ok" : "warn"}
           />
-          <Metric label="Catalog age" value={formatAge(health?.catalogSyncAgeSeconds)} tone={(health?.catalogSyncAgeSeconds ?? 0) > 180 ? "warn" : "ok"} />
+          <Metric label="Stream subscribed" value={health?.subscribedStreamCount ?? "-"} />
+          <Metric label="Fresh depth cache" value={`${health?.freshDepthCacheCount ?? "-"}/${health?.depthCacheCount ?? "-"}`} />
+          <Metric label="Summary sync age" value={formatAge(health?.summarySyncAgeSeconds)} tone={(health?.summarySyncAgeSeconds ?? 0) > 900 ? "warn" : "ok"} />
+          <Metric label="Catalog age" value={formatAge(health?.catalogSyncAgeSeconds)} tone={(health?.catalogSyncAgeSeconds ?? 0) > 3600 ? "warn" : "ok"} />
         </div>
 
         <div className="admin-tabs" role="tablist" aria-label="Admin sections">
@@ -580,6 +607,17 @@ export function AdminConsole() {
           <div className="admin-card">
             <h2 className="card-title">Run verification</h2>
             <div className="form-grid">
+              <label>
+                <span className="field-label">Market data mode</span>
+                <select
+                  className="admin-input"
+                  value={marketDataMode}
+                  onChange={(event) => setMarketDataMode(event.target.value as MarketDataMode)}
+                >
+                  <option value="legacy_rest">Legacy REST rollback</option>
+                  <option value="hybrid_cache">Hybrid cache</option>
+                </select>
+              </label>
               <label>
                 <span className="field-label">Product</span>
                 <select
@@ -767,6 +805,10 @@ export function AdminConsole() {
                 </strong>
               </div>
             ) : null}
+            <div className="soft-row" style={{ marginTop: 12 }}>
+              <span>Saved market data mode</span>
+              <strong className="mono">{formatMarketDataMode(savedMarketDataMode)}</strong>
+            </div>
             <div className="soft-row" style={{ marginTop: 12 }}>
               <span>
                 {selectedProductType === "ppp"
@@ -1421,6 +1463,10 @@ function formatAge(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return "-";
   if (seconds < 60) return `${seconds.toFixed(0)}s`;
   return `${(seconds / 60).toFixed(1)}m`;
+}
+
+function formatMarketDataMode(mode: PricingConfig["marketDataMode"] | undefined): string {
+  return mode === "hybrid_cache" ? "Hybrid cache" : "Legacy REST";
 }
 
 function CheckRow({ label, ok }: { label: string; ok: boolean }) {
