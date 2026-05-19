@@ -30,6 +30,7 @@ import {
   type PutMarketInput
 } from "./pricing/dcn";
 import {
+  buildPppAutoParticipationProtectionBps,
   calculatePppCandidate,
   normalizePppPricingRequest,
   scorePppPackageForShortlist,
@@ -1004,7 +1005,9 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   const depthCandidateCount =
     normalized.selectorMode === "auto_protection"
       ? Math.min(Math.max(config.maxDepthCandidates, 8), 16)
-      : Math.min(Math.max(config.maxDepthCandidates, 4), 8);
+      : normalized.selectorMode === "auto_participation"
+        ? Math.min(Math.max(config.maxDepthCandidates, 12), 24)
+        : Math.min(Math.max(config.maxDepthCandidates, 4), 8);
   const shortlisted = packages
     .map((marketPackage) => ({
       marketPackage,
@@ -1127,7 +1130,8 @@ function buildPppMarketPackages(
 ): PppMarketPackageInput[] {
   const selectorMode = request.selectorMode === "closest" || request.selectorMode === "auto_protection" ? request.selectorMode : "auto_participation";
   const requestedExpirationTimestamp = Number(request.expirationTimestamp);
-  const protectionLevel = Math.min(1, Math.max(0.1, Number(request.protectionLevelBps ?? 8000) / 10000));
+  const protectionLevelBps = Math.round(Math.min(10000, Math.max(1000, Number(request.protectionLevelBps ?? 8000))));
+  const protectionLevel = protectionLevelBps / 10000;
   const targetFloorStrike = spotPrice * protectionLevel;
   const byExpiry = new Map<number, JoinedPutRow[]>();
 
@@ -1180,6 +1184,24 @@ function buildPppMarketPackages(
             floorPut: pppRowToMarketLeg(floorPut)
           });
         }
+      }
+      continue;
+    }
+
+    if (selectorMode === "auto_participation") {
+      for (const candidateProtectionBps of buildPppAutoParticipationProtectionBps(protectionLevelBps)) {
+        const candidateProtectionLevel = candidateProtectionBps / 10000;
+        const floorPut = findLowestStrikeAtOrAbove(askPuts, spotPrice * candidateProtectionLevel);
+        if (!floorPut) continue;
+
+        packages.push({
+          expirationTimestamp,
+          spotPrice,
+          candidateProtectionLevel,
+          atmCall: pppRowToMarketLeg(atmCall),
+          atmPut: pppRowToMarketLeg(atmPut),
+          floorPut: pppRowToMarketLeg(floorPut)
+        });
       }
       continue;
     }

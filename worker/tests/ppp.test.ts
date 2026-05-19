@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPppAutoParticipationProtectionBps,
   calculatePppCandidate,
   modelExecutableDepth,
   normalizePppPricingRequest,
@@ -173,6 +174,27 @@ describe("PPP robust model pricing", () => {
     expect(spotTrace?.value).toBe(77121);
   });
 
+  it("uses the auto-participation candidate protection as Robust Model B7", () => {
+    const candidate = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_participation",
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      workbookMarket({ candidateProtectionLevel: 0.75 })
+    );
+
+    expect(candidate.protectionLevel).toBeCloseTo(0.75, 12);
+    expect(candidate.quotedProtection).toBeCloseTo(0.75, 12);
+    expect(candidate.floorStrikeTarget).toBeCloseTo(candidate.spotPrice * 0.75, 8);
+    expect(candidate.protectionGapBps).toBeCloseTo(500, 10);
+    expect(candidate.formulaTrace.find((row) => row.cell === "Robust Model!B7")?.value).toBeCloseTo(0.75, 12);
+  });
+
   it("uses saved PPP target firm margin from pricing config defaults", () => {
     const normalized = normalizePppPricingRequest(
       { investmentUsdt: 1_000_000 },
@@ -227,6 +249,16 @@ describe("PPP robust model pricing", () => {
     expect(roundPppParticipationDown(0.5856, 500)).toBeCloseTo(0.55, 12);
     expect(roundPppParticipationDown(0.3277, 500)).toBeCloseTo(0.3, 12);
     expect(roundPppParticipationDown(0.3277, 0)).toBeCloseTo(0.3277, 12);
+  });
+
+  it("builds a bounded protection grid around the selected auto-participation floor", () => {
+    const levels = buildPppAutoParticipationProtectionBps(8000);
+
+    expect(levels[0]).toBe(7000);
+    expect(levels.at(-1)).toBe(9000);
+    expect(levels).toContain(8000);
+    expect(levels).toContain(7500);
+    expect(levels).toContain(8500);
   });
 
   it("keeps raw max participation while quoting the rounded participation", () => {
@@ -463,8 +495,24 @@ describe("PPP robust model pricing", () => {
       }
     );
     const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookMarket());
-    const betterDuration = { ...exact, dayCount: 221, protectionGapBps: 200, optimizedParticipation: 0.2 };
-    const betterProtection = { ...exact, dayCount: 260, protectionGapBps: 0, optimizedParticipation: 0.5 };
+    const betterDuration = {
+      ...exact,
+      dayCount: 221,
+      protectionLevel: 0.78,
+      protectionLevelBps: 7800,
+      quotedProtection: 0.78,
+      quotedProtectionBps: 7800,
+      optimizedParticipation: 0.2
+    };
+    const betterProtection = {
+      ...exact,
+      dayCount: 260,
+      protectionLevel: 0.8,
+      protectionLevelBps: 8000,
+      quotedProtection: 0.8,
+      quotedProtectionBps: 8000,
+      optimizedParticipation: 0.5
+    };
 
     const selected = selectPppCandidate(request, [betterProtection, betterDuration]);
     expect(selected.bestCandidate).toBe(betterDuration);
@@ -491,8 +539,24 @@ describe("PPP robust model pricing", () => {
       }
     );
     const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookMarket());
-    const betterDuration = { ...exact, dayCount: 221, protectionGapBps: 200, optimizedParticipation: 0.5 };
-    const betterProtection = { ...exact, dayCount: 260, protectionGapBps: 0, optimizedParticipation: 0.2 };
+    const betterDuration = {
+      ...exact,
+      dayCount: 221,
+      protectionLevel: 0.78,
+      protectionLevelBps: 7800,
+      quotedProtection: 0.78,
+      quotedProtectionBps: 7800,
+      optimizedParticipation: 0.5
+    };
+    const betterProtection = {
+      ...exact,
+      dayCount: 260,
+      protectionLevel: 0.8,
+      protectionLevelBps: 8000,
+      quotedProtection: 0.8,
+      quotedProtectionBps: 8000,
+      optimizedParticipation: 0.2
+    };
 
     const selected = selectPppCandidate(request, [betterDuration, betterProtection]);
     expect(selected.bestCandidate).toBe(betterProtection);

@@ -211,6 +211,8 @@ const MIN_PROTECTION_LEVEL = 0.1;
 const AUTO_PROTECTION_MIN_BPS = 5000;
 const AUTO_PROTECTION_MAX_BPS = 9500;
 const AUTO_PROTECTION_STEP_BPS = 10;
+const AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS = 1000;
+const AUTO_PARTICIPATION_PROTECTION_STEP_BPS = 100;
 
 export function normalizePppPricingRequest(
   request: PppPricingRequest,
@@ -342,6 +344,8 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const protectionLevel =
     selectorMode === "auto_protection"
       ? clamp(Number(market.candidateProtectionLevel ?? requestedProtectionLevel), 0.5, 0.95)
+      : selectorMode === "auto_participation" && typeof market.candidateProtectionLevel === "number"
+        ? clamp(market.candidateProtectionLevel, MIN_PROTECTION_LEVEL, 1)
       : requestedProtectionLevel;
   const targetFirmMarginBps = clamp(Math.round(Number(request.targetFirmMarginBps ?? PPP_TEMPLATE.defaultTargetFirmMarginBps)), 0, 10_000);
   const participationRoundDownBps = clamp(Math.round(Number(request.participationRoundDownBps ?? 0)), 0, 10_000);
@@ -475,7 +479,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const scenarios = displayOptimization?.scenarios ?? [];
   const putSpreadImpliedFloor =
     investmentUsdt > 0 ? 1 - (putSpreadContracts * (market.atmPut.strike - market.floorPut.strike)) / investmentUsdt : null;
-  const protectionGapBps = putSpreadImpliedFloor === null ? null : Math.abs(putSpreadImpliedFloor - protectionLevel) * 10000;
+  const protectionGapBps = Math.abs(protectionLevel - requestedProtectionLevel) * 10000;
 
   const checks = {
     spotValid: spotPrice > 0,
@@ -622,11 +626,12 @@ export function scorePppPackageForShortlist(
     const durationPenalty = priorityLever === "duration" ? 100_000 : 10_000;
     return 1_000_000 - durationGap * durationPenalty + candidateProtection * 50_000 - atmGap * 10_000;
   }
-  const floorStrikeGap = market.spotPrice > 0 ? Math.abs(market.floorPut.strike / market.spotPrice - protection) : Infinity;
+  const candidateProtection = finiteOr(market.candidateProtectionLevel, protection);
+  const productProtectionGap = Math.abs(candidateProtection - protection);
   const atmGap = market.spotPrice > 0 ? Math.abs(market.atmCall.strike / market.spotPrice - 1) : Infinity;
   const durationPenalty = priorityLever === "duration" ? 100_000 : 10_000;
-  const protectionPenalty = priorityLever === "protection" ? 100_000 : 80_000;
-  return 1_000_000 - durationGap * durationPenalty - floorStrikeGap * protectionPenalty - atmGap * 10_000;
+  const protectionPenalty = priorityLever === "protection" ? 100_000 : 10_000;
+  return 1_000_000 - durationGap * durationPenalty - productProtectionGap * protectionPenalty - atmGap * 10_000;
 }
 
 function comparePppCandidates(
@@ -637,8 +642,13 @@ function comparePppCandidates(
   if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
   const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
+  const requestedProtectionLevel = clamp(request.protectionLevelBps / 10000, MIN_PROTECTION_LEVEL, 1);
   const durationComparator = () => compareAsc(Math.abs(a.dayCount - request.runwayDays), Math.abs(b.dayCount - request.runwayDays));
-  const protectionGapComparator = () => compareAsc(a.protectionGapBps, b.protectionGapBps);
+  const protectionGapComparator = () =>
+    compareAsc(
+      Math.abs((a.quotedProtection ?? a.protectionLevel) - requestedProtectionLevel) * 10000,
+      Math.abs((b.quotedProtection ?? b.protectionLevel) - requestedProtectionLevel) * 10000
+    );
   const participationGapComparator = () => compareAsc(a.participationGapBps, b.participationGapBps);
   const solvedProtectionComparator = () =>
     compareDesc(a.optimizedProtection ?? a.quotedProtection, b.optimizedProtection ?? b.quotedProtection);
@@ -1188,6 +1198,27 @@ export function roundPppParticipationDown(participation: number | null, roundDow
   const incrementBps = Math.round(roundDownBps);
   if (incrementBps <= 0) return participation;
   return Math.floor((participation * 10000) / incrementBps) * incrementBps / 10000;
+}
+
+export function buildPppAutoParticipationProtectionBps(targetProtectionBps: number): number[] {
+  const targetBps = clamp(Math.round(targetProtectionBps), MIN_PROTECTION_LEVEL * 10000, 10000);
+  const minBps = clamp(
+    Math.floor((targetBps - AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS) / AUTO_PARTICIPATION_PROTECTION_STEP_BPS) *
+      AUTO_PARTICIPATION_PROTECTION_STEP_BPS,
+    MIN_PROTECTION_LEVEL * 10000,
+    10000
+  );
+  const maxBps = clamp(
+    Math.ceil((targetBps + AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS) / AUTO_PARTICIPATION_PROTECTION_STEP_BPS) *
+      AUTO_PARTICIPATION_PROTECTION_STEP_BPS,
+    MIN_PROTECTION_LEVEL * 10000,
+    10000
+  );
+  const levels = new Set<number>([targetBps]);
+  for (let bps = minBps; bps <= maxBps; bps += AUTO_PARTICIPATION_PROTECTION_STEP_BPS) {
+    levels.add(Math.round(bps));
+  }
+  return [...levels].sort((a, b) => a - b);
 }
 
 function clamp(value: number, min: number, max: number): number {
