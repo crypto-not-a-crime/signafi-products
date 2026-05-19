@@ -13,6 +13,12 @@ import type {
 } from "@/types";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 import { calculateScenario, getScenarioRange } from "@/lib/dcn-scenario";
+import {
+  buildDcnVerificationGuide,
+  buildPppVerificationGuide,
+  type VerificationStep,
+  type VerificationStepStatus
+} from "@/lib/admin-verification-guide";
 import { AdminYieldSurface } from "@/components/AdminYieldSurface";
 
 interface Health {
@@ -71,6 +77,7 @@ export function AdminConsole() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [verificationRunId, setVerificationRunId] = useState(0);
 
   useEffect(() => {
     void refreshHealth();
@@ -382,6 +389,7 @@ export function AdminConsole() {
       const payload = (await response.json()) as { calculation?: DcnCandidate; error?: string };
       if (response.ok) {
         setAudit(payload.calculation ?? null);
+        setVerificationRunId((current) => current + 1);
       } else {
         setRefreshError(payload.error ?? `Selected market refresh failed with HTTP ${response.status}`);
       }
@@ -413,6 +421,7 @@ export function AdminConsole() {
     const payload = (await response.json()) as { calculation?: DcnCandidate; error?: string };
     const calculation = payload.calculation ?? null;
     setAudit(calculation);
+    setVerificationRunId((current) => current + 1);
     return calculation;
   }
 
@@ -438,6 +447,7 @@ export function AdminConsole() {
     const payload = (await response.json()) as { calculation?: PppCandidate; bestCandidate?: PppCandidate; error?: string };
     const calculation = payload.calculation ?? payload.bestCandidate ?? null;
     setPppAudit(calculation);
+    setVerificationRunId((current) => current + 1);
     return calculation;
   }
 
@@ -510,7 +520,14 @@ export function AdminConsole() {
 
   const scenarioRange = audit ? getAdminScenarioRange(audit) : null;
   const selectedExpiryPrice = scenarioRange ? expiryPrice ?? scenarioRange.defaultPrice : null;
-  const selectedScenario = audit && selectedExpiryPrice !== null ? calculateScenario(audit, selectedExpiryPrice) : null;
+  const selectedScenario = useMemo(
+    () => (audit && selectedExpiryPrice !== null ? calculateScenario(audit, selectedExpiryPrice) : null),
+    [audit, selectedExpiryPrice]
+  );
+  const dcnVerificationSteps = useMemo(
+    () => (audit ? buildDcnVerificationGuide(audit, selectedScenario) : []),
+    [audit, selectedScenario]
+  );
   const busy = loading || marginLoading;
 
   return (
@@ -847,7 +864,7 @@ export function AdminConsole() {
               </p>
             ) : null}
 
-            {pppAudit ? <PppAdminAuditPanel audit={pppAudit} /> : null}
+            {pppAudit ? <PppAdminAuditPanel audit={pppAudit} verificationRunId={verificationRunId} /> : null}
 
             {audit ? (
               <>
@@ -906,6 +923,12 @@ export function AdminConsole() {
                     </div>
                   </div>
                 ) : null}
+
+                <CalculationVerificationGuide
+                  resetKey={`dcn-${verificationRunId}`}
+                  steps={dcnVerificationSteps}
+                  subject={audit.productType === "sell_call" ? "Sell call DCN" : "Sell put DCN"}
+                />
 
                 <h3 className="card-title" style={{ marginTop: 24 }}>Workbook formula trace</h3>
                 <table className="trace-table">
@@ -1122,7 +1145,173 @@ function getAdminScenarioRange(candidate: DcnCandidate) {
   });
 }
 
-function PppAdminAuditPanel({ audit }: { audit: PppCandidate }) {
+function CalculationVerificationGuide({
+  resetKey,
+  steps,
+  subject
+}: {
+  resetKey: string;
+  steps: VerificationStep[];
+  subject: string;
+}) {
+  const [reviewedStepIds, setReviewedStepIds] = useState<Set<string>>(() => new Set());
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  useEffect(() => {
+    setReviewedStepIds(new Set());
+    setCopyState("idle");
+  }, [resetKey]);
+
+  if (steps.length === 0) return null;
+
+  const reviewedCount = reviewedStepIds.size;
+
+  function toggleReviewed(stepId: string, checked: boolean) {
+    setReviewedStepIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(stepId);
+      else next.delete(stepId);
+      return next;
+    });
+  }
+
+  async function copySummary() {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(buildVerificationSummary(subject, steps, reviewedCount));
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  return (
+    <section className="verification-guide" aria-label={`${subject} verification walkthrough`}>
+      <div className="verification-head">
+        <div>
+          <h3 className="card-title">Verification walkthrough</h3>
+          <p className="card-copy">Step through the audit in workbook order, then use the raw trace below for cell-level backup.</p>
+        </div>
+        <div className="verification-actions">
+          <span className="small-muted">
+            Reviewed {reviewedCount}/{steps.length}
+          </span>
+          <button className="btn-ghost" type="button" onClick={() => void copySummary()}>
+            Copy verification summary
+          </button>
+          {copyState !== "idle" ? (
+            <span className={`status-badge ${copyState === "copied" ? "status-live" : "status-fail"}`}>
+              {copyState === "copied" ? "Copied" : "Copy failed"}
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      <ol className="verification-flow" aria-label="Verification step flow">
+        {steps.map((step, index) => (
+          <li className={`verification-node ${step.status}`} key={step.id}>
+            <span>{index + 1}</span>
+            <strong>{step.title}</strong>
+          </li>
+        ))}
+      </ol>
+
+      <div className="verification-step-list">
+        {steps.map((step, index) => (
+          <article className="verification-step" key={step.id}>
+            <div className="verification-step-head">
+              <div>
+                <div className="field-label">Step {index + 1}</div>
+                <h4>{step.title}</h4>
+              </div>
+              <span className={`status-badge ${statusClass(step.status)}`}>{statusLabel(step.status)}</span>
+            </div>
+
+            <div className="verification-output">
+              <span>{step.outputLabel}</span>
+              <strong className="mono">{step.outputValue}</strong>
+            </div>
+
+            <div className="verification-copy-block">
+              <span className="field-label">Verify this</span>
+              <p>{step.purpose}</p>
+            </div>
+
+            <div className="verification-copy-block">
+              <span className="field-label">Formula</span>
+              <p className="verification-formula">{step.formulaText}</p>
+            </div>
+
+            <div className="verification-meta">
+              {step.workbookRefs.length > 0 ? (
+                <div className="verification-chip-row">
+                  {step.workbookRefs.map((ref) => (
+                    <span className="verification-chip mono" key={ref}>
+                      {ref}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {step.checkKeys.length > 0 ? (
+                <div className="verification-checks">
+                  {step.checkKeys.map((key) => (
+                    <span className="verification-check" key={key}>
+                      {formatCheckKey(key)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {step.dependsOn.length > 0 ? (
+                <p className="small-muted">Depends on {step.dependsOn.map(formatStepId).join(", ")}</p>
+              ) : null}
+            </div>
+
+            <details className="verification-source">
+              <summary>Source rows ({step.traceRows.length})</summary>
+              {step.traceRows.length > 0 ? (
+                <table className="trace-table verification-source-table">
+                  <thead>
+                    <tr>
+                      <th>Cell</th>
+                      <th>Label</th>
+                      <th>Formula</th>
+                      <th>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {step.traceRows.map((row, rowIndex) => (
+                      <tr key={`${row.cell}-${row.label}-${rowIndex}`}>
+                        <td className="mono">{row.cell}</td>
+                        <td>{row.label}</td>
+                        <td>{row.formula}</td>
+                        <td className="mono">{formatTraceValue(row.value)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="card-copy">No matching trace rows for this grouped step.</p>
+              )}
+            </details>
+
+            <label className="verification-review">
+              <input
+                checked={reviewedStepIds.has(step.id)}
+                onChange={(event) => toggleReviewed(step.id, event.currentTarget.checked)}
+                type="checkbox"
+              />
+              Reviewed
+            </label>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PppAdminAuditPanel({ audit, verificationRunId }: { audit: PppCandidate; verificationRunId: number }) {
+  const verificationSteps = useMemo(() => buildPppVerificationGuide(audit), [audit]);
+
   return (
     <>
       <div className="metric-grid">
@@ -1191,6 +1380,12 @@ function PppAdminAuditPanel({ audit }: { audit: PppCandidate }) {
         </table>
       </div>
 
+      <CalculationVerificationGuide
+        resetKey={`ppp-${verificationRunId}`}
+        steps={verificationSteps}
+        subject="PPP"
+      />
+
       <h3 className="card-title" style={{ marginTop: 24 }}>Workbook formula trace</h3>
       <table className="trace-table">
         <thead>
@@ -1235,6 +1430,58 @@ function CheckRow({ label, ok }: { label: string; ok: boolean }) {
       <span className={`status-badge ${ok ? "status-live" : "status-fail"}`}>{ok ? "Pass" : "Fail"}</span>
     </div>
   );
+}
+
+function statusClass(status: VerificationStepStatus): string {
+  if (status === "pass") return "status-live";
+  if (status === "fail") return "status-fail";
+  if (status === "warn") return "status-warn";
+  return "status-info";
+}
+
+function statusLabel(status: VerificationStepStatus): string {
+  if (status === "pass") return "Pass";
+  if (status === "fail") return "Fail";
+  if (status === "warn") return "Review";
+  return "Info";
+}
+
+function formatTraceValue(value: VerificationStep["traceRows"][number]["value"]): string {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  return String(value);
+}
+
+function formatCheckKey(key: string): string {
+  return key
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .replace(/\bpnl\b/i, "P&L")
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function formatStepId(id: string): string {
+  return id.replace(/-/g, " ");
+}
+
+function buildVerificationSummary(subject: string, steps: VerificationStep[], reviewedCount: number): string {
+  const lines = [
+    `${subject} verification summary`,
+    `Reviewed ${reviewedCount}/${steps.length}`,
+    ""
+  ];
+
+  for (const [index, step] of steps.entries()) {
+    lines.push(`${index + 1}. [${statusLabel(step.status)}] ${step.title}`);
+    lines.push(`   ${step.outputLabel}: ${step.outputValue}`);
+    lines.push(`   Verify: ${step.purpose}`);
+    lines.push(`   Formula: ${step.formulaText}`);
+    if (step.workbookRefs.length > 0) lines.push(`   Workbook refs: ${step.workbookRefs.join(", ")}`);
+    if (step.checkKeys.length > 0) lines.push(`   Checks: ${step.checkKeys.map(formatCheckKey).join(", ")}`);
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
 }
 
 function Metric({ label, value, tone }: { label: string; value: React.ReactNode; tone?: "ok" | "warn" | "fail" }) {

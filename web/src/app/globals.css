@@ -318,6 +318,11 @@ a {
   color: #92400e;
 }
 
+.status-info {
+  background: #eef2ff;
+  color: #3843a0;
+}
+
 .yield-display {
   border-bottom: 1px solid var(--border);
   margin: 20px 0;
@@ -1090,6 +1095,202 @@ input:disabled {
   text-transform: uppercase;
 }
 
+.verification-guide {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 22px;
+}
+
+.verification-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.verification-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.verification-flow {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+}
+
+.verification-node {
+  background: var(--off-white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  min-height: 82px;
+  padding: 10px;
+}
+
+.verification-node span {
+  align-items: center;
+  background: var(--navy);
+  border-radius: 50%;
+  color: var(--white);
+  display: flex;
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.verification-node strong {
+  color: var(--navy);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.verification-node.pass {
+  border-color: rgba(0, 179, 126, 0.35);
+}
+
+.verification-node.warn,
+.verification-node.info {
+  border-color: rgba(146, 64, 14, 0.24);
+}
+
+.verification-node.fail {
+  border-color: rgba(229, 57, 53, 0.35);
+}
+
+.verification-step-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.verification-step {
+  background: var(--off-white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.verification-step-head,
+.verification-output {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.verification-step h4 {
+  color: var(--navy);
+  font-size: 15px;
+  margin: 4px 0 0;
+}
+
+.verification-output {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.verification-output span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.verification-output strong {
+  color: var(--navy);
+  text-align: right;
+}
+
+.verification-copy-block {
+  display: grid;
+  gap: 5px;
+}
+
+.verification-copy-block p {
+  color: var(--navy);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.verification-formula {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.verification-meta {
+  display: grid;
+  gap: 8px;
+}
+
+.verification-chip-row,
+.verification-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.verification-chip,
+.verification-check {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 5px 8px;
+}
+
+.verification-check {
+  color: var(--navy);
+  font-size: 11px;
+}
+
+.verification-source {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.verification-source summary {
+  color: var(--navy);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.verification-source-table {
+  margin-top: 10px;
+}
+
+.verification-review {
+  align-items: center;
+  color: var(--navy);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 8px;
+  width: max-content;
+}
+
+.verification-review input {
+  accent-color: var(--navy);
+}
+
 .json-box {
   background: #111442;
   border-radius: 12px;
@@ -1284,6 +1485,7 @@ input:disabled {
   }
 
   .admin-tabs,
+  .verification-head,
   .yield-surface-toolbar,
   .yield-surface-actions {
     align-items: stretch;
@@ -1293,6 +1495,24 @@ input:disabled {
 
   .admin-tabs {
     display: flex;
+  }
+
+  .verification-actions {
+    justify-content: flex-start;
+  }
+
+  .verification-flow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .verification-step-head,
+  .verification-output {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .verification-output strong {
+    text-align: left;
   }
 
   .yield-chart-wrap {
