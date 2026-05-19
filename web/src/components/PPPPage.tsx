@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { PppCandidate, PppPricingRequest, PppPricingResponse, PppSelectorMode } from "@/types";
-import { formatNumber, formatPct, formatUsd } from "@/lib/format";
+import { formatPct, formatUsd } from "@/lib/format";
 import { SiteNav } from "./Logo";
 
 const durationOptions = [
@@ -24,6 +24,7 @@ export function PPPPage() {
   const [participationPct, setParticipationPct] = useState(30);
   const [data, setData] = useState<PppPricingResponse | null>(null);
   const [selectedExpiry, setSelectedExpiry] = useState<number | null>(null);
+  const [simulatorExpiryPrice, setSimulatorExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +34,11 @@ export function PPPPage() {
   const selectedCandidate = selectedExpiry
     ? candidates.find((candidate) => candidate.expirationTimestamp === selectedExpiry) ?? best
     : best;
+  const simulatorRange = useMemo(
+    () => (selectedCandidate ? getPppScenarioRange(selectedCandidate) : null),
+    [selectedCandidate]
+  );
+  const selectedExpiryPrice = simulatorExpiryPrice ?? simulatorRange?.defaultPrice ?? null;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -46,12 +52,12 @@ export function PPPPage() {
       setSelectedExpiry(null);
       return;
     }
-    setSelectedExpiry((current) =>
-      current && candidates.some((candidate) => candidate.expirationTimestamp === current)
-        ? current
-        : data.bestCandidate?.expirationTimestamp ?? null
-    );
-  }, [candidates, data]);
+    setSelectedExpiry(data.bestCandidate?.expirationTimestamp ?? null);
+  }, [data]);
+
+  useEffect(() => {
+    setSimulatorExpiryPrice(simulatorRange?.defaultPrice ?? null);
+  }, [simulatorRange]);
 
   async function fetchPricing() {
     setLoading(true);
@@ -321,6 +327,14 @@ export function PPPPage() {
             </aside>
 
             <section className="rail-detail-panel" aria-label="PPP product details">
+              {selectedCandidate && simulatorRange && selectedExpiryPrice !== null ? (
+                <PppClientPayoutSimulator
+                  candidate={selectedCandidate}
+                  expiryPrice={selectedExpiryPrice}
+                  range={simulatorRange}
+                  onChange={setSimulatorExpiryPrice}
+                />
+              ) : null}
               {selectedCandidate ? <PppDetailCard candidate={selectedCandidate} /> : null}
             </section>
           </div>
@@ -386,46 +400,85 @@ function PppDetailCard({ candidate }: { candidate: PppCandidate }) {
           <div className="pc-label">Selected package</div>
           <h3 className="card-title">Partial Principal Protected Upside Participation</h3>
         </div>
-        <span className={`status-badge ${candidate.eligible ? "status-live" : "status-warn"}`}>
-          {candidate.eligible ? "Eligible" : "Review"}
-        </span>
       </div>
       <div className="metric-grid">
-        <Metric label={candidate.recommendedLever === "protection" ? "Max protection" : "Protection"} value={formatPct(candidate.quotedProtection, 2)} tone={candidate.recommendedLever === "protection" ? "ok" : undefined} />
-        <Metric label={candidate.recommendedLever === "participation" ? "Max participation" : "Participation"} value={formatPct(candidate.quotedParticipation, 2)} tone={candidate.recommendedLever === "participation" ? "ok" : undefined} />
-        <Metric label="Min scenario P&L" value={formatUsd(candidate.minScenarioPnlUsdt)} tone={(candidate.minScenarioPnlUsdt ?? 0) >= candidate.targetProfitUsdt ? "ok" : "fail"} />
-        <Metric label="Stress price" value={formatUsd(candidate.stressPrice)} />
+        <Metric
+          label={candidate.recommendedLever === "protection" ? "Max protection" : "Protection"}
+          value={formatPct(candidate.quotedProtection, 2)}
+          tone={candidate.recommendedLever === "protection" ? "ok" : undefined}
+        />
+        <Metric label="Participation rate" value={formatPct(candidate.quotedParticipation, 2)} />
       </div>
       <dl className="product-terms">
         <Term label="Expiry" value={formatDate(candidate.expirationTimestamp)} detail={`${candidate.dayCount} days`} />
-        <Term label="Spot S0" value={formatUsd(candidate.spotPrice)} detail="BTC_USDC mid" />
-        <Term label="ATM call" value={formatUsd(candidate.atmCallStrike)} detail={`${formatNumber(candidate.optimalCallContracts, 1)} contracts`} />
-        <Term label="ATM put" value={formatUsd(candidate.atmPutStrike)} detail={`${formatNumber(candidate.putSpreadContracts, 1)} contracts`} />
-        <Term label="Floor put" value={formatUsd(candidate.floorPutStrike)} detail={`implied floor ${formatPct(candidate.putSpreadImpliedFloor, 2)}`} />
+        <Term label="Spot price" value={formatUsd(candidate.spotPrice)} detail="BTC_USDC mid" />
       </dl>
-      <h3 className="card-title" style={{ marginTop: 22 }}>Executable hedge prices</h3>
-      <table className="trace-table">
-        <thead>
-          <tr>
-            <th>Leg</th>
-            <th>Instrument</th>
-            <th>Avg price</th>
-            <th>Contracts</th>
-            <th>Slippage</th>
-          </tr>
-        </thead>
-        <tbody>
-          {candidate.legs.map((leg) => (
-            <tr key={leg.role}>
-              <td>{formatLegRole(leg.role)}</td>
-              <td className="mono">{leg.instrumentName}</td>
-              <td className="mono">{formatNumber(leg.averagePrice, 5)}</td>
-              <td className="mono">{formatNumber(leg.requiredContracts, 1)}</td>
-              <td className="mono">{formatPct(leg.depth.slippagePct, 3)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    </div>
+  );
+}
+
+function PppClientPayoutSimulator({
+  candidate,
+  expiryPrice,
+  range,
+  onChange
+}: {
+  candidate: PppCandidate;
+  expiryPrice: number;
+  range: ReturnType<typeof getPppScenarioRange>;
+  onChange: (value: number) => void;
+}) {
+  const protection = candidate.quotedProtection ?? candidate.protectionLevel;
+  const participation = candidate.quotedParticipation ?? 0;
+  const expiryRatio = candidate.spotPrice > 0 ? expiryPrice / candidate.spotPrice : 0;
+  const payout =
+    expiryPrice > candidate.spotPrice
+      ? candidate.investmentUsdt * (1 + participation * (expiryRatio - 1))
+      : candidate.investmentUsdt * Math.max(expiryRatio, protection);
+  const scenario =
+    expiryPrice > candidate.spotPrice
+      ? "Upside participation"
+      : expiryRatio < protection
+        ? "Below protection floor"
+        : "Principal floor";
+
+  return (
+    <div className="candidate-card payout-simulator">
+      <div className="row-between">
+        <div>
+          <div className="pc-label">Client payout simulator</div>
+          <h3 className="card-title">USDT redemption</h3>
+        </div>
+        <span className="status-badge status-live">USDT</span>
+      </div>
+      <div className="control-block compact-control">
+        <div className="row-between">
+          <span className="field-label">BTC expiry price</span>
+          <strong className="mono">{formatUsd(expiryPrice)}</strong>
+        </div>
+        <input
+          type="range"
+          min={range.min}
+          max={range.max}
+          step={range.step}
+          value={expiryPrice}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        <div className="range-labels">
+          <span>{formatUsd(range.min)}</span>
+          <span>Spot {formatUsd(candidate.spotPrice)}</span>
+          <span>{formatUsd(range.max)}</span>
+        </div>
+      </div>
+      <div className="metric-grid">
+        <Metric label="Client receives" value={formatUsd(payout, 2)} tone="ok" />
+        <Metric label="Scenario" value={scenario} />
+        <Metric label="Participation rate" value={formatPct(participation, 2)} tone="ok" />
+        <Metric label="Protection rate" value={formatPct(protection, 2)} />
+      </div>
+      <p className="card-copy">
+        PPP redeems in USDT with downside principal protection and upside participation above the reference spot price.
+      </p>
     </div>
   );
 }
@@ -464,8 +517,18 @@ function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(timestamp));
 }
 
-function formatLegRole(role: PppCandidate["legs"][number]["role"]) {
-  if (role === "long_call") return "Buy ATM call";
-  if (role === "short_put") return "Sell ATM put";
-  return "Buy floor put";
+function getPppScenarioRange(candidate: PppCandidate) {
+  const step = 1000;
+  const min = roundToStep(candidate.spotPrice * 0.5, step);
+  const max = roundToStep(candidate.spotPrice * 1.6, step);
+  const defaultPrice = clamp(roundToStep(candidate.spotPrice, step), min, max);
+  return { min, max, step, defaultPrice };
+}
+
+function roundToStep(value: number, step: number): number {
+  return Math.round(value / step) * step;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

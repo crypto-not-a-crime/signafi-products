@@ -896,20 +896,9 @@ export function AdminConsole() {
             <div className="admin-card">
               <h2 className="card-title">Depth and slippage</h2>
               {pppAudit ? (
-                <>
-                  {pppAudit.legs.map((leg) => (
-                    <div className="soft-row" key={leg.role}>
-                      <span>{formatPppLegRole(leg.role)}</span>
-                      <strong className="mono">
-                        {formatNumber(leg.depth.filledContracts, 1)} @ {formatNumber(leg.averagePrice, 5)}
-                      </strong>
-                    </div>
-                  ))}
-                  <div className="soft-row">
-                    <span>Max slippage</span>
-                    <strong className="mono">{formatPct(pppAudit.maxSlippagePct, 3)}</strong>
-                  </div>
-                </>
+                <p className="card-copy">
+                  PPP hedge depth, executable prices, quote age, and slippage are shown in the PPP Hedge Package.
+                </p>
               ) : audit ? (
                 <>
                   <div className="soft-row">
@@ -1123,6 +1112,34 @@ function PppAdminAuditPanel({ audit }: { audit: PppCandidate }) {
           <Metric label="Solver mode" value={audit.selectorMode.replace("_", " ")} />
           <Metric label="Delivery fees" value={audit.includeDeliveryFees ? "On" : "Off"} />
         </div>
+        <table className="trace-table">
+          <thead>
+            <tr>
+              <th>Hedge</th>
+              <th>Side</th>
+              <th>Instrument</th>
+              <th>Strike</th>
+              <th>Contracts</th>
+              <th>Avg price</th>
+              <th>Slippage</th>
+              <th>Quote age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {audit.legs.map((leg) => (
+              <tr key={leg.role}>
+                <td>{formatPppLegRole(leg.role)}</td>
+                <td>{leg.side === "buy" ? "Buy" : "Sell"}</td>
+                <td className="mono">{leg.instrumentName}</td>
+                <td className="mono">{formatUsd(leg.strike)}</td>
+                <td className="mono">{formatNumber(leg.requiredContracts, 1)}</td>
+                <td className="mono">{formatNumber(leg.averagePrice, 5)}</td>
+                <td className="mono">{formatPct(leg.depth.slippagePct, 3)}</td>
+                <td className="mono">{formatAge(leg.quoteAgeSeconds)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       <h3 className="card-title" style={{ marginTop: 24 }}>Workbook formula trace</h3>
