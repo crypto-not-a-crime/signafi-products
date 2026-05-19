@@ -4,6 +4,7 @@ export type PppLegRole = "long_call" | "short_put" | "long_floor_put";
 export type PppLegSide = "buy" | "sell";
 export type PppSelectorMode = "closest" | "auto_participation" | "auto_protection";
 export type PppRecommendedLever = "none" | "participation" | "protection";
+export type PppPriorityLever = "duration" | "protection" | "participation";
 
 export interface PppPricingRequest {
   investmentUsdt?: number;
@@ -12,6 +13,7 @@ export interface PppPricingRequest {
   protectionLevelBps?: number;
   participationLevelBps?: number;
   selectorMode?: PppSelectorMode;
+  priorityLever?: PppPriorityLever;
   targetFirmMarginBps?: number;
   includeDeliveryFees?: boolean;
   participationRoundDownBps?: number;
@@ -155,6 +157,7 @@ export interface PppPricingResponse {
     reason: string;
     selectorMode: PppSelectorMode;
     recommendedLever: PppRecommendedLever;
+    priorityLever?: PppPriorityLever;
     runwayGapDays: number | null;
     protectionGapBps: number | null;
     participationGapBps: number | null;
@@ -163,6 +166,11 @@ export interface PppPricingResponse {
   };
   mock?: boolean;
 }
+
+export type NormalizedPppPricingRequest = Required<Omit<PppPricingRequest, "nowMs" | "priorityLever">> & {
+  priorityLever?: PppPriorityLever;
+  nowMs?: number;
+};
 
 export const PPP_TEMPLATE = {
   id: "ppp-robust-model-v1",
@@ -214,8 +222,9 @@ export function normalizePppPricingRequest(
     defaultOrderBookDepth: number;
     maxSlippageBps: number;
   }
-): Required<Omit<PppPricingRequest, "nowMs">> & { nowMs?: number } {
+): NormalizedPppPricingRequest {
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
   return {
     investmentUsdt: positiveOr(request.investmentUsdt, 1_000_000),
     runwayDays: positiveOr(request.runwayDays, 92),
@@ -226,6 +235,7 @@ export function normalizePppPricingRequest(
     protectionLevelBps: clamp(Math.round(Number(request.protectionLevelBps ?? 8000)), MIN_PROTECTION_LEVEL * 10000, 10000),
     participationLevelBps: clamp(Math.round(Number(request.participationLevelBps ?? 3000)), 0, 10000),
     selectorMode,
+    priorityLever,
     targetFirmMarginBps: clamp(
       Math.round(Number(request.targetFirmMarginBps ?? config.pppTargetFirmMarginBps ?? PPP_TEMPLATE.defaultTargetFirmMarginBps)),
       0,
@@ -564,27 +574,29 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
 }
 
 export function selectPppCandidate(
-  request: Required<Omit<PppPricingRequest, "nowMs">> & { nowMs?: number },
+  request: NormalizedPppPricingRequest,
   candidates: PppCandidate[]
 ): PppPricingResponse["recommendation"] & { candidates: PppCandidate[]; bestCandidate: PppCandidate | null } {
   const sorted = [...candidates].sort((a, b) => comparePppCandidates(request, a, b));
   const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
   const recommendedLever = getPppRecommendedLever(selectorMode);
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
   return {
     candidates: sorted,
     bestCandidate,
     reason: bestCandidate
       ? selectorMode === "auto_protection"
-        ? "Closest executable PPP package by duration, with max client protection quoted for the selected participation."
+        ? `Max client protection quoted after prioritizing ${formatPppPriorityLever(priorityLever)}.`
         : selectorMode === "closest"
           ? "Closest executable PPP package by duration, protection, and participation."
-          : "Closest executable PPP package by duration and protection, with max client participation quoted."
+          : `Max client participation quoted after prioritizing ${formatPppPriorityLever(priorityLever)}.`
       : selectorMode === "auto_protection"
         ? "No PPP package passed the duration, participation, depth, freshness, slippage, and target margin checks."
         : "No PPP package passed the duration, protection, depth, freshness, slippage, and target margin checks.",
     selectorMode,
     recommendedLever,
+    priorityLever,
     runwayGapDays: bestCandidate ? Math.abs(bestCandidate.dayCount - request.runwayDays) : null,
     protectionGapBps: bestCandidate?.protectionGapBps ?? null,
     participationGapBps: bestCandidate?.participationGapBps ?? null,
@@ -594,52 +606,73 @@ export function selectPppCandidate(
 }
 
 export function scorePppPackageForShortlist(
-  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "selectorMode">,
+  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "selectorMode" | "priorityLever">,
   market: PppMarketPackageInput,
   nowMs = Date.now()
 ): number {
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
   const runwayDays = positiveOr(request.runwayDays, 92);
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
   const protection = clamp(Number(request.protectionLevelBps ?? 8000) / 10000, MIN_PROTECTION_LEVEL, 1);
   const durationGap = Math.abs(dayCount - runwayDays) / Math.max(runwayDays, 1);
   if (selectorMode === "auto_protection") {
     const candidateProtection = finiteOr(market.candidateProtectionLevel, 0);
     const atmGap = market.spotPrice > 0 ? Math.abs(market.atmCall.strike / market.spotPrice - 1) : Infinity;
-    return 1_000_000 - durationGap * 100_000 + candidateProtection * 50_000 - atmGap * 10_000;
+    const durationPenalty = priorityLever === "duration" ? 100_000 : 10_000;
+    return 1_000_000 - durationGap * durationPenalty + candidateProtection * 50_000 - atmGap * 10_000;
   }
   const floorStrikeGap = market.spotPrice > 0 ? Math.abs(market.floorPut.strike / market.spotPrice - protection) : Infinity;
   const atmGap = market.spotPrice > 0 ? Math.abs(market.atmCall.strike / market.spotPrice - 1) : Infinity;
-  return 1_000_000 - durationGap * 100_000 - floorStrikeGap * 80_000 - atmGap * 10_000;
+  const durationPenalty = priorityLever === "duration" ? 100_000 : 10_000;
+  const protectionPenalty = priorityLever === "protection" ? 100_000 : 80_000;
+  return 1_000_000 - durationGap * durationPenalty - floorStrikeGap * protectionPenalty - atmGap * 10_000;
 }
 
 function comparePppCandidates(
-  request: Required<Omit<PppPricingRequest, "nowMs">> & { nowMs?: number },
+  request: NormalizedPppPricingRequest,
   a: PppCandidate,
   b: PppCandidate
 ): number {
   if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
-  const aDurationGap = Math.abs(a.dayCount - request.runwayDays);
-  const bDurationGap = Math.abs(b.dayCount - request.runwayDays);
-  if (aDurationGap !== bDurationGap) return aDurationGap - bDurationGap;
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
+  const durationComparator = () => compareAsc(Math.abs(a.dayCount - request.runwayDays), Math.abs(b.dayCount - request.runwayDays));
+  const protectionGapComparator = () => compareAsc(a.protectionGapBps, b.protectionGapBps);
+  const participationGapComparator = () => compareAsc(a.participationGapBps, b.participationGapBps);
+  const solvedProtectionComparator = () =>
+    compareDesc(a.optimizedProtection ?? a.quotedProtection, b.optimizedProtection ?? b.quotedProtection);
+  const solvedParticipationComparator = () =>
+    compareDesc(a.optimizedParticipation ?? a.quotedParticipation, b.optimizedParticipation ?? b.quotedParticipation);
+
+  if (selectorMode === "auto_participation") {
+    return compareBy([
+      priorityLever === "protection" ? protectionGapComparator : durationComparator,
+      priorityLever === "protection" ? durationComparator : protectionGapComparator,
+      solvedParticipationComparator,
+      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+      () => compareAsc(a.maxSlippagePct, b.maxSlippagePct)
+    ]);
+  }
+
   if (selectorMode === "auto_protection") {
-    const protection = compareDesc(a.optimizedProtection ?? a.quotedProtection, b.optimizedProtection ?? b.quotedProtection);
-    if (protection !== 0) return protection;
-    const participationGap = compareAsc(a.participationGapBps, b.participationGapBps);
-    if (participationGap !== 0) return participationGap;
+    return compareBy([
+      priorityLever === "participation" ? participationGapComparator : durationComparator,
+      priorityLever === "participation" ? durationComparator : participationGapComparator,
+      solvedProtectionComparator,
+      () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+      () => compareAsc(a.maxSlippagePct, b.maxSlippagePct)
+    ]);
   }
-  const protectionGap = compareAsc(a.protectionGapBps, b.protectionGapBps);
-  if (protectionGap !== 0) return protectionGap;
-  if (selectorMode === "closest") {
-    const participationGap = compareAsc(a.participationGapBps, b.participationGapBps);
-    if (participationGap !== 0) return participationGap;
-  }
-  const participation = compareDesc(a.optimizedParticipation, b.optimizedParticipation);
-  if (participation !== 0) return participation;
-  const quoteAge = compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds);
-  if (quoteAge !== 0) return quoteAge;
-  return compareAsc(a.maxSlippagePct, b.maxSlippagePct);
+
+  return compareBy([
+    durationComparator,
+    protectionGapComparator,
+    participationGapComparator,
+    solvedParticipationComparator,
+    () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
+    () => compareAsc(a.maxSlippagePct, b.maxSlippagePct)
+  ]);
 }
 
 function calculateOptimizationRow({
@@ -1128,10 +1161,26 @@ function normalizePppSelectorMode(mode: PppPricingRequest["selectorMode"]): PppS
   return mode === "closest" || mode === "auto_protection" ? mode : "auto_participation";
 }
 
+function normalizePppPriorityLever(
+  priorityLever: PppPricingRequest["priorityLever"],
+  selectorMode: PppSelectorMode
+): PppPriorityLever | undefined {
+  if (selectorMode === "auto_participation") return priorityLever === "protection" ? "protection" : "duration";
+  if (selectorMode === "auto_protection") return priorityLever === "participation" ? "participation" : "duration";
+  return undefined;
+}
+
 function getPppRecommendedLever(selectorMode: PppSelectorMode): PppRecommendedLever {
   if (selectorMode === "auto_participation") return "participation";
   if (selectorMode === "auto_protection") return "protection";
   return "none";
+}
+
+function formatPppPriorityLever(priorityLever: PppPriorityLever | undefined): string {
+  if (priorityLever === "protection") return "protection";
+  if (priorityLever === "participation") return "participation";
+  if (priorityLever === "duration") return "duration";
+  return "the fixed inputs";
 }
 
 export function roundPppParticipationDown(participation: number | null, roundDownBps: number): number | null {
@@ -1159,6 +1208,14 @@ function addNullable(...values: Array<number | null>): number | null {
   return values.every((value): value is number => typeof value === "number" && Number.isFinite(value))
     ? values.reduce((sum, value) => sum + value, 0)
     : null;
+}
+
+function compareBy(comparators: Array<() => number>): number {
+  for (const comparator of comparators) {
+    const result = comparator();
+    if (result !== 0) return result;
+  }
+  return 0;
 }
 
 function compareAsc(a: number | null | undefined, b: number | null | undefined): number {

@@ -246,6 +246,7 @@ export interface PppCandidate {
 
 export type PppSelectorMode = "closest" | "auto_participation" | "auto_protection";
 export type PppRecommendedLever = "none" | "participation" | "protection";
+export type PppPriorityLever = "duration" | "protection" | "participation";
 
 export interface PppPricingRequest {
   investmentUsdt?: number;
@@ -254,6 +255,7 @@ export interface PppPricingRequest {
   protectionLevelBps?: number;
   participationLevelBps?: number;
   selectorMode?: PppSelectorMode;
+  priorityLever?: PppPriorityLever;
   targetFirmMarginBps?: number;
   includeDeliveryFees?: boolean;
   participationRoundDownBps?: number;
@@ -271,6 +273,7 @@ export interface PppPricingResponse {
     reason: string;
     selectorMode: PppSelectorMode;
     recommendedLever: PppRecommendedLever;
+    priorityLever?: PppPriorityLever;
     runwayGapDays: number | null;
     protectionGapBps: number | null;
     participationGapBps: number | null;

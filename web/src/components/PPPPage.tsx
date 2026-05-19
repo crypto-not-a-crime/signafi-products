@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { PppCandidate, PppPricingRequest, PppPricingResponse, PppSelectorMode } from "@/types";
+import type { PppCandidate, PppPricingRequest, PppPricingResponse, PppPriorityLever, PppSelectorMode } from "@/types";
 import { formatPct, formatUsd } from "@/lib/format";
 import { SiteNav } from "./Logo";
 
@@ -20,6 +20,7 @@ export function PPPPage() {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
   const [duration, setDuration] = useState("3m");
   const [selectorMode, setSelectorMode] = useState<PppSelectorMode>("auto_participation");
+  const [priorityLever, setPriorityLever] = useState<PppPriorityLever>("duration");
   const [protectionPct, setProtectionPct] = useState(80);
   const [participationPct, setParticipationPct] = useState(30);
   const [data, setData] = useState<PppPricingResponse | null>(null);
@@ -29,6 +30,10 @@ export function PPPPage() {
   const [error, setError] = useState<string | null>(null);
 
   const runwayDays = useMemo(() => durationOptions.find((item) => item.id === duration)?.days ?? 92, [duration]);
+  const priorityOptions = useMemo(() => getPppPriorityOptions(selectorMode), [selectorMode]);
+  const effectivePriorityLever = priorityOptions.some((option) => option.id === priorityLever)
+    ? priorityLever
+    : priorityOptions[0]?.id;
   const best = data?.bestCandidate ?? null;
   const candidates = useMemo(() => getUniqueCandidates(best, data?.candidates), [best, data?.candidates]);
   const selectedCandidate = selectedExpiry
@@ -45,7 +50,13 @@ export function PPPPage() {
       void fetchPricing();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [investmentUsdt, runwayDays, protectionPct, participationPct, selectorMode]);
+  }, [investmentUsdt, runwayDays, protectionPct, participationPct, selectorMode, effectivePriorityLever]);
+
+  useEffect(() => {
+    if (effectivePriorityLever && effectivePriorityLever !== priorityLever) {
+      setPriorityLever(effectivePriorityLever);
+    }
+  }, [effectivePriorityLever, priorityLever]);
 
   useEffect(() => {
     if (!data) {
@@ -69,6 +80,7 @@ export function PPPPage() {
         protectionLevelBps: Math.round(protectionPct * 100),
         participationLevelBps: Math.round(participationPct * 100),
         selectorMode,
+        priorityLever: effectivePriorityLever,
         maxSlippageBps: 500,
         quoteFreshnessSeconds: 10,
         orderBookDepth: 100
@@ -137,6 +149,26 @@ export function PPPPage() {
                     </button>
                   ))}
                 </div>
+                {priorityOptions.length > 0 ? (
+                  <div className="priority-control">
+                    <div>
+                      <div className="field-label">Priority</div>
+                      <strong>When fixed inputs conflict, which should win?</strong>
+                    </div>
+                    <div className="pill-row">
+                      {priorityOptions.map((option) => (
+                        <button
+                          className={`choice-pill ${effectivePriorityLever === option.id ? "active" : ""}`}
+                          key={option.id}
+                          onClick={() => setPriorityLever(option.id)}
+                          type="button"
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="control-block">
@@ -499,6 +531,22 @@ function formatDate(timestamp: number) {
 
 function getProductFloorPrice(candidate: PppCandidate) {
   return candidate.spotPrice * (candidate.quotedProtection ?? candidate.protectionLevel);
+}
+
+function getPppPriorityOptions(selectorMode: PppSelectorMode): Array<{ id: PppPriorityLever; label: string }> {
+  if (selectorMode === "auto_participation") {
+    return [
+      { id: "duration", label: "Prioritize Duration" },
+      { id: "protection", label: "Prioritize Protection" }
+    ];
+  }
+  if (selectorMode === "auto_protection") {
+    return [
+      { id: "duration", label: "Prioritize Duration" },
+      { id: "participation", label: "Prioritize Participation" }
+    ];
+  }
+  return [];
 }
 
 function getPppScenarioRange(candidate: PppCandidate) {

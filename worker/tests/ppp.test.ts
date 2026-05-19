@@ -443,6 +443,143 @@ describe("PPP robust model pricing", () => {
     expect(selected.bestCandidate?.dayCount).toBe(221);
   });
 
+  it("auto-participation ranks by duration first when duration is prioritized", () => {
+    const request = normalizePppPricingRequest(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_participation",
+        priorityLever: "duration",
+        runwayDays: 221,
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500
+      },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 0,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+    const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookMarket());
+    const betterDuration = { ...exact, dayCount: 221, protectionGapBps: 200, optimizedParticipation: 0.2 };
+    const betterProtection = { ...exact, dayCount: 260, protectionGapBps: 0, optimizedParticipation: 0.5 };
+
+    const selected = selectPppCandidate(request, [betterProtection, betterDuration]);
+    expect(selected.bestCandidate).toBe(betterDuration);
+    expect(selected.priorityLever).toBe("duration");
+  });
+
+  it("auto-participation ranks by protection first when protection is prioritized", () => {
+    const request = normalizePppPricingRequest(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_participation",
+        priorityLever: "protection",
+        runwayDays: 221,
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500
+      },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 0,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+    const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookMarket());
+    const betterDuration = { ...exact, dayCount: 221, protectionGapBps: 200, optimizedParticipation: 0.5 };
+    const betterProtection = { ...exact, dayCount: 260, protectionGapBps: 0, optimizedParticipation: 0.2 };
+
+    const selected = selectPppCandidate(request, [betterDuration, betterProtection]);
+    expect(selected.bestCandidate).toBe(betterProtection);
+    expect(selected.priorityLever).toBe("protection");
+  });
+
+  it("auto-protection ranks by duration first when duration is prioritized", () => {
+    const request = normalizePppPricingRequest(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_protection",
+        priorityLever: "duration",
+        runwayDays: 221,
+        participationLevelBps: 3000,
+        targetFirmMarginBps: 500,
+        includeDeliveryFees: false
+      },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: false,
+        pppParticipationRoundDownBps: 0,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+    const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookAutoProtectionMarket());
+    const betterDuration = { ...exact, dayCount: 221, participationGapBps: 100, optimizedProtection: 0.74 };
+    const betterParticipation = { ...exact, dayCount: 260, participationGapBps: 0, optimizedProtection: 0.95 };
+
+    const selected = selectPppCandidate(request, [betterParticipation, betterDuration]);
+    expect(selected.bestCandidate).toBe(betterDuration);
+    expect(selected.priorityLever).toBe("duration");
+  });
+
+  it("auto-protection ranks by participation first when participation is prioritized", () => {
+    const request = normalizePppPricingRequest(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_protection",
+        priorityLever: "participation",
+        runwayDays: 221,
+        participationLevelBps: 3000,
+        targetFirmMarginBps: 500,
+        includeDeliveryFees: false
+      },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: false,
+        pppParticipationRoundDownBps: 0,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+    const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookAutoProtectionMarket());
+    const betterDuration = { ...exact, dayCount: 221, participationGapBps: 100, optimizedProtection: 0.95 };
+    const betterParticipation = { ...exact, dayCount: 260, participationGapBps: 0, optimizedProtection: 0.74 };
+
+    const selected = selectPppCandidate(request, [betterDuration, betterParticipation]);
+    expect(selected.bestCandidate).toBe(betterParticipation);
+    expect(selected.priorityLever).toBe("participation");
+  });
+
+  it("normalizes missing or invalid PPP priorities to duration defaults", () => {
+    const config = {
+      pppTargetFirmMarginBps: 500,
+      pppIncludeDeliveryFees: true,
+      pppParticipationRoundDownBps: 0,
+      quoteFreshnessSeconds: 10,
+      defaultOrderBookDepth: 100,
+      maxSlippageBps: 500
+    };
+
+    expect(normalizePppPricingRequest({ selectorMode: "auto_participation" }, config).priorityLever).toBe("duration");
+    expect(
+      normalizePppPricingRequest({ selectorMode: "auto_participation", priorityLever: "participation" as never }, config)
+        .priorityLever
+    ).toBe("duration");
+    expect(normalizePppPricingRequest({ selectorMode: "auto_protection" }, config).priorityLever).toBe("duration");
+    expect(
+      normalizePppPricingRequest({ selectorMode: "auto_protection", priorityLever: "protection" as never }, config)
+        .priorityLever
+    ).toBe("duration");
+    expect(normalizePppPricingRequest({ selectorMode: "closest", priorityLever: "protection" }, config).priorityLever).toBeUndefined();
+  });
+
   it("ranks closest mode by protection and participation after duration", () => {
     const request = normalizePppPricingRequest(
       {

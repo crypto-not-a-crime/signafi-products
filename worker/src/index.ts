@@ -990,6 +990,7 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
             : normalized.selectorMode === "closest"
               ? "none"
               : "participation",
+        priorityLever: normalized.priorityLever,
         runwayGapDays: null,
         protectionGapBps: null,
         participationGapBps: null,
@@ -1049,6 +1050,7 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
       reason: selected.reason,
       selectorMode: selected.selectorMode,
       recommendedLever: selected.recommendedLever,
+      priorityLever: selected.priorityLever,
       runwayGapDays: selected.runwayGapDays,
       protectionGapBps: selected.protectionGapBps,
       participationGapBps: selected.participationGapBps,

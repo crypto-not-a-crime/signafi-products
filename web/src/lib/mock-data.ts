@@ -307,6 +307,16 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
     input.selectorMode === "closest" || input.selectorMode === "auto_protection"
       ? input.selectorMode
       : "auto_participation";
+  const priorityLever =
+    selectorMode === "auto_participation"
+      ? input.priorityLever === "protection"
+        ? "protection"
+        : "duration"
+      : selectorMode === "auto_protection"
+        ? input.priorityLever === "participation"
+          ? "participation"
+          : "duration"
+        : undefined;
   const protectionLevel = Number(input.protectionLevelBps ?? 8000) / 10000;
   const participationLevel = Number(input.participationLevelBps ?? 3000) / 10000;
   const targetFirmMarginBps = Number(input.targetFirmMarginBps ?? 500);
@@ -385,6 +395,7 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       selectorMode,
       recommendedLever:
         selectorMode === "auto_protection" ? "protection" : selectorMode === "closest" ? "none" : "participation",
+      priorityLever,
       runwayGapDays: 0,
       protectionGapBps: best.protectionGapBps,
       participationGapBps: best.participationGapBps,
