@@ -12,6 +12,7 @@ export interface PricingConfig {
   sellCallTargetFirmProfitBps: number;
   pppTargetFirmMarginBps: number;
   pppIncludeDeliveryFees: boolean;
+  pppParticipationRoundDownBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
   maxDepthCandidates: number;
@@ -279,6 +280,7 @@ export async function getPricingConfig(db: D1Database): Promise<PricingConfig> {
     sellCallTargetFirmProfitBps: Number(map.get("sell_call_target_firm_profit_bps") ?? 500),
     pppTargetFirmMarginBps: Number(map.get("ppp_target_firm_margin_bps") ?? 500),
     pppIncludeDeliveryFees: map.get("ppp_include_delivery_fees") !== "0",
+    pppParticipationRoundDownBps: Number(map.get("ppp_participation_round_down_bps") ?? 0),
     quoteFreshnessSeconds: Number(map.get("quote_freshness_seconds") ?? 10),
     defaultOrderBookDepth: Number(map.get("default_order_book_depth") ?? 100),
     maxDepthCandidates: Number(map.get("max_depth_candidates") ?? 12),
@@ -298,6 +300,7 @@ export async function updatePricingConfig(
       | "sellCallTargetFirmProfitBps"
       | "pppTargetFirmMarginBps"
       | "pppIncludeDeliveryFees"
+      | "pppParticipationRoundDownBps"
     >
   >,
   nowMs: number
@@ -333,6 +336,16 @@ export async function updatePricingConfig(
   if (typeof updates.pppIncludeDeliveryFees === "boolean") {
     statements.push(
       upsertPricingConfigStatement(db, "ppp_include_delivery_fees", updates.pppIncludeDeliveryFees ? "1" : "0", nowMs)
+    );
+  }
+  if (typeof updates.pppParticipationRoundDownBps === "number") {
+    statements.push(
+      upsertPricingConfigStatement(
+        db,
+        "ppp_participation_round_down_bps",
+        String(updates.pppParticipationRoundDownBps),
+        nowMs
+      )
     );
   }
   if (typeof updates.sellCallTargetFirmProfitBps === "number") {

@@ -14,6 +14,7 @@ export interface PppPricingRequest {
   selectorMode?: PppSelectorMode;
   targetFirmMarginBps?: number;
   includeDeliveryFees?: boolean;
+  participationRoundDownBps?: number;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;
@@ -111,6 +112,7 @@ export interface PppCandidate {
   floorStrikeTarget: number;
   targetFirmMarginBps: number;
   targetProfitUsdt: number;
+  participationRoundDownBps: number;
   optimizedParticipation: number | null;
   optimizedParticipationBps: number | null;
   optimalCallContracts: number;
@@ -207,6 +209,7 @@ export function normalizePppPricingRequest(
   config: {
     pppTargetFirmMarginBps?: number;
     pppIncludeDeliveryFees?: boolean;
+    pppParticipationRoundDownBps?: number;
     quoteFreshnessSeconds: number;
     defaultOrderBookDepth: number;
     maxSlippageBps: number;
@@ -232,6 +235,11 @@ export function normalizePppPricingRequest(
       typeof request.includeDeliveryFees === "boolean"
         ? request.includeDeliveryFees
         : config.pppIncludeDeliveryFees !== false,
+    participationRoundDownBps: clamp(
+      Math.round(Number(request.participationRoundDownBps ?? config.pppParticipationRoundDownBps ?? 0)),
+      0,
+      10000
+    ),
     maxSlippageBps: clamp(Math.round(Number(request.maxSlippageBps ?? config.maxSlippageBps)), 0, 10_000),
     quoteFreshnessSeconds: positiveOr(request.quoteFreshnessSeconds, config.quoteFreshnessSeconds),
     orderBookDepth: Math.max(1, Math.round(positiveOr(request.orderBookDepth, config.defaultOrderBookDepth))),
@@ -326,6 +334,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
       ? clamp(Number(market.candidateProtectionLevel ?? requestedProtectionLevel), 0.5, 0.95)
       : requestedProtectionLevel;
   const targetFirmMarginBps = clamp(Math.round(Number(request.targetFirmMarginBps ?? PPP_TEMPLATE.defaultTargetFirmMarginBps)), 0, 10_000);
+  const participationRoundDownBps = clamp(Math.round(Number(request.participationRoundDownBps ?? 0)), 0, 10_000);
   const targetFirmMargin = targetFirmMarginBps / 10000;
   const maxSlippageBps = clamp(Math.round(Number(request.maxSlippageBps ?? 500)), 0, 10_000);
   const quoteFreshnessSeconds = positiveOr(request.quoteFreshnessSeconds, 10);
@@ -399,7 +408,32 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const allDepthSufficient = legs.every((leg) => leg.depth.sufficientDepth);
   const quotesFresh = legs.every((leg) => leg.quoteAgeSeconds !== null && leg.quoteAgeSeconds <= quoteFreshnessSeconds);
   const participation = bestOptimization?.participation ?? null;
-  const quotedParticipation = selectorMode === "auto_participation" ? participation : selectedParticipation;
+  const quotedParticipation =
+    selectorMode === "auto_participation" ? roundPppParticipationDown(participation, participationRoundDownBps) : selectedParticipation;
+  const displayOptimization =
+    selectorMode === "auto_participation" &&
+    bestOptimization &&
+    quotedParticipation !== null &&
+    quotedParticipation !== participation &&
+    callDepth.averagePrice !== null
+      ? calculateFixedOptimizationRow({
+          callContracts: optimalCallContracts,
+          participation: quotedParticipation,
+          callAskPrice: callDepth.averagePrice,
+          putBidPrice: putBidDepth.averagePrice,
+          floorPutAskPrice: floorPutAskDepth.averagePrice,
+          investmentUsdt,
+          spotPrice,
+          protectionLevel,
+          targetProfitUsdt,
+          putSpreadContracts,
+          atmCallStrike: market.atmCall.strike,
+          atmPutStrike: market.atmPut.strike,
+          floorPutStrike: market.floorPut.strike,
+          includeDeliveryFees,
+          includeProductFloorScenario: false
+        })
+      : bestOptimization;
   const actualCallHedgeParticipation =
     investmentUsdt > 0
       ? (optimalCallContracts * spotPrice) / investmentUsdt * (1 - (includeDeliveryFees ? DELIVERY_FEE_CAP_BTC : 0))
@@ -408,10 +442,10 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     selectorMode === "auto_participation" || quotedParticipation === null || actualCallHedgeParticipation === null
       ? null
       : Math.abs(actualCallHedgeParticipation - quotedParticipation) * 10000;
-  const minScenarioPnlUsdt = bestOptimization?.minScenarioPnlUsdt ?? null;
-  const stressPrice = bestOptimization?.stressPrice ?? null;
-  const netOptionCashBtc = bestOptimization?.netOptionCashBtc ?? null;
-  const netOptionCashUsdt = bestOptimization?.netOptionCashUsdt ?? null;
+  const minScenarioPnlUsdt = displayOptimization?.minScenarioPnlUsdt ?? null;
+  const stressPrice = displayOptimization?.stressPrice ?? null;
+  const netOptionCashBtc = displayOptimization?.netOptionCashBtc ?? null;
+  const netOptionCashUsdt = displayOptimization?.netOptionCashUsdt ?? null;
   const selectedScenario =
     bestOptimization && quotedParticipation !== null
       ? calculatePppScenario(market.atmPut.strike, {
@@ -428,7 +462,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
           includeDeliveryFees
         })
       : null;
-  const scenarios = bestOptimization?.scenarios ?? [];
+  const scenarios = displayOptimization?.scenarios ?? [];
   const putSpreadImpliedFloor =
     investmentUsdt > 0 ? 1 - (putSpreadContracts * (market.atmPut.strike - market.floorPut.strike)) / investmentUsdt : null;
   const protectionGapBps = putSpreadImpliedFloor === null ? null : Math.abs(putSpreadImpliedFloor - protectionLevel) * 10000;
@@ -468,6 +502,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     floorStrikeTarget: spotPrice * protectionLevel,
     targetFirmMarginBps,
     targetProfitUsdt,
+    participationRoundDownBps,
     optimizedParticipation: selectorMode === "auto_participation" ? participation : null,
     optimizedParticipationBps: selectorMode === "auto_participation" && participation !== null ? participation * 10000 : null,
     optimalCallContracts,
@@ -505,12 +540,14 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
       spotPrice,
       protectionLevel,
       selectedParticipation,
+      quotedParticipation,
+      optimizedParticipation: selectorMode === "auto_participation" ? participation : null,
+      participationRoundDownBps,
       targetFirmMargin,
       targetProfitUsdt,
       callLeg,
       putLeg: basePutLeg,
       floorPutLeg: baseFloorLeg,
-      participation: quotedParticipation,
       optimalCallContracts,
       putSpreadContracts,
       putSpreadImpliedFloor,
@@ -883,12 +920,14 @@ function buildFormulaTrace(input: {
   spotPrice: number;
   protectionLevel: number;
   selectedParticipation: number;
+  quotedParticipation: number | null;
+  optimizedParticipation: number | null;
+  participationRoundDownBps: number;
   targetFirmMargin: number;
   targetProfitUsdt: number;
   callLeg: PppHedgeLeg;
   putLeg: PppHedgeLeg;
   floorPutLeg: PppHedgeLeg;
-  participation: number | null;
   optimalCallContracts: number;
   putSpreadContracts: number;
   putSpreadImpliedFloor: number | null;
@@ -902,8 +941,11 @@ function buildFormulaTrace(input: {
   selectedScenario: PppScenarioResult | null;
 }): FormulaTraceRow[] {
   const exactPutSpreadContracts = input.spotPrice > 0 ? input.investmentUsdt / input.spotPrice : null;
+  const participationForCallSizing = input.optimizedParticipation ?? input.quotedParticipation ?? input.selectedParticipation;
   const exactCallContracts =
-    input.spotPrice > 0 && input.participation !== null ? (input.investmentUsdt * input.participation) / input.spotPrice : null;
+    input.spotPrice > 0 && participationForCallSizing !== null
+      ? (input.investmentUsdt * participationForCallSizing) / input.spotPrice
+      : null;
   const actualCallHedgeParticipation =
     input.investmentUsdt > 0 ? (input.optimalCallContracts * input.spotPrice) / input.investmentUsdt : null;
   const protectionGap =
@@ -928,7 +970,21 @@ function buildFormulaTrace(input: {
     { cell: PPP_TEMPLATE.cells.investmentUsdt, label: "Notional invested", formula: "user input", value: input.investmentUsdt },
     { cell: PPP_TEMPLATE.cells.spotPrice, label: "Product reference spot S0", formula: "Deribit BTC_USDC spot mid", value: input.spotPrice },
     { cell: PPP_TEMPLATE.cells.protectionLevel, label: "Product floor return", formula: "selected protectionLevelBps / 10000", value: input.protectionLevel },
-    { cell: PPP_TEMPLATE.cells.selectedParticipation, label: "Client participation quote", formula: "selected participationLevelBps / 10000", value: input.selectedParticipation },
+    {
+      cell: PPP_TEMPLATE.cells.selectedParticipation,
+      label: "Client participation quote",
+      formula:
+        input.selectorMode === "auto_participation"
+          ? "IF(roundingBps > 0, FLOOR(maxParticipationBps / roundingBps) * roundingBps / 10000, maxParticipation)"
+          : "selected participationLevelBps / 10000",
+      value: input.quotedParticipation
+    },
+    {
+      cell: "pricing_config.ppp_participation_round_down_bps",
+      label: "Participation rounding increment",
+      formula: "saved PPP participation quote rounding increment / 10000",
+      value: input.participationRoundDownBps / 10000
+    },
     { cell: PPP_TEMPLATE.cells.targetFirmMargin, label: "Target firm margin", formula: "saved PPP targetFirmMarginBps / 10000", value: input.targetFirmMargin },
     { cell: PPP_TEMPLATE.cells.targetProfit, label: "Target profit amount", formula: "dayCount / 365 * targetFirmMargin * notional", value: input.targetProfitUsdt },
     { cell: PPP_TEMPLATE.cells.includeDeliveryFees, label: "Include delivery fees", formula: "saved/admin PPP delivery-fee checkbox", value: input.includeDeliveryFees },
@@ -943,7 +999,12 @@ function buildFormulaTrace(input: {
     { cell: "Robust Model!B21", label: "Call contracts exact", formula: "notional * maxParticipation / S0", value: exactCallContracts },
     { cell: PPP_TEMPLATE.cells.callContracts, label: "Optimal call contracts", formula: "last Optimization row where min PnL >= target profit", value: input.optimalCallContracts },
     { cell: "Robust Model!B23", label: "Actual call hedge participation", formula: "optimalCallContracts * S0 / notional", value: actualCallHedgeParticipation },
-    { cell: PPP_TEMPLATE.cells.clientParticipation, label: "Max client participation", formula: "callContracts * S0 / notional * (1 - delivery fee cap)", value: input.participation },
+    {
+      cell: PPP_TEMPLATE.cells.clientParticipation,
+      label: "Engine max participation",
+      formula: "callContracts * S0 / notional * (1 - delivery fee cap)",
+      value: input.optimizedParticipation
+    },
     { cell: "Robust Model!B24", label: "Put-spread implied floor", formula: "1 - putContracts * (atmPutStrike - floorPutStrike) / notional", value: input.putSpreadImpliedFloor },
     { cell: "Robust Model!B25", label: "Protection gap", formula: "(putSpreadImpliedFloor - selectedFloorReturn) * 10000", value: protectionGap },
     { cell: "Robust Model!B30", label: "Buy-leg trading fees BTC", formula: "ATM call fee + floor put fee", value: buyLegTradingFeesBtc },
@@ -1071,6 +1132,13 @@ function getPppRecommendedLever(selectorMode: PppSelectorMode): PppRecommendedLe
   if (selectorMode === "auto_participation") return "participation";
   if (selectorMode === "auto_protection") return "protection";
   return "none";
+}
+
+export function roundPppParticipationDown(participation: number | null, roundDownBps: number): number | null {
+  if (participation === null || !Number.isFinite(participation)) return null;
+  const incrementBps = Math.round(roundDownBps);
+  if (incrementBps <= 0) return participation;
+  return Math.floor((participation * 10000) / incrementBps) * incrementBps / 10000;
 }
 
 function clamp(value: number, min: number, max: number): number {

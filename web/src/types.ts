@@ -32,6 +32,7 @@ export interface PricingConfig {
   sellCallTargetFirmProfitBps: number;
   pppTargetFirmMarginBps: number;
   pppIncludeDeliveryFees: boolean;
+  pppParticipationRoundDownBps: number;
   quoteFreshnessSeconds: number;
   defaultOrderBookDepth: number;
   maxDepthCandidates: number;
@@ -209,6 +210,7 @@ export interface PppCandidate {
   floorStrikeTarget: number;
   targetFirmMarginBps: number;
   targetProfitUsdt: number;
+  participationRoundDownBps: number;
   optimizedParticipation: number | null;
   optimizedParticipationBps: number | null;
   optimalCallContracts: number;
@@ -254,6 +256,7 @@ export interface PppPricingRequest {
   selectorMode?: PppSelectorMode;
   targetFirmMarginBps?: number;
   includeDeliveryFees?: boolean;
+  participationRoundDownBps?: number;
   maxSlippageBps?: number;
   quoteFreshnessSeconds?: number;
   orderBookDepth?: number;

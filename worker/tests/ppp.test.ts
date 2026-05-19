@@ -3,6 +3,7 @@ import {
   calculatePppCandidate,
   modelExecutableDepth,
   normalizePppPricingRequest,
+  roundPppParticipationDown,
   selectPppCandidate,
   type PppMarketPackageInput
 } from "../src/pricing/ppp";
@@ -178,6 +179,7 @@ describe("PPP robust model pricing", () => {
       {
         pppTargetFirmMarginBps: 650,
         pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 0,
         quoteFreshnessSeconds: 10,
         defaultOrderBookDepth: 100,
         maxSlippageBps: 500
@@ -186,6 +188,7 @@ describe("PPP robust model pricing", () => {
 
     expect(normalized.targetFirmMarginBps).toBe(650);
     expect(normalized.includeDeliveryFees).toBe(true);
+    expect(normalized.participationRoundDownBps).toBe(0);
   });
 
   it("uses saved PPP delivery-fee config defaults", () => {
@@ -194,6 +197,7 @@ describe("PPP robust model pricing", () => {
       {
         pppTargetFirmMarginBps: 500,
         pppIncludeDeliveryFees: false,
+        pppParticipationRoundDownBps: 0,
         quoteFreshnessSeconds: 10,
         defaultOrderBookDepth: 100,
         maxSlippageBps: 500
@@ -201,6 +205,123 @@ describe("PPP robust model pricing", () => {
     );
 
     expect(normalized.includeDeliveryFees).toBe(false);
+  });
+
+  it("uses saved PPP participation rounding config defaults", () => {
+    const normalized = normalizePppPricingRequest(
+      { investmentUsdt: 1_000_000 },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 500,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+
+    expect(normalized.participationRoundDownBps).toBe(500);
+  });
+
+  it("rounds PPP auto-participation quotes down to the configured increment", () => {
+    expect(roundPppParticipationDown(0.5856, 500)).toBeCloseTo(0.55, 12);
+    expect(roundPppParticipationDown(0.3277, 500)).toBeCloseTo(0.3, 12);
+    expect(roundPppParticipationDown(0.3277, 0)).toBeCloseTo(0.3277, 12);
+  });
+
+  it("keeps raw max participation while quoting the rounded participation", () => {
+    const unrounded = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      workbookMarket()
+    );
+    const rounded = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500,
+        participationRoundDownBps: 500,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      workbookMarket()
+    );
+
+    expect(unrounded.quotedParticipation).toBeCloseTo(unrounded.optimizedParticipation ?? 0, 12);
+    expect(rounded.optimizedParticipation).toBeCloseTo(unrounded.optimizedParticipation ?? 0, 12);
+    expect(rounded.quotedParticipation).toBeCloseTo(0.2, 12);
+    expect(rounded.quotedParticipation).toBeLessThan(rounded.optimizedParticipation ?? 0);
+    expect(rounded.formulaTrace.find((row) => row.cell === "pricing_config.ppp_participation_round_down_bps")?.value).toBe(0.05);
+  });
+
+  it("uses rounded participation for scenario PnL calculations", () => {
+    const candidate = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500,
+        participationRoundDownBps: 500,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      workbookMarket()
+    );
+    const upsideScenario = candidate.scenarios.reduce((max, scenario) =>
+      scenario.expiryPrice > max.expiryPrice ? scenario : max
+    );
+    const roundedPayout =
+      candidate.investmentUsdt *
+      (1 + (candidate.quotedParticipation ?? 0) * (upsideScenario.expiryPrice / candidate.spotPrice - 1));
+    const rawPayout =
+      candidate.investmentUsdt *
+      (1 + (candidate.optimizedParticipation ?? 0) * (upsideScenario.expiryPrice / candidate.spotPrice - 1));
+
+    expect(upsideScenario.expiryPrice).toBeGreaterThan(candidate.spotPrice);
+    expect(upsideScenario.clientPayoutUsdt).toBeCloseTo(roundedPayout, 8);
+    expect(upsideScenario.clientPayoutUsdt).toBeLessThan(rawPayout);
+    expect(candidate.minScenarioPnlUsdt).toBeGreaterThan(candidate.targetProfitUsdt);
+  });
+
+  it("does not round manually selected PPP participation modes", () => {
+    const closest = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "closest",
+        participationLevelBps: 3277,
+        protectionLevelBps: 8000,
+        participationRoundDownBps: 500,
+        targetFirmMarginBps: 100,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      workbookMarket()
+    );
+    const autoProtection = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_protection",
+        participationLevelBps: 3277,
+        participationRoundDownBps: 500,
+        targetFirmMarginBps: 500,
+        includeDeliveryFees: false,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      workbookAutoProtectionMarket()
+    );
+
+    expect(closest.quotedParticipation).toBeCloseTo(0.3277, 12);
+    expect(autoProtection.quotedParticipation).toBeCloseTo(0.3277, 12);
   });
 
   it("matches the workbook auto-protection optimization sample", () => {
@@ -303,6 +424,7 @@ describe("PPP robust model pricing", () => {
       {
         pppTargetFirmMarginBps: 500,
         pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 0,
         quoteFreshnessSeconds: 10,
         defaultOrderBookDepth: 100,
         maxSlippageBps: 500
@@ -334,6 +456,7 @@ describe("PPP robust model pricing", () => {
       {
         pppTargetFirmMarginBps: 100,
         pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 0,
         quoteFreshnessSeconds: 10,
         defaultOrderBookDepth: 100,
         maxSlippageBps: 500

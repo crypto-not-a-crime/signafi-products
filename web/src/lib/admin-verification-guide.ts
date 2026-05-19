@@ -234,7 +234,9 @@ export function buildPppVerificationGuide(audit: PppCandidate): VerificationStep
       )}; quoted participation ${fmtPct(audit.quotedParticipation, 2)}; target margin ${fmtPct(
         audit.targetFirmMarginBps / 10000,
         2
-      )}; ${fmtNumber(audit.dayCount, 0)} days.`,
+      )}; participation rounding ${
+        audit.participationRoundDownBps > 0 ? fmtPct(audit.participationRoundDownBps / 10000, 1) : "off"
+      }; ${fmtNumber(audit.dayCount, 0)} days.`,
       outputLabel: "Target profit",
       outputValue: fmtUsd(audit.targetProfitUsdt, 2),
       workbookRefs: [
@@ -242,6 +244,7 @@ export function buildPppVerificationGuide(audit: PppCandidate): VerificationStep
         "Robust Model!B5",
         "Robust Model!B7",
         "Robust Model!B8",
+        "pricing_config.ppp_participation_round_down_bps",
         "Robust Model!B9",
         "Robust Model!B10",
         "Robust Model!B12"
@@ -251,6 +254,7 @@ export function buildPppVerificationGuide(audit: PppCandidate): VerificationStep
         "Robust Model!B5",
         "Robust Model!B7",
         "Robust Model!B8",
+        "pricing_config.ppp_participation_round_down_bps",
         "Robust Model!B9",
         "Robust Model!B10",
         "Robust Model!B12"

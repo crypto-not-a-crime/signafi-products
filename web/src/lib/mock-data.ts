@@ -311,6 +311,8 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
   const participationLevel = Number(input.participationLevelBps ?? 3000) / 10000;
   const targetFirmMarginBps = Number(input.targetFirmMarginBps ?? 500);
   const includeDeliveryFees = typeof input.includeDeliveryFees === "boolean" ? input.includeDeliveryFees : true;
+  const participationRoundDownBps = Math.max(0, Math.round(Number(input.participationRoundDownBps ?? 0)));
+  const quoteParticipation = (raw: number) => roundParticipationDown(raw, participationRoundDownBps) ?? raw;
   const expirationTimestamp =
     typeof input.expirationTimestamp === "number" && Number.isFinite(input.expirationTimestamp)
       ? input.expirationTimestamp
@@ -323,6 +325,7 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
     protectionLevelBps: Math.round((selectorMode === "auto_protection" ? 0.753 : protectionLevel) * 10000),
     targetFirmMarginBps,
     includeDeliveryFees,
+    participationRoundDownBps,
     quotedParticipation: selectorMode === "auto_participation" ? undefined : participationLevel,
     quotedParticipationBps: selectorMode === "auto_participation" ? undefined : participationLevel * 10000,
     optimizedParticipation: selectorMode === "auto_participation" ? undefined : null,
@@ -338,8 +341,9 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       dayCount: 180,
       optimizedParticipation: selectorMode === "auto_participation" ? 0.212 : null,
       optimizedParticipationBps: selectorMode === "auto_participation" ? 2120 : null,
-      quotedParticipation: selectorMode === "auto_participation" ? 0.212 : participationLevel,
-      quotedParticipationBps: selectorMode === "auto_participation" ? 2120 : participationLevel * 10000,
+      quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.212) : participationLevel,
+      quotedParticipationBps: selectorMode === "auto_participation" ? quoteParticipation(0.212) * 10000 : participationLevel * 10000,
+      participationRoundDownBps,
       optimizedProtection: selectorMode === "auto_protection" ? 0.742 : null,
       optimizedProtectionBps: selectorMode === "auto_protection" ? 7420 : null,
       protectionLevel: selectorMode === "auto_protection" ? 0.742 : protectionLevel,
@@ -356,8 +360,9 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       dayCount: 365,
       optimizedParticipation: selectorMode === "auto_participation" ? 0.186 : null,
       optimizedParticipationBps: selectorMode === "auto_participation" ? 1860 : null,
-      quotedParticipation: selectorMode === "auto_participation" ? 0.186 : participationLevel,
-      quotedParticipationBps: selectorMode === "auto_participation" ? 1860 : participationLevel * 10000,
+      quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.186) : participationLevel,
+      quotedParticipationBps: selectorMode === "auto_participation" ? quoteParticipation(0.186) * 10000 : participationLevel * 10000,
+      participationRoundDownBps,
       optimizedProtection: selectorMode === "auto_protection" ? 0.728 : null,
       optimizedProtectionBps: selectorMode === "auto_protection" ? 7280 : null,
       protectionLevel: selectorMode === "auto_protection" ? 0.728 : protectionLevel,
@@ -397,10 +402,12 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
   const investmentUsdt = overrides.investmentUsdt ?? 1000000;
   const spotPrice = overrides.spotPrice ?? 77121;
   const protectionLevel = overrides.protectionLevel ?? 0.8;
+  const participationRoundDownBps = overrides.participationRoundDownBps ?? 0;
   const optimizedParticipation =
     overrides.optimizedParticipation ?? (selectorMode === "auto_participation" ? 0.239 : null);
   const quotedParticipation =
-    overrides.quotedParticipation ?? (selectorMode === "auto_participation" ? optimizedParticipation : 0.3);
+    overrides.quotedParticipation ??
+    (selectorMode === "auto_participation" ? roundParticipationDown(optimizedParticipation, participationRoundDownBps) : 0.3);
   const targetFirmMarginBps = overrides.targetFirmMarginBps ?? 500;
   const dayCount = overrides.dayCount ?? 92;
   const targetProfitUsdt = investmentUsdt * (targetFirmMarginBps / 10000) * (dayCount / 365);
@@ -448,6 +455,7 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
     floorStrikeTarget: spotPrice * protectionLevel,
     targetFirmMarginBps,
     targetProfitUsdt,
+    participationRoundDownBps,
     optimizedParticipation,
     optimizedParticipationBps:
       overrides.optimizedParticipationBps ?? (optimizedParticipation === null ? null : optimizedParticipation * 10000),
@@ -499,6 +507,7 @@ export function mockPppCandidate(overrides: Partial<PppCandidate> = {}): PppCand
       spotPrice,
       protectionLevel,
       selectedParticipation: quotedParticipation ?? 0,
+      participationRoundDownBps,
       optimizedParticipation: optimizedParticipation ?? quotedParticipation ?? 0,
       targetFirmMarginBps,
       targetProfitUsdt,
@@ -527,6 +536,7 @@ function mockPppFormulaTrace(input: {
   spotPrice: number;
   protectionLevel: number;
   selectedParticipation: number;
+  participationRoundDownBps: number;
   optimizedParticipation: number;
   targetFirmMarginBps: number;
   targetProfitUsdt: number;
@@ -559,7 +569,18 @@ function mockPppFormulaTrace(input: {
     { cell: "Robust Model!B4", label: "Notional invested", formula: "user input", value: input.investmentUsdt },
     { cell: "Robust Model!B5", label: "Product reference spot S0", formula: "Deribit BTC_USDC spot mid", value: input.spotPrice },
     { cell: "Robust Model!B7", label: "Product floor return", formula: "selected protectionLevelBps / 10000", value: input.protectionLevel },
-    { cell: "Robust Model!B8", label: "Client participation quote", formula: "selected participationLevelBps / 10000", value: input.selectedParticipation },
+    {
+      cell: "Robust Model!B8",
+      label: "Client participation quote",
+      formula: input.selectorMode === "auto_participation" ? "rounded max participation quote" : "selected participationLevelBps / 10000",
+      value: input.selectedParticipation
+    },
+    {
+      cell: "pricing_config.ppp_participation_round_down_bps",
+      label: "Participation rounding increment",
+      formula: "saved PPP participation quote rounding increment / 10000",
+      value: input.participationRoundDownBps / 10000
+    },
     { cell: "Robust Model!B9", label: "Target firm margin", formula: "saved PPP targetFirmMarginBps / 10000", value: input.targetFirmMarginBps / 10000 },
     { cell: "Robust Model!B10", label: "Target profit amount", formula: "dayCount / 365 * targetFirmMargin * notional", value: input.targetProfitUsdt },
     { cell: "Robust Model!B12", label: "Include delivery fees", formula: "saved/admin PPP delivery-fee checkbox", value: input.includeDeliveryFees },
@@ -605,6 +626,13 @@ function mockPppFormulaTrace(input: {
     { cell: "Scenario PnL!C69", label: "Delivery fees USDT", formula: "Deribit delivery fee cap on exercised options", value: input.selectedScenario.deliveryFeesUsdt },
     { cell: "Scenario PnL!C72", label: "Issuer PnL USDT", formula: "notional + net option cash + hedge payoff - delivery fees - client payout", value: input.selectedScenario.issuerPnlUsdt }
   ];
+}
+
+function roundParticipationDown(participation: number | null, roundDownBps: number): number | null {
+  if (participation === null || !Number.isFinite(participation)) return null;
+  const incrementBps = Math.round(roundDownBps);
+  if (incrementBps <= 0) return participation;
+  return Math.floor((participation * 10000) / incrementBps) * incrementBps / 10000;
 }
 
 function mockPppLeg(

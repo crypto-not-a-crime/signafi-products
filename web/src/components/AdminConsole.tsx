@@ -77,6 +77,8 @@ export function AdminConsole() {
   const [savedPppTargetFirmMarginPct, setSavedPppTargetFirmMarginPct] = useState(5);
   const [pppIncludeDeliveryFees, setPppIncludeDeliveryFees] = useState(true);
   const [savedPppIncludeDeliveryFees, setSavedPppIncludeDeliveryFees] = useState(true);
+  const [pppParticipationRoundDownPct, setPppParticipationRoundDownPct] = useState(0);
+  const [savedPppParticipationRoundDownPct, setSavedPppParticipationRoundDownPct] = useState(0);
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
   const [pppAudit, setPppAudit] = useState<PppCandidate | null>(null);
@@ -286,6 +288,12 @@ export function AdminConsole() {
       setPppIncludeDeliveryFees(payload.pricingConfig.pppIncludeDeliveryFees);
       setSavedPppIncludeDeliveryFees(payload.pricingConfig.pppIncludeDeliveryFees);
     }
+    const pppRoundDownBps = payload.pricingConfig?.pppParticipationRoundDownBps;
+    if (typeof pppRoundDownBps === "number" && Number.isFinite(pppRoundDownBps)) {
+      const pppRoundDown = pppRoundDownBps / 100;
+      setPppParticipationRoundDownPct(pppRoundDown);
+      setSavedPppParticipationRoundDownPct(pppRoundDown);
+    }
   }
 
   async function loadExpiryOptions() {
@@ -322,6 +330,8 @@ export function AdminConsole() {
   const savedSellCallTargetFirmProfitBps = Math.max(0, Math.round(savedSellCallTargetFirmProfitPct * 100));
   const pppTargetFirmMarginBps = Math.max(0, Math.round(pppTargetFirmMarginPct * 100));
   const savedPppTargetFirmMarginBps = Math.max(0, Math.round(savedPppTargetFirmMarginPct * 100));
+  const pppParticipationRoundDownBps = Math.max(0, Math.round(pppParticipationRoundDownPct * 100));
+  const savedPppParticipationRoundDownBps = Math.max(0, Math.round(savedPppParticipationRoundDownPct * 100));
   const pricingConfigChanged =
     marketDataMode !== savedMarketDataMode ||
     sellPutPricingMethod !== savedSellPutPricingMethod ||
@@ -329,7 +339,8 @@ export function AdminConsole() {
     sellPutTargetFirmProfitBps !== savedSellPutTargetFirmProfitBps ||
     sellCallTargetFirmProfitBps !== savedSellCallTargetFirmProfitBps ||
     pppTargetFirmMarginBps !== savedPppTargetFirmMarginBps ||
-    pppIncludeDeliveryFees !== savedPppIncludeDeliveryFees;
+    pppIncludeDeliveryFees !== savedPppIncludeDeliveryFees ||
+    pppParticipationRoundDownBps !== savedPppParticipationRoundDownBps;
 
   async function savePricingConfig() {
     setSavingConfig(true);
@@ -345,7 +356,8 @@ export function AdminConsole() {
           sellPutTargetFirmProfitBps,
           sellCallTargetFirmProfitBps,
           pppTargetFirmMarginBps,
-          pppIncludeDeliveryFees
+          pppIncludeDeliveryFees,
+          pppParticipationRoundDownBps
         })
       });
       const payload = (await response.json()) as { pricingConfig?: PricingConfig; error?: string };
@@ -378,6 +390,10 @@ export function AdminConsole() {
       const nextPppIncludeDeliveryFees = payload.pricingConfig?.pppIncludeDeliveryFees ?? pppIncludeDeliveryFees;
       setPppIncludeDeliveryFees(nextPppIncludeDeliveryFees);
       setSavedPppIncludeDeliveryFees(nextPppIncludeDeliveryFees);
+      const nextPppRoundDownBps = payload.pricingConfig?.pppParticipationRoundDownBps ?? pppParticipationRoundDownBps;
+      const nextPppRoundDownPct = nextPppRoundDownBps / 100;
+      setPppParticipationRoundDownPct(nextPppRoundDownPct);
+      setSavedPppParticipationRoundDownPct(nextPppRoundDownPct);
       setConfigMessage("Pricing configuration saved.");
     } finally {
       setSavingConfig(false);
@@ -801,6 +817,23 @@ export function AdminConsole() {
               </label>
               {selectedProductType === "ppp" ? (
                 <label>
+                  <span className="field-label">PPP participation rounding increment %</span>
+                  <input
+                    className="admin-input"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={pppParticipationRoundDownPct}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setPppParticipationRoundDownPct(Number.isFinite(next) ? next : 0);
+                    }}
+                  />
+                </label>
+              ) : null}
+              {selectedProductType === "ppp" ? (
+                <label>
                   <span className="field-label">Include delivery fees</span>
                   <div className="soft-row">
                     <span>Deribit delivery-fee stress</span>
@@ -850,6 +883,16 @@ export function AdminConsole() {
               <div className="soft-row" style={{ marginTop: 12 }}>
                 <span>Saved PPP delivery-fee stress</span>
                 <strong className="mono">{savedPppIncludeDeliveryFees ? "On" : "Off"}</strong>
+              </div>
+            ) : null}
+            {selectedProductType === "ppp" ? (
+              <div className="soft-row" style={{ marginTop: 12 }}>
+                <span>Saved PPP participation rounding</span>
+                <strong className="mono">
+                  {savedPppParticipationRoundDownBps > 0
+                    ? `${savedPppParticipationRoundDownPct.toFixed(1)}% increments`
+                    : "Off"}
+                </strong>
               </div>
             ) : null}
             <div className="soft-row" style={{ marginTop: 12 }}>
@@ -1405,10 +1448,11 @@ function PppAdminAuditPanel({
     <>
       <div className="metric-grid">
         <Metric
-          label={audit.recommendedLever === "participation" ? "Max participation" : "Client participation"}
+          label="Participation quote"
           value={formatPct(audit.quotedParticipation, 2)}
           tone={audit.eligible ? "ok" : "warn"}
         />
+        <Metric label="Engine max participation" value={formatPct(audit.optimizedParticipation, 2)} />
         <Metric
           label={audit.recommendedLever === "protection" ? "Max protection" : "Protection"}
           value={formatPct(audit.quotedProtection, 2)}
@@ -1475,6 +1519,10 @@ function PppAdminAuditPanel({
           <Metric label="Put spread contracts" value={formatNumber(audit.putSpreadContracts, 1)} />
           <Metric label="Solver mode" value={audit.selectorMode.replace("_", " ")} />
           <Metric label="Delivery fees" value={audit.includeDeliveryFees ? "On" : "Off"} />
+          <Metric
+            label="Participation rounding"
+            value={audit.participationRoundDownBps > 0 ? `${(audit.participationRoundDownBps / 100).toFixed(1)}%` : "Off"}
+          />
         </div>
         <table className="trace-table">
           <thead>

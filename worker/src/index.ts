@@ -579,6 +579,7 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
     sellCallTargetFirmProfitBps?: number;
     pppTargetFirmMarginBps?: number;
     pppIncludeDeliveryFees?: boolean;
+    pppParticipationRoundDownBps?: number;
   }>();
   if (
     payload.marketDataMode !== undefined &&
@@ -630,6 +631,15 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
   if (payload.pppIncludeDeliveryFees !== undefined && typeof payload.pppIncludeDeliveryFees !== "boolean") {
     return json({ error: "pppIncludeDeliveryFees must be a boolean" }, 400);
   }
+  if (
+    payload.pppParticipationRoundDownBps !== undefined &&
+    !isNonNegativeFinite(payload.pppParticipationRoundDownBps)
+  ) {
+    return json({ error: "pppParticipationRoundDownBps must be a non-negative number" }, 400);
+  }
+  if (payload.pppParticipationRoundDownBps !== undefined && payload.pppParticipationRoundDownBps > 10_000) {
+    return json({ error: "pppParticipationRoundDownBps must be less than or equal to 10000" }, 400);
+  }
 
   const pricingConfig = await updatePricingConfig(
     env.DB,
@@ -654,7 +664,11 @@ async function handleUpdatePricingConfig(request: Request, env: Env): Promise<Re
           : Math.round(payload.sellCallTargetFirmProfitBps),
       pppTargetFirmMarginBps:
         payload.pppTargetFirmMarginBps === undefined ? undefined : Math.round(payload.pppTargetFirmMarginBps),
-      pppIncludeDeliveryFees: payload.pppIncludeDeliveryFees
+      pppIncludeDeliveryFees: payload.pppIncludeDeliveryFees,
+      pppParticipationRoundDownBps:
+        payload.pppParticipationRoundDownBps === undefined
+          ? undefined
+          : Math.round(payload.pppParticipationRoundDownBps)
     },
     Date.now()
   );
