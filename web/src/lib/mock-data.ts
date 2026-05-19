@@ -343,47 +343,92 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
     optimizedProtection: selectorMode === "auto_protection" ? 0.753 : null,
     optimizedProtectionBps: selectorMode === "auto_protection" ? 7530 : null
   });
-  const candidates = [
-    best,
-    mockPppCandidate({
-      selectorMode,
-      expirationTimestamp: expiryTimestampFromDte(Date.now(), 180),
-      dayCount: 180,
-      optimizedParticipation: selectorMode === "auto_participation" ? 0.212 : null,
-      optimizedParticipationBps: selectorMode === "auto_participation" ? 2120 : null,
-      quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.212) : participationLevel,
-      quotedParticipationBps: selectorMode === "auto_participation" ? quoteParticipation(0.212) * 10000 : participationLevel * 10000,
-      participationRoundDownBps,
-      optimizedProtection: selectorMode === "auto_protection" ? 0.742 : null,
-      optimizedProtectionBps: selectorMode === "auto_protection" ? 7420 : null,
-      protectionLevel: selectorMode === "auto_protection" ? 0.742 : protectionLevel,
-      optimalCallContracts: 2.8,
-      floorPutStrike: 62000,
-      putSpreadImpliedFloor: 0.812,
-      protectionGapBps: Math.abs(0.812 - protectionLevel) * 10000,
-      minScenarioPnlUsdt: 35800,
-      stressPrice: 80000
-    }),
-    mockPppCandidate({
-      selectorMode,
-      expirationTimestamp: expiryTimestampFromDte(Date.now(), 365),
-      dayCount: 365,
-      optimizedParticipation: selectorMode === "auto_participation" ? 0.186 : null,
-      optimizedParticipationBps: selectorMode === "auto_participation" ? 1860 : null,
-      quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.186) : participationLevel,
-      quotedParticipationBps: selectorMode === "auto_participation" ? quoteParticipation(0.186) * 10000 : participationLevel * 10000,
-      participationRoundDownBps,
-      optimizedProtection: selectorMode === "auto_protection" ? 0.728 : null,
-      optimizedProtectionBps: selectorMode === "auto_protection" ? 7280 : null,
-      protectionLevel: selectorMode === "auto_protection" ? 0.728 : protectionLevel,
-      optimalCallContracts: 2.4,
-      floorPutStrike: 60000,
-      putSpreadImpliedFloor: 0.798,
-      protectionGapBps: Math.abs(0.798 - protectionLevel) * 10000,
-      minScenarioPnlUsdt: 52500,
-      stressPrice: 77121
-    })
-  ];
+  const durationPriorityMock = selectorMode === "auto_participation" && priorityLever === "duration";
+  const lowerProtection = Math.max(0.1, protectionLevel - 0.05);
+  const upperProtection = Math.min(1, protectionLevel + 0.05);
+  const candidates = durationPriorityMock
+    ? [
+        best,
+        mockPppCandidate({
+          selectorMode,
+          expirationTimestamp: best.expirationTimestamp,
+          dayCount: best.dayCount,
+          protectionLevel: lowerProtection,
+          protectionLevelBps: Math.round(lowerProtection * 10000),
+          optimizedParticipation: 0.312,
+          optimizedParticipationBps: 3120,
+          quotedParticipation: quoteParticipation(0.312),
+          quotedParticipationBps: quoteParticipation(0.312) * 10000,
+          participationRoundDownBps,
+          optimalCallContracts: 4,
+          floorPutStrike: 58000,
+          putSpreadImpliedFloor: lowerProtection,
+          protectionGapBps: Math.abs(lowerProtection - protectionLevel) * 10000,
+          minScenarioPnlUsdt: 38200,
+          stressPrice: 77121
+        }),
+        mockPppCandidate({
+          selectorMode,
+          expirationTimestamp: best.expirationTimestamp,
+          dayCount: best.dayCount,
+          protectionLevel: upperProtection,
+          protectionLevelBps: Math.round(upperProtection * 10000),
+          optimizedParticipation: 0.176,
+          optimizedParticipationBps: 1760,
+          quotedParticipation: quoteParticipation(0.176),
+          quotedParticipationBps: quoteParticipation(0.176) * 10000,
+          participationRoundDownBps,
+          optimalCallContracts: 2.3,
+          floorPutStrike: 66000,
+          putSpreadImpliedFloor: upperProtection,
+          protectionGapBps: Math.abs(upperProtection - protectionLevel) * 10000,
+          minScenarioPnlUsdt: 34600,
+          stressPrice: 77121
+        })
+      ]
+    : [
+        best,
+        mockPppCandidate({
+          selectorMode,
+          expirationTimestamp: expiryTimestampFromDte(Date.now(), 180),
+          dayCount: 180,
+          optimizedParticipation: selectorMode === "auto_participation" ? 0.212 : null,
+          optimizedParticipationBps: selectorMode === "auto_participation" ? 2120 : null,
+          quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.212) : participationLevel,
+          quotedParticipationBps:
+            selectorMode === "auto_participation" ? quoteParticipation(0.212) * 10000 : participationLevel * 10000,
+          participationRoundDownBps,
+          optimizedProtection: selectorMode === "auto_protection" ? 0.742 : null,
+          optimizedProtectionBps: selectorMode === "auto_protection" ? 7420 : null,
+          protectionLevel: selectorMode === "auto_protection" ? 0.742 : protectionLevel,
+          optimalCallContracts: 2.8,
+          floorPutStrike: 62000,
+          putSpreadImpliedFloor: 0.812,
+          protectionGapBps: Math.abs(0.812 - protectionLevel) * 10000,
+          minScenarioPnlUsdt: 35800,
+          stressPrice: 80000
+        }),
+        mockPppCandidate({
+          selectorMode,
+          expirationTimestamp: expiryTimestampFromDte(Date.now(), 365),
+          dayCount: 365,
+          optimizedParticipation: selectorMode === "auto_participation" ? 0.186 : null,
+          optimizedParticipationBps: selectorMode === "auto_participation" ? 1860 : null,
+          quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.186) : participationLevel,
+          quotedParticipationBps:
+            selectorMode === "auto_participation" ? quoteParticipation(0.186) * 10000 : participationLevel * 10000,
+          participationRoundDownBps,
+          optimizedProtection: selectorMode === "auto_protection" ? 0.728 : null,
+          optimizedProtectionBps: selectorMode === "auto_protection" ? 7280 : null,
+          protectionLevel: selectorMode === "auto_protection" ? 0.728 : protectionLevel,
+          optimalCallContracts: 2.4,
+          floorPutStrike: 60000,
+          putSpreadImpliedFloor: 0.798,
+          protectionGapBps: Math.abs(0.798 - protectionLevel) * 10000,
+          minScenarioPnlUsdt: 52500,
+          stressPrice: 77121
+        })
+      ];
 
   return {
     generatedAt: Date.now(),

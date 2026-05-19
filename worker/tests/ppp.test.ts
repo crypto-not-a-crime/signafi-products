@@ -8,6 +8,7 @@ import {
   selectPppCandidate,
   type PppMarketPackageInput
 } from "../src/pricing/ppp";
+import { getPppCandidateKey, getPppRecommendations } from "../../web/src/lib/ppp-recommendations";
 
 const NOW = Date.UTC(2026, 4, 18);
 const EXPIRY_221_DAYS = Date.UTC(2026, 11, 25);
@@ -517,6 +518,81 @@ describe("PPP robust model pricing", () => {
     const selected = selectPppCandidate(request, [betterProtection, betterDuration]);
     expect(selected.bestCandidate).toBe(betterDuration);
     expect(selected.priorityLever).toBe("duration");
+  });
+
+  it("keeps closest-expiry protection variants distinct for duration-priority PPP recommendations", () => {
+    const request = normalizePppPricingRequest(
+      {
+        investmentUsdt: 1_000_000,
+        selectorMode: "auto_participation",
+        priorityLever: "duration",
+        runwayDays: 221,
+        protectionLevelBps: 8000,
+        targetFirmMarginBps: 500
+      },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: true,
+        pppParticipationRoundDownBps: 0,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+    const exact = calculatePppCandidate({ ...request, nowMs: NOW }, workbookMarket({ candidateProtectionLevel: 0.8 }));
+    const lowerProtection = calculatePppCandidate(
+      { ...request, nowMs: NOW },
+      workbookMarket({
+        candidateProtectionLevel: 0.75,
+        floorPut: {
+          instrumentName: "BTC-25DEC26-58000-P",
+          optionType: "put",
+          strike: 58000,
+          expirationTimestamp: EXPIRY_221_DAYS,
+          askPrice: 0.0415,
+          askAmount: 50,
+          deribitTimestamp: NOW,
+          asks: [[0.0415, 50]]
+        }
+      })
+    );
+    const higherProtection = calculatePppCandidate(
+      { ...request, nowMs: NOW },
+      workbookMarket({
+        candidateProtectionLevel: 0.85,
+        floorPut: {
+          instrumentName: "BTC-25DEC26-66000-P",
+          optionType: "put",
+          strike: 66000,
+          expirationTimestamp: EXPIRY_221_DAYS,
+          askPrice: 0.071,
+          askAmount: 50,
+          deribitTimestamp: NOW,
+          asks: [[0.071, 50]]
+        }
+      })
+    );
+    const farExactProtection = {
+      ...exact,
+      expirationTimestamp: Date.UTC(2027, 0, 15),
+      dayCount: 242,
+      optimizedParticipation: 0.9,
+      quotedParticipation: 0.9
+    };
+
+    const selected = selectPppCandidate(request, [farExactProtection, higherProtection, lowerProtection, exact]);
+    const recommendations = getPppRecommendations({
+      best: selected.bestCandidate,
+      candidates: selected.candidates,
+      selectorMode: "auto_participation",
+      priorityLever: "duration",
+      targetProtectionBps: 8000,
+      limit: 3
+    });
+
+    expect(recommendations.map((candidate) => candidate.dayCount)).toEqual([221, 221, 221]);
+    expect(recommendations.map((candidate) => candidate.quotedProtectionBps)).toEqual([8000, 7500, 8500]);
+    expect(new Set(recommendations.map(getPppCandidateKey)).size).toBe(3);
   });
 
   it("auto-participation ranks by protection first when protection is prioritized", () => {

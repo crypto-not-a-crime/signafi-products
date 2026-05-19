@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PppCandidate, PppPricingRequest, PppPricingResponse, PppPriorityLever, PppSelectorMode } from "@/types";
 import { formatPct, formatUsd } from "@/lib/format";
+import { getPppCandidateKey, getPppRecommendations } from "@/lib/ppp-recommendations";
 import { SiteNav } from "./Logo";
 
 const durationOptions = [
@@ -24,7 +25,7 @@ export function PPPPage() {
   const [protectionPct, setProtectionPct] = useState(80);
   const [participationPct, setParticipationPct] = useState(30);
   const [data, setData] = useState<PppPricingResponse | null>(null);
-  const [selectedExpiry, setSelectedExpiry] = useState<number | null>(null);
+  const [selectedCandidateKey, setSelectedCandidateKey] = useState<string | null>(null);
   const [simulatorExpiryPrice, setSimulatorExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,9 +36,21 @@ export function PPPPage() {
     ? priorityLever
     : priorityOptions[0]?.id;
   const best = data?.bestCandidate ?? null;
-  const candidates = useMemo(() => getUniqueCandidates(best, data?.candidates), [best, data?.candidates]);
-  const selectedCandidate = selectedExpiry
-    ? candidates.find((candidate) => candidate.expirationTimestamp === selectedExpiry) ?? best
+  const targetProtectionBps = Math.round(protectionPct * 100);
+  const candidates = useMemo(
+    () =>
+      getPppRecommendations({
+        best,
+        candidates: data?.candidates,
+        selectorMode,
+        priorityLever: effectivePriorityLever,
+        targetProtectionBps,
+        limit: 3
+      }),
+    [best, data?.candidates, effectivePriorityLever, selectorMode, targetProtectionBps]
+  );
+  const selectedCandidate = selectedCandidateKey
+    ? candidates.find((candidate) => getPppCandidateKey(candidate) === selectedCandidateKey) ?? best
     : best;
   const simulatorRange = useMemo(
     () => (selectedCandidate ? getPppScenarioRange(selectedCandidate) : null),
@@ -60,10 +73,10 @@ export function PPPPage() {
 
   useEffect(() => {
     if (!data) {
-      setSelectedExpiry(null);
+      setSelectedCandidateKey(null);
       return;
     }
-    setSelectedExpiry(data.bestCandidate?.expirationTimestamp ?? null);
+    setSelectedCandidateKey(data.bestCandidate ? getPppCandidateKey(data.bestCandidate) : null);
   }, [data]);
 
   useEffect(() => {
@@ -321,15 +334,18 @@ export function PPPPage() {
                 <div className="rail-state">No eligible PPP package passed the current checks.</div>
               ) : null}
               <div className="rail-list">
-                {candidates.slice(0, 3).map((candidate) => (
-                  <PppRecommendationCard
-                    best={candidate.expirationTimestamp === best?.expirationTimestamp}
-                    candidate={candidate}
-                    key={candidate.expirationTimestamp}
-                    onSelect={() => setSelectedExpiry(candidate.expirationTimestamp)}
-                    selected={candidate.expirationTimestamp === selectedCandidate?.expirationTimestamp}
-                  />
-                ))}
+                {candidates.map((candidate) => {
+                  const candidateKey = getPppCandidateKey(candidate);
+                  return (
+                    <PppRecommendationCard
+                      best={candidateKey === (best ? getPppCandidateKey(best) : null)}
+                      candidate={candidate}
+                      key={candidateKey}
+                      onSelect={() => setSelectedCandidateKey(candidateKey)}
+                      selected={candidateKey === (selectedCandidate ? getPppCandidateKey(selectedCandidate) : null)}
+                    />
+                  );
+                })}
               </div>
             </aside>
           </div>
@@ -514,15 +530,6 @@ function Term({ label, value, detail }: { label: string; value: string; detail?:
       </dd>
     </div>
   );
-}
-
-function getUniqueCandidates(best: PppCandidate | null, candidates: PppCandidate[] | undefined) {
-  const seen = new Set<number>();
-  return [best, ...(candidates ?? [])].filter((candidate): candidate is PppCandidate => {
-    if (!candidate || seen.has(candidate.expirationTimestamp)) return false;
-    seen.add(candidate.expirationTimestamp);
-    return true;
-  });
 }
 
 function formatDate(timestamp: number) {
