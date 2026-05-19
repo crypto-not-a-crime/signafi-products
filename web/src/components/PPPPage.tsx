@@ -14,7 +14,7 @@ const durationOptions = [
 
 const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
 const protectionOptions = [70, 75, 80, 85, 90, 95, 100];
-const participationOptions = [15, 20, 25, 30, 35, 40, 50];
+const participationOptions = [15, 20, 25, 30, 35, 40, 50, 60, 70, 80];
 
 export function PPPPage() {
   const [investmentUsdt, setInvestmentUsdt] = useState(1000000);
@@ -109,7 +109,7 @@ export function PPPPage() {
         <section className="page-shell">
           <div className="levers-rail-wrap">
             <div className="lever-panel">
-              <h2 className="lever-title">Set your PPP terms</h2>
+              <h2 className="lever-title">Set your terms</h2>
               <p className="card-copy">
                 Select the solve mode, then set the terms the engine should hold fixed for the live hedge quote.
               </p>
@@ -193,7 +193,7 @@ export function PPPPage() {
                 <div className="row-between">
                   <div>
                     <div className="field-label">Protection level</div>
-                    <strong>{selectorMode === "auto_protection" ? "Engine output" : "Minimum principal return"}</strong>
+                    <strong>Minimum principal return</strong>
                   </div>
                   <strong className="mono">
                     {selectorMode === "auto_protection" && selectedCandidate
@@ -229,7 +229,7 @@ export function PPPPage() {
                 <div className="row-between">
                   <div>
                     <div className="field-label">Participation level</div>
-                    <strong>{selectorMode === "auto_participation" ? "Engine output" : "Client upside participation"}</strong>
+                    <strong>Client upside participation</strong>
                   </div>
                   <strong className="mono">
                     {selectorMode === "auto_participation" && selectedCandidate
@@ -335,7 +335,6 @@ export function PPPPage() {
                   onChange={setSimulatorExpiryPrice}
                 />
               ) : null}
-              {selectedCandidate ? <PppDetailCard candidate={selectedCandidate} /> : null}
             </section>
           </div>
         </section>
@@ -367,7 +366,7 @@ function PppRecommendationCard({
         <span className={`status-badge ${best ? "status-live" : "status-warn"}`}>{best ? "Best match" : "Alternative"}</span>
         {selected ? <span className="status-badge status-live">Selected</span> : null}
       </div>
-      <h3 className="recommendation-name">PPP {formatDate(candidate.expirationTimestamp)}</h3>
+      <h3 className="recommendation-name">Partial Principal Protection & Upside Participation</h3>
       <div className="recommendation-yield-row">
         <span>Participation</span>
         <strong>{formatPct(candidate.quotedParticipation, 2)}</strong>
@@ -377,43 +376,18 @@ function PppRecommendationCard({
           <dt>Protection</dt>
           <dd>
             {formatPct(candidate.quotedProtection, 2)}
-            <span>floor strike {formatUsd(candidate.floorPutStrike)}</span>
+            <span>floor strike {formatUsd(getProductFloorPrice(candidate))}</span>
           </dd>
         </div>
         <div>
-          <dt>Duration</dt>
+          <dt>Expiry</dt>
           <dd>
-            {candidate.dayCount} days
-            <span>min PnL {formatUsd(candidate.minScenarioPnlUsdt)}</span>
+            {formatDate(candidate.expirationTimestamp)}
+            <span>{candidate.dayCount} days</span>
           </dd>
         </div>
       </dl>
     </button>
-  );
-}
-
-function PppDetailCard({ candidate }: { candidate: PppCandidate }) {
-  return (
-    <div className="candidate-card best">
-      <div className="row-between">
-        <div>
-          <div className="pc-label">Selected package</div>
-          <h3 className="card-title">Partial Principal Protected Upside Participation</h3>
-        </div>
-      </div>
-      <div className="metric-grid">
-        <Metric
-          label={candidate.recommendedLever === "protection" ? "Max protection" : "Protection"}
-          value={formatPct(candidate.quotedProtection, 2)}
-          tone={candidate.recommendedLever === "protection" ? "ok" : undefined}
-        />
-        <Metric label="Participation rate" value={formatPct(candidate.quotedParticipation, 2)} />
-      </div>
-      <dl className="product-terms">
-        <Term label="Expiry" value={formatDate(candidate.expirationTimestamp)} detail={`${candidate.dayCount} days`} />
-        <Term label="Spot price" value={formatUsd(candidate.spotPrice)} detail="BTC_USDC mid" />
-      </dl>
-    </div>
   );
 }
 
@@ -470,15 +444,15 @@ function PppClientPayoutSimulator({
           <span>{formatUsd(range.max)}</span>
         </div>
       </div>
+      <dl className="product-terms">
+        <Term label="Expiry" value={formatDate(candidate.expirationTimestamp)} detail={`${candidate.dayCount} days`} />
+      </dl>
       <div className="metric-grid">
         <Metric label="Client receives" value={formatUsd(payout, 2)} tone="ok" />
         <Metric label="Scenario" value={scenario} />
         <Metric label="Participation rate" value={formatPct(participation, 2)} tone="ok" />
         <Metric label="Protection rate" value={formatPct(protection, 2)} />
       </div>
-      <p className="card-copy">
-        PPP redeems in USDT with downside principal protection and upside participation above the reference spot price.
-      </p>
     </div>
   );
 }
@@ -515,6 +489,10 @@ function getUniqueCandidates(best: PppCandidate | null, candidates: PppCandidate
 
 function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(timestamp));
+}
+
+function getProductFloorPrice(candidate: PppCandidate) {
+  return candidate.spotPrice * (candidate.quotedProtection ?? candidate.protectionLevel);
 }
 
 function getPppScenarioRange(candidate: PppCandidate) {
