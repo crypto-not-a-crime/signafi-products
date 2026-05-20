@@ -30,19 +30,38 @@ export function getPppRecommendations({
   const ordered = collapseRecommendationCandidates(selectorMode, [best, ...(candidates ?? [])]);
   const eligible = ordered.filter((candidate) => candidate.eligible);
   const pool = eligible.length > 0 ? eligible : ordered;
+  let recommendations: PppCandidate[];
   if (selectorMode === "auto_participation" && priorityLever === "duration") {
-    return shapeDurationPriorityRecommendations(pool, best, targetProtectionBps, limit);
+    recommendations = shapeDurationPriorityRecommendations(pool, best, targetProtectionBps, limit);
+  } else if (selectorMode === "auto_participation" && priorityLever === "protection") {
+    recommendations = shapeAutoParticipationProtectionPriorityRecommendations(pool, targetProtectionBps, limit);
+  } else if (selectorMode === "auto_protection" && priorityLever === "duration") {
+    recommendations = shapeAutoProtectionDurationPriorityRecommendations(pool, best, targetParticipationBps ?? 0, limit);
+  } else if (selectorMode === "auto_protection" && priorityLever === "participation") {
+    recommendations = shapeAutoProtectionParticipationPriorityRecommendations(pool, targetParticipationBps ?? 0, limit);
+  } else {
+    recommendations = pool.slice(0, limit);
   }
-  if (selectorMode === "auto_participation" && priorityLever === "protection") {
-    return shapeAutoParticipationProtectionPriorityRecommendations(pool, targetProtectionBps, limit);
+  return putBestCandidateFirst(recommendations, best, limit);
+}
+
+function putBestCandidateFirst(candidates: PppCandidate[], best: PppCandidate | null, limit: number): PppCandidate[] {
+  if (!best) return candidates.slice(0, limit);
+
+  const bestKey = getPppCandidateKey(best);
+  const displayBest = candidates.find((candidate) => getPppCandidateKey(candidate) === bestKey) ?? best;
+  const selected: PppCandidate[] = [displayBest];
+  const selectedKeys = new Set<string>([bestKey]);
+
+  for (const candidate of candidates) {
+    const key = getPppCandidateKey(candidate);
+    if (selectedKeys.has(key)) continue;
+    selected.push(candidate);
+    selectedKeys.add(key);
+    if (selected.length >= limit) break;
   }
-  if (selectorMode === "auto_protection" && priorityLever === "duration") {
-    return shapeAutoProtectionDurationPriorityRecommendations(pool, best, targetParticipationBps ?? 0, limit);
-  }
-  if (selectorMode === "auto_protection" && priorityLever === "participation") {
-    return shapeAutoProtectionParticipationPriorityRecommendations(pool, targetParticipationBps ?? 0, limit);
-  }
-  return pool.slice(0, limit);
+
+  return selected;
 }
 
 function shapeDurationPriorityRecommendations(
