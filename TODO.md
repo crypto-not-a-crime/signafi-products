@@ -8,10 +8,12 @@
 ## DCN Call
 
 ## PPP
-> Include more recommended products for Auto protection for PPP
 > Check if the spreadsheet is optimized for rounding down/up strikes instead of the generic down/down/up
-> Include the floor price for BTC expiry in the .client payout simulator as a marker, like the spot price.
-> Also include the product duration markets in between the stated months.
+
 - Remove 'USDT' text bubble in client payout simulator
 
-> Change the contract quantity to be notional / quoted participation rate, not max participation rate
+> Check whether Deribit delivery-fee stress is a config to be saved
+
+
+> Create a 4d matrix of expiry, strike, participation, protection
+- Also, as the issuer, I want to visually find out what the best combinations are that I can offer to the client. Plan out a visual surface or matrix with 4 variables (Expiry, Strike, Protection level, Participation level) where the optimal protection/participation levels are calculated based on the current calculations. This would be like how /admin has a yield surface. Do thorough and robust research and tell me if this is possible

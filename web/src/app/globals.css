@@ -691,6 +691,67 @@ input:disabled {
   border-color: rgba(0, 179, 126, 0.35);
 }
 
+.ppp-price-markers {
+  color: var(--muted);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  margin-top: 8px;
+  min-height: 46px;
+  position: relative;
+}
+
+.ppp-price-endpoint,
+.ppp-price-marker {
+  position: absolute;
+}
+
+.ppp-price-endpoint {
+  bottom: 0;
+}
+
+.ppp-price-endpoint-min {
+  left: 0;
+}
+
+.ppp-price-endpoint-max {
+  right: 0;
+  text-align: right;
+}
+
+.ppp-price-marker {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.ppp-price-tick {
+  background: var(--navy);
+  border-radius: 999px;
+  height: 14px;
+  width: 2px;
+}
+
+.ppp-price-label {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--navy);
+  line-height: 1.2;
+  padding: 4px 7px;
+}
+
+.ppp-price-marker-floor .ppp-price-tick {
+  background: var(--green);
+}
+
+.ppp-price-marker-floor .ppp-price-label {
+  border-color: rgba(0, 179, 126, 0.35);
+}
+
 .metric-grid {
   display: grid;
   gap: 10px;
@@ -1462,6 +1523,25 @@ input:disabled {
 @media (max-width: 960px) {
   .site-nav {
     padding: 0 22px;
+  }
+
+  .ppp-price-markers {
+    min-height: 66px;
+  }
+
+  .ppp-price-marker {
+    align-items: flex-start;
+    max-width: 45%;
+    white-space: normal;
+  }
+
+  .ppp-price-marker-floor {
+    transform: none;
+  }
+
+  .ppp-price-marker-spot {
+    align-items: flex-end;
+    transform: translateX(-100%);
   }
 
   .nav-links {

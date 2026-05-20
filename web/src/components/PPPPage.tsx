@@ -14,7 +14,7 @@ const durationOptions = [
 ];
 
 const investmentOptions = [50000, 100000, 250000, 500000, 1000000, 2000000, 5000000, 10000000];
-const protectionOptions = [70, 75, 80, 85, 90, 95, 100];
+const protectionOptions = [70, 75, 80, 85, 90, 95];
 const participationOptions = [15, 20, 25, 30, 35, 40, 50, 60, 70, 80];
 
 export function PPPPage() {
@@ -251,7 +251,7 @@ export function PPPPage() {
                 <input
                   type="range"
                   min={60}
-                  max={100}
+                  max={95}
                   step={1}
                   value={protectionPct}
                   disabled={selectorMode === "auto_protection"}
@@ -461,6 +461,8 @@ function PppClientPayoutSimulator({
   const protection = candidate.quotedProtection ?? candidate.protectionLevel;
   const participation = candidate.quotedParticipation ?? 0;
   const expiryRatio = candidate.spotPrice > 0 ? expiryPrice / candidate.spotPrice : 0;
+  const spotMarkerPosition = getPriceMarkerPosition(candidate.spotPrice, range);
+  const floorMarkerPosition = getPriceMarkerPosition(candidate.floorPutStrike, range);
   const payout =
     expiryPrice > candidate.spotPrice
       ? candidate.investmentUsdt * (1 + participation * (expiryRatio - 1))
@@ -494,10 +496,17 @@ function PppClientPayoutSimulator({
           value={expiryPrice}
           onChange={(event) => onChange(Number(event.target.value))}
         />
-        <div className="range-labels">
-          <span>{formatUsd(range.min)}</span>
-          <span>Spot {formatUsd(candidate.spotPrice)}</span>
-          <span>{formatUsd(range.max)}</span>
+        <div className="ppp-price-markers" aria-label="Scenario price reference markers">
+          <span className="ppp-price-endpoint ppp-price-endpoint-min">{formatUsd(range.min)}</span>
+          <span className="ppp-price-endpoint ppp-price-endpoint-max">{formatUsd(range.max)}</span>
+          <span className="ppp-price-marker ppp-price-marker-floor" style={{ left: `${floorMarkerPosition}%` }}>
+            <span className="ppp-price-tick" aria-hidden="true" />
+            <span className="ppp-price-label">Put floor {formatUsd(candidate.floorPutStrike)}</span>
+          </span>
+          <span className="ppp-price-marker ppp-price-marker-spot" style={{ left: `${spotMarkerPosition}%` }}>
+            <span className="ppp-price-tick" aria-hidden="true" />
+            <span className="ppp-price-label">Spot {formatUsd(candidate.spotPrice)}</span>
+          </span>
         </div>
       </div>
       <dl className="product-terms">
@@ -564,6 +573,11 @@ function getPppScenarioRange(candidate: PppCandidate) {
   const max = roundToStep(candidate.spotPrice * 1.6, step);
   const defaultPrice = clamp(roundToStep(candidate.spotPrice, step), min, max);
   return { min, max, step, defaultPrice };
+}
+
+function getPriceMarkerPosition(price: number, range: ReturnType<typeof getPppScenarioRange>) {
+  if (range.max <= range.min) return 0;
+  return clamp(((price - range.min) / (range.max - range.min)) * 100, 0, 100);
 }
 
 function roundToStep(value: number, step: number): number {
