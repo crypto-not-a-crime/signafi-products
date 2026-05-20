@@ -1,6 +1,5 @@
 import type { PppCandidate, PppPriorityLever, PppSelectorMode } from "../types";
 
-const DISPLAY_PROTECTION_STEP_BPS = 500;
 const DISPLAY_PARTICIPATION_STEP_BPS = 500;
 
 export function getPppCandidateKey(candidate: PppCandidate): string {
@@ -57,19 +56,23 @@ function shapeDurationPriorityRecommendations(
   if (!anchor) return [];
 
   const sameExpiry = candidates.filter((candidate) => candidate.expirationTimestamp === anchor.expirationTimestamp);
+  const sameExpiryByParticipation = [...sameExpiry].sort((a, b) =>
+    compareAutoParticipationDurationRecommendation(a, b, targetProtectionBps)
+  );
   const selected: PppCandidate[] = [];
   const selectedKeys = new Set<string>();
 
-  for (const protectionBps of buildDisplayProtectionSlots(targetProtectionBps)) {
-    const next = nearestProtectionCandidate(sameExpiry, protectionBps, targetProtectionBps, selectedKeys);
-    if (next) {
-      selected.push(next);
-      selectedKeys.add(getPppCandidateKey(next));
-      if (selected.length >= limit) return selected;
-    }
+  for (const candidate of sameExpiryByParticipation) {
+    const key = getPppCandidateKey(candidate);
+    if (selectedKeys.has(key)) continue;
+    selected.push(candidate);
+    selectedKeys.add(key);
+    if (selected.length >= limit) break;
   }
 
-  for (const candidate of [...sameExpiry, ...candidates]) {
+  if (selected.length >= limit) return selected;
+
+  for (const candidate of candidates) {
     const key = getPppCandidateKey(candidate);
     if (selectedKeys.has(key)) continue;
     selected.push(candidate);
@@ -78,6 +81,34 @@ function shapeDurationPriorityRecommendations(
   }
 
   return selected;
+}
+
+function compareAutoParticipationDurationRecommendation(
+  a: PppCandidate,
+  b: PppCandidate,
+  targetProtectionBps: number
+): number {
+  const participationCompare =
+    normalizeBps(b.quotedParticipationBps, b.quotedParticipation) -
+    normalizeBps(a.quotedParticipationBps, a.quotedParticipation);
+  if (participationCompare !== 0) return participationCompare;
+
+  const optimizedCompare =
+    normalizeBps(b.optimizedParticipationBps, b.optimizedParticipation) -
+    normalizeBps(a.optimizedParticipationBps, a.optimizedParticipation);
+  if (optimizedCompare !== 0) return optimizedCompare;
+
+  const aProtectionGap = Math.abs(normalizeBps(a.quotedProtectionBps, a.quotedProtection ?? a.protectionLevel) - targetProtectionBps);
+  const bProtectionGap = Math.abs(normalizeBps(b.quotedProtectionBps, b.quotedProtection ?? b.protectionLevel) - targetProtectionBps);
+  if (aProtectionGap !== bProtectionGap) return aProtectionGap - bProtectionGap;
+
+  const aQuoteAgeSeconds = a.quoteAgeSeconds ?? Number.POSITIVE_INFINITY;
+  const bQuoteAgeSeconds = b.quoteAgeSeconds ?? Number.POSITIVE_INFINITY;
+  if (aQuoteAgeSeconds !== bQuoteAgeSeconds) return aQuoteAgeSeconds - bQuoteAgeSeconds;
+
+  const aMaxSlippagePct = a.maxSlippagePct ?? Number.POSITIVE_INFINITY;
+  const bMaxSlippagePct = b.maxSlippagePct ?? Number.POSITIVE_INFINITY;
+  return aMaxSlippagePct - bMaxSlippagePct;
 }
 
 function nearestProtectionCandidate(
@@ -92,9 +123,11 @@ function nearestProtectionCandidate(
     const key = getPppCandidateKey(candidate);
     if (selectedKeys.has(key)) return;
     const candidateProtectionBps = normalizeBps(candidate.quotedProtectionBps, candidate.quotedProtection ?? candidate.protectionLevel);
+    const candidateParticipationBps = normalizeBps(candidate.quotedParticipationBps, candidate.quotedParticipation);
     const score =
       Math.abs(candidateProtectionBps - protectionBps) * 1_000_000 +
       Math.abs(candidateProtectionBps - targetProtectionBps) * 1_000 +
+      (10_000 - candidateParticipationBps) +
       index;
     if (score < bestScore) {
       best = candidate;
@@ -217,16 +250,6 @@ function compareParticipationFit(a: PppCandidate, b: PppCandidate, targetPartici
   if (aGap !== bGap) return aGap - bGap;
   if (a.dayCount !== b.dayCount) return a.dayCount - b.dayCount;
   return normalizeBps(b.quotedProtectionBps, b.quotedProtection) - normalizeBps(a.quotedProtectionBps, a.quotedProtection);
-}
-
-function buildDisplayProtectionSlots(targetProtectionBps: number): number[] {
-  const target = clamp(Math.round(targetProtectionBps), 0, 10000);
-  const slots = new Set<number>([target]);
-  for (let offset = DISPLAY_PROTECTION_STEP_BPS; offset <= 10000; offset += DISPLAY_PROTECTION_STEP_BPS) {
-    slots.add(clamp(target - offset, 0, 10000));
-    slots.add(clamp(target + offset, 0, 10000));
-  }
-  return [...slots];
 }
 
 function buildDisplayParticipationSlots(targetParticipationBps: number): number[] {

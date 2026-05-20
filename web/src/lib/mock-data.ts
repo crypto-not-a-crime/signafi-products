@@ -327,23 +327,6 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
     typeof input.expirationTimestamp === "number" && Number.isFinite(input.expirationTimestamp)
       ? input.expirationTimestamp
       : undefined;
-  const best = mockPppCandidate({
-    investmentUsdt,
-    expirationTimestamp,
-    selectorMode,
-    protectionLevel: selectorMode === "auto_protection" ? 0.753 : protectionLevel,
-    protectionLevelBps: Math.round((selectorMode === "auto_protection" ? 0.753 : protectionLevel) * 10000),
-    targetFirmMarginBps,
-    includeDeliveryFees,
-    participationRoundDownBps,
-    quotedParticipation: selectorMode === "auto_participation" ? undefined : participationLevel,
-    quotedParticipationBps: selectorMode === "auto_participation" ? undefined : participationLevel * 10000,
-    optimizedParticipation: selectorMode === "auto_participation" ? undefined : null,
-    optimizedParticipationBps: selectorMode === "auto_participation" ? undefined : null,
-    optimizedProtection: selectorMode === "auto_protection" ? 0.753 : null,
-    optimizedProtectionBps: selectorMode === "auto_protection" ? 7530 : null,
-    participationGapBps: selectorMode === "auto_protection" ? 0 : undefined
-  });
   const autoParticipationDurationMock = selectorMode === "auto_participation" && priorityLever === "duration";
   const autoParticipationProtectionMock = selectorMode === "auto_participation" && priorityLever === "protection";
   const autoProtectionDurationMock = selectorMode === "auto_protection" && priorityLever === "duration";
@@ -352,6 +335,26 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
   const dominatedProtection = Math.max(0.1, protectionLevel - 0.01);
   const lowerParticipation = Math.max(0, participationLevel - 0.05);
   const upperParticipation = Math.min(1, participationLevel + 0.05);
+  const bestProtection = selectorMode === "auto_protection" ? 0.753 : autoParticipationDurationMock ? lowerProtection : protectionLevel;
+  const bestRawParticipation = autoParticipationDurationMock ? 0.612 : 0.239;
+  const bestQuotedAutoParticipation = quoteParticipation(bestRawParticipation);
+  const best = mockPppCandidate({
+    investmentUsdt,
+    expirationTimestamp,
+    selectorMode,
+    protectionLevel: bestProtection,
+    protectionLevelBps: Math.round(bestProtection * 10000),
+    targetFirmMarginBps,
+    includeDeliveryFees,
+    participationRoundDownBps,
+    quotedParticipation: selectorMode === "auto_participation" ? bestQuotedAutoParticipation : participationLevel,
+    quotedParticipationBps: selectorMode === "auto_participation" ? bestQuotedAutoParticipation * 10000 : participationLevel * 10000,
+    optimizedParticipation: selectorMode === "auto_participation" ? bestRawParticipation : null,
+    optimizedParticipationBps: selectorMode === "auto_participation" ? bestRawParticipation * 10000 : null,
+    optimizedProtection: selectorMode === "auto_protection" ? 0.753 : null,
+    optimizedProtectionBps: selectorMode === "auto_protection" ? 7530 : null,
+    participationGapBps: selectorMode === "auto_protection" ? 0 : undefined
+  });
   const bestQuotedParticipation = best.quotedParticipation ?? 0;
   const bestQuotedParticipationBps = best.quotedParticipationBps ?? bestQuotedParticipation * 10000;
   const candidates = autoParticipationDurationMock
@@ -361,17 +364,17 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
           selectorMode,
           expirationTimestamp: best.expirationTimestamp,
           dayCount: best.dayCount,
-          protectionLevel: lowerProtection,
-          protectionLevelBps: Math.round(lowerProtection * 10000),
-          optimizedParticipation: 0.312,
-          optimizedParticipationBps: 3120,
-          quotedParticipation: quoteParticipation(0.312),
-          quotedParticipationBps: quoteParticipation(0.312) * 10000,
+          protectionLevel,
+          protectionLevelBps: Math.round(protectionLevel * 10000),
+          optimizedParticipation: 0.512,
+          optimizedParticipationBps: 5120,
+          quotedParticipation: quoteParticipation(0.512),
+          quotedParticipationBps: quoteParticipation(0.512) * 10000,
           participationRoundDownBps,
-          optimalCallContracts: 4,
-          floorPutStrike: 58000,
-          putSpreadImpliedFloor: lowerProtection,
-          protectionGapBps: Math.abs(lowerProtection - protectionLevel) * 10000,
+          optimalCallContracts: 3.2,
+          floorPutStrike: 62000,
+          putSpreadImpliedFloor: protectionLevel,
+          protectionGapBps: 0,
           minScenarioPnlUsdt: 38200,
           stressPrice: 77121
         }),
@@ -381,10 +384,10 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
           dayCount: best.dayCount,
           protectionLevel: upperProtection,
           protectionLevelBps: Math.round(upperProtection * 10000),
-          optimizedParticipation: 0.176,
-          optimizedParticipationBps: 1760,
-          quotedParticipation: quoteParticipation(0.176),
-          quotedParticipationBps: quoteParticipation(0.176) * 10000,
+          optimizedParticipation: 0.412,
+          optimizedParticipationBps: 4120,
+          quotedParticipation: quoteParticipation(0.412),
+          quotedParticipationBps: quoteParticipation(0.412) * 10000,
           participationRoundDownBps,
           optimalCallContracts: 2.3,
           floorPutStrike: 66000,

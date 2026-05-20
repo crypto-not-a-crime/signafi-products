@@ -749,8 +749,8 @@ function comparePppCandidates(
   if (selectorMode === "auto_participation") {
     return compareBy([
       priorityLever === "protection" ? protectionGapComparator : durationComparator,
-      priorityLever === "protection" ? durationComparator : protectionGapComparator,
       solvedParticipationComparator,
+      priorityLever === "protection" ? durationComparator : protectionGapComparator,
       () => compareAsc(a.quoteAgeSeconds, b.quoteAgeSeconds),
       () => compareAsc(a.maxSlippagePct, b.maxSlippagePct)
     ]);
