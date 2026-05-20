@@ -33,11 +33,13 @@ import {
   buildPppAutoProtectionParticipationBps,
   buildPppAutoParticipationProtectionBps,
   calculatePppCandidate,
+  getPppDepthCandidateCount,
   normalizePppPricingRequest,
-  scorePppPackageForShortlist,
   selectPppCandidate,
+  shortlistPppPackages,
   type PppMarketLegInput,
   type PppMarketPackageInput,
+  type PppPricingDiagnostics,
   type PppPricingRequest
 } from "./pricing/ppp";
 import { buildYieldSurface, type YieldSurfaceOptionType } from "./pricing/yield-surface";
@@ -965,7 +967,8 @@ async function syncMarketData(
 }
 
 async function pricePppRequest(payload: PppPricingRequest, env: Env) {
-  const nowMs = Date.now();
+  const startedAtMs = Date.now();
+  const nowMs = startedAtMs;
   const config = await getPricingConfig(env.DB);
   const normalized = normalizePppPricingRequest(payload, config);
   let rows = await getPppOptionCandidates(env.DB, nowMs);
@@ -977,6 +980,18 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
+  const totalExpiriesScanned = countPppScannedExpiries(rows, normalized.expirationTimestamp);
+  const buildDiagnostics = (partial: Partial<PppPricingDiagnostics> = {}): PppPricingDiagnostics => ({
+    totalExpiriesScanned,
+    totalRoughPackages: 0,
+    shortlistedPackages: 0,
+    livePricedPackages: 0,
+    uniqueOrderBooksFetched: 0,
+    depthCandidateCap: getPppDepthCandidateCount(normalized.selectorMode, config.maxDepthCandidates),
+    pricingElapsedMs: Date.now() - startedAtMs,
+    ...partial
+  });
+
   if (!spotPrice) {
     return {
       generatedAt: nowMs,
@@ -998,25 +1013,14 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
         participationGapBps: null,
         optimizedParticipationBps: null,
         optimizedProtectionBps: null
-      }
+      },
+      diagnostics: buildDiagnostics()
     };
   }
 
   const packages = buildPppMarketPackages(rows, spotPrice, normalized, nowMs);
-  const depthCandidateCount =
-    normalized.selectorMode === "auto_protection"
-      ? Math.min(Math.max(config.maxDepthCandidates, 24), 36)
-      : normalized.selectorMode === "auto_participation"
-        ? Math.min(Math.max(config.maxDepthCandidates, 12), 24)
-        : Math.min(Math.max(config.maxDepthCandidates, 4), 8);
-  const shortlisted = packages
-    .map((marketPackage) => ({
-      marketPackage,
-      score: scorePppPackageForShortlist(normalized, marketPackage, nowMs)
-    }))
-    .filter((item) => Number.isFinite(item.score))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, depthCandidateCount);
+  const depthCandidateCount = getPppDepthCandidateCount(normalized.selectorMode, config.maxDepthCandidates);
+  const shortlisted = shortlistPppPackages(normalized, packages, nowMs, depthCandidateCount);
 
   const priced = [];
   const bookCache = new Map<string, Promise<Awaited<ReturnType<DeribitClient["getOrderBook"]>>>>();
@@ -1046,6 +1050,14 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   }
 
   const selected = selectPppCandidate(normalized, priced);
+  const diagnostics = buildDiagnostics({
+    totalRoughPackages: packages.length,
+    shortlistedPackages: shortlisted.length,
+    livePricedPackages: priced.length,
+    uniqueOrderBooksFetched: bookCache.size,
+    depthCandidateCap: depthCandidateCount
+  });
+
   return {
     generatedAt: nowMs,
     input: normalized,
@@ -1061,7 +1073,8 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
       participationGapBps: selected.participationGapBps,
       optimizedParticipationBps: selected.optimizedParticipationBps,
       optimizedProtectionBps: selected.optimizedProtectionBps
-    }
+    },
+    diagnostics
   };
 }
 
@@ -1122,6 +1135,16 @@ function normalizeStrikeBufferPct(
   const numeric = Number(value);
   const maxBufferPct = productType === "sell_call" ? 200 : 99;
   return Number.isFinite(numeric) ? Math.min(maxBufferPct, Math.max(0, numeric)) : undefined;
+}
+
+function countPppScannedExpiries(rows: JoinedPutRow[], requestedExpirationTimestamp?: number): number {
+  const requested = Number(requestedExpirationTimestamp);
+  const expiries = new Set<number>();
+  for (const row of rows) {
+    if (Number.isFinite(requested) && requested > 0 && row.expiration_timestamp !== requested) continue;
+    expiries.add(row.expiration_timestamp);
+  }
+  return expiries.size;
 }
 
 function buildPppMarketPackages(

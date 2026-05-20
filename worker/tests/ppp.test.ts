@@ -3,16 +3,19 @@ import {
   buildPppAutoProtectionParticipationBps,
   buildPppAutoParticipationProtectionBps,
   calculatePppCandidate,
+  getPppDepthCandidateCount,
   modelExecutableDepth,
   normalizePppPricingRequest,
   roundPppParticipationDown,
   selectPppCandidate,
+  shortlistPppPackages,
   type PppMarketPackageInput
 } from "../src/pricing/ppp";
 import { getPppCandidateKey, getPppRecommendations } from "../../web/src/lib/ppp-recommendations";
 
 const NOW = Date.UTC(2026, 4, 18);
 const EXPIRY_221_DAYS = Date.UTC(2026, 11, 25);
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function workbookMarket(overrides: Partial<PppMarketPackageInput> = {}): PppMarketPackageInput {
   const base: PppMarketPackageInput = {
@@ -87,6 +90,55 @@ function workbookAutoProtectionMarket(overrides: Partial<PppMarketPackageInput> 
       asks: [[0.0415, 50]]
     },
     ...overrides
+  });
+}
+
+function shortlistMarket({
+  dayCount,
+  protection = 0.8,
+  participation = 0.3,
+  floorStrike = 62000
+}: {
+  dayCount: number;
+  protection?: number;
+  participation?: number;
+  floorStrike?: number;
+}): PppMarketPackageInput {
+  const expirationTimestamp = NOW + dayCount * DAY_MS;
+  return workbookMarket({
+    expirationTimestamp,
+    candidateProtectionLevel: protection,
+    candidateParticipationLevel: participation,
+    atmCall: {
+      instrumentName: `BTC-${dayCount}-76000-C`,
+      optionType: "call",
+      strike: 76000,
+      expirationTimestamp,
+      askPrice: 0.15,
+      askAmount: 50,
+      deribitTimestamp: NOW,
+      asks: [[0.15, 50]]
+    },
+    atmPut: {
+      instrumentName: `BTC-${dayCount}-76000-P`,
+      optionType: "put",
+      strike: 76000,
+      expirationTimestamp,
+      bidPrice: 0.12,
+      bidAmount: 50,
+      deribitTimestamp: NOW,
+      bids: [[0.12, 50]]
+    },
+    floorPut: {
+      instrumentName: `BTC-${dayCount}-${Math.round(floorStrike)}-P`,
+      optionType: "put",
+      strike: floorStrike,
+      expirationTimestamp,
+      askPrice: 0.05,
+      askAmount: 50,
+      deribitTimestamp: NOW,
+      asks: [[0.05, 50]]
+    }
   });
 }
 
@@ -256,17 +308,143 @@ describe("PPP robust model pricing", () => {
   it("builds a bounded protection grid around the selected auto-participation floor", () => {
     const levels = buildPppAutoParticipationProtectionBps(8000);
 
-    expect(levels[0]).toBe(7000);
-    expect(levels.at(-1)).toBe(9000);
-    expect(levels).toContain(8000);
-    expect(levels).toContain(7500);
-    expect(levels).toContain(8500);
+    expect(levels).toEqual([7000, 7500, 8000, 8500, 9000]);
+    expect(buildPppAutoParticipationProtectionBps(8300)).toEqual([7300, 7800, 8300, 8800, 9300]);
   });
 
   it("builds bounded participation variants around the selected auto-protection participation", () => {
     const levels = buildPppAutoProtectionParticipationBps(3000);
 
     expect(levels).toEqual([3000, 2500, 3500, 2000, 4000, 1500, 4500, 1000, 5000]);
+  });
+
+  it("applies wider PPP pre-depth caps by selector mode", () => {
+    expect(getPppDepthCandidateCount("closest", 4)).toBe(8);
+    expect(getPppDepthCandidateCount("closest", 99)).toBe(12);
+    expect(getPppDepthCandidateCount("auto_participation", 12)).toBe(18);
+    expect(getPppDepthCandidateCount("auto_participation", 99)).toBe(36);
+    expect(getPppDepthCandidateCount("auto_protection", 12)).toBe(36);
+    expect(getPppDepthCandidateCount("auto_protection", 99)).toBe(54);
+  });
+
+  it("stratifies auto-participation duration shortlists across close expiries and variants", () => {
+    const request = {
+      selectorMode: "auto_participation" as const,
+      priorityLever: "duration" as const,
+      runwayDays: 92,
+      protectionLevelBps: 8000,
+      participationLevelBps: 3000
+    };
+    const shortlisted = shortlistPppPackages(
+      request,
+      [
+        shortlistMarket({ dayCount: 92, protection: 0.8, floorStrike: 62000 }),
+        shortlistMarket({ dayCount: 92, protection: 0.75, floorStrike: 58000 }),
+        shortlistMarket({ dayCount: 92, protection: 0.85, floorStrike: 66000 }),
+        shortlistMarket({ dayCount: 31, protection: 0.8, floorStrike: 62000 }),
+        shortlistMarket({ dayCount: 180, protection: 0.8, floorStrike: 62000 }),
+        shortlistMarket({ dayCount: 180, protection: 0.75, floorStrike: 58000 })
+      ],
+      NOW,
+      4
+    );
+
+    expect(shortlisted).toHaveLength(4);
+    expect(shortlisted.every((item) => item.marketPackage)).toBe(true);
+    expect(new Set(shortlisted.map((item) => item.marketPackage.expirationTimestamp)).size).toBeGreaterThan(1);
+    expect(shortlisted.filter((item) => item.marketPackage.expirationTimestamp === NOW + 92 * DAY_MS).length).toBeGreaterThan(1);
+  });
+
+  it("stratifies auto-participation protection shortlists across expiries before tradeoffs", () => {
+    const request = {
+      selectorMode: "auto_participation" as const,
+      priorityLever: "protection" as const,
+      runwayDays: 92,
+      protectionLevelBps: 8000,
+      participationLevelBps: 3000
+    };
+    const shortlisted = shortlistPppPackages(
+      request,
+      [
+        shortlistMarket({ dayCount: 31, protection: 0.8, floorStrike: 62000 }),
+        shortlistMarket({ dayCount: 92, protection: 0.8, floorStrike: 62000 }),
+        shortlistMarket({ dayCount: 180, protection: 0.8, floorStrike: 62000 }),
+        shortlistMarket({ dayCount: 92, protection: 0.75, floorStrike: 58000 }),
+        shortlistMarket({ dayCount: 92, protection: 0.85, floorStrike: 66000 })
+      ],
+      NOW,
+      3
+    );
+
+    expect(shortlisted).toHaveLength(3);
+    expect(shortlisted.map((item) => item.marketPackage.candidateProtectionLevel)).toEqual([0.8, 0.8, 0.8]);
+    expect(new Set(shortlisted.map((item) => item.marketPackage.expirationTimestamp)).size).toBe(3);
+  });
+
+  it("stratifies auto-protection duration shortlists across nearby participation variants", () => {
+    const request = {
+      selectorMode: "auto_protection" as const,
+      priorityLever: "duration" as const,
+      runwayDays: 92,
+      protectionLevelBps: 8000,
+      participationLevelBps: 3000
+    };
+    const shortlisted = shortlistPppPackages(
+      request,
+      [
+        shortlistMarket({ dayCount: 92, participation: 0.3, protection: 0.88 }),
+        shortlistMarket({ dayCount: 92, participation: 0.25, protection: 0.9 }),
+        shortlistMarket({ dayCount: 92, participation: 0.35, protection: 0.84 }),
+        shortlistMarket({ dayCount: 180, participation: 0.3, protection: 0.95 }),
+        shortlistMarket({ dayCount: 31, participation: 0.3, protection: 0.82 })
+      ],
+      NOW,
+      4
+    );
+
+    expect(shortlisted).toHaveLength(4);
+    expect(shortlisted.filter((item) => item.marketPackage.expirationTimestamp === NOW + 92 * DAY_MS).length).toBeGreaterThan(1);
+    expect(shortlisted.some((item) => item.marketPackage.candidateParticipationLevel === 0.25)).toBe(true);
+    expect(shortlisted.some((item) => item.marketPackage.candidateParticipationLevel === 0.35)).toBe(true);
+  });
+
+  it("stratifies auto-protection participation shortlists across expiry alternatives", () => {
+    const request = {
+      selectorMode: "auto_protection" as const,
+      priorityLever: "participation" as const,
+      runwayDays: 92,
+      protectionLevelBps: 8000,
+      participationLevelBps: 3000
+    };
+    const shortlisted = shortlistPppPackages(
+      request,
+      [
+        shortlistMarket({ dayCount: 31, participation: 0.3, protection: 0.82 }),
+        shortlistMarket({ dayCount: 92, participation: 0.3, protection: 0.88 }),
+        shortlistMarket({ dayCount: 180, participation: 0.3, protection: 0.95 }),
+        shortlistMarket({ dayCount: 92, participation: 0.25, protection: 0.9 }),
+        shortlistMarket({ dayCount: 92, participation: 0.35, protection: 0.84 })
+      ],
+      NOW,
+      3
+    );
+
+    expect(shortlisted).toHaveLength(3);
+    expect(shortlisted.map((item) => item.marketPackage.candidateParticipationLevel)).toEqual([0.3, 0.3, 0.3]);
+    expect(new Set(shortlisted.map((item) => item.marketPackage.expirationTimestamp)).size).toBe(3);
+  });
+
+  it("deduplicates PPP shortlist packages and never exceeds the live-depth cap", () => {
+    const request = {
+      selectorMode: "closest" as const,
+      runwayDays: 92,
+      protectionLevelBps: 8000,
+      participationLevelBps: 3000
+    };
+    const duplicate = shortlistMarket({ dayCount: 92, protection: 0.8, participation: 0.3, floorStrike: 62000 });
+    const shortlisted = shortlistPppPackages(request, [duplicate, duplicate, shortlistMarket({ dayCount: 180 })], NOW, 1);
+
+    expect(shortlisted).toHaveLength(1);
   });
 
   it("keeps raw max participation while quoting the rounded participation", () => {

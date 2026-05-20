@@ -545,6 +545,15 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       optimizedParticipationBps: best.optimizedParticipationBps,
       optimizedProtectionBps: best.optimizedProtectionBps
     },
+    diagnostics: {
+      totalExpiriesScanned: 3,
+      totalRoughPackages: Math.max(candidates.length * 3, candidates.length),
+      shortlistedPackages: candidates.length,
+      livePricedPackages: candidates.length,
+      uniqueOrderBooksFetched: Math.max(3, candidates.length + 2),
+      depthCandidateCap: selectorMode === "auto_protection" ? 36 : selectorMode === "auto_participation" ? 18 : 8,
+      pricingElapsedMs: 42
+    },
     mock: true
   };
 }

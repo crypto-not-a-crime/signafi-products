@@ -165,7 +165,23 @@ export interface PppPricingResponse {
     optimizedParticipationBps: number | null;
     optimizedProtectionBps: number | null;
   };
+  diagnostics?: PppPricingDiagnostics;
   mock?: boolean;
+}
+
+export interface PppPricingDiagnostics {
+  totalExpiriesScanned: number;
+  totalRoughPackages: number;
+  shortlistedPackages: number;
+  livePricedPackages: number;
+  uniqueOrderBooksFetched: number;
+  depthCandidateCap: number;
+  pricingElapsedMs: number;
+}
+
+export interface PppShortlistedPackage {
+  marketPackage: PppMarketPackageInput;
+  score: number;
 }
 
 export type NormalizedPppPricingRequest = Required<Omit<PppPricingRequest, "nowMs" | "priorityLever">> & {
@@ -215,7 +231,13 @@ const AUTO_PROTECTION_STEP_BPS = 10;
 const AUTO_PROTECTION_PARTICIPATION_STEP_BPS = 500;
 const AUTO_PROTECTION_PARTICIPATION_MAX_OFFSET_BPS = 2000;
 const AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS = 1000;
-const AUTO_PARTICIPATION_PROTECTION_STEP_BPS = 100;
+const AUTO_PARTICIPATION_PROTECTION_STEP_BPS = 500;
+
+const PPP_DEPTH_CAPS: Record<PppSelectorMode, { min: number; max: number }> = {
+  closest: { min: 8, max: 12 },
+  auto_participation: { min: 18, max: 36 },
+  auto_protection: { min: 36, max: 54 }
+};
 
 export function normalizePppPricingRequest(
   request: PppPricingRequest,
@@ -720,6 +742,211 @@ export function scorePppPackageForShortlist(
   const durationPenalty = priorityLever === "duration" ? 100_000 : 10_000;
   const protectionPenalty = priorityLever === "protection" ? 100_000 : 10_000;
   return 1_000_000 - durationGap * durationPenalty - productProtectionGap * protectionPenalty - atmGap * 10_000;
+}
+
+export function getPppDepthCandidateCount(selectorMode: PppPricingRequest["selectorMode"], maxDepthCandidates: number): number {
+  const normalizedMode = normalizePppSelectorMode(selectorMode);
+  const caps = PPP_DEPTH_CAPS[normalizedMode];
+  const configured = Math.round(Number.isFinite(maxDepthCandidates) ? maxDepthCandidates : caps.min);
+  return clamp(configured, caps.min, caps.max);
+}
+
+export function shortlistPppPackages(
+  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "participationLevelBps" | "selectorMode" | "priorityLever">,
+  packages: PppMarketPackageInput[],
+  nowMs: number,
+  depthCandidateCap: number
+): PppShortlistedPackage[] {
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
+  const scored = uniquePppShortlistPackages(
+    packages
+      .map((marketPackage, index) => buildPppShortlistItem(request, marketPackage, nowMs, index))
+      .filter((item) => Number.isFinite(item.score))
+      .sort(comparePppShortlistItem)
+  );
+
+  if (depthCandidateCap <= 0 || scored.length === 0) return [];
+  if (selectorMode === "closest") return scored.slice(0, depthCandidateCap).map(toShortlistedPackage);
+
+  if (selectorMode === "auto_participation") {
+    if (priorityLever === "protection") {
+      return stratifyPppShortlist(scored, depthCandidateCap, {
+        groupKey: (item) => String(item.candidateProtectionBps),
+        groupSortValue: (items) => Math.min(...items.map((item) => item.protectionGapBps)),
+        variantComparator: comparePppShortlistItem
+      }).map(toShortlistedPackage);
+    }
+
+    return stratifyPppShortlist(scored, depthCandidateCap, {
+      groupKey: (item) => String(item.expirationTimestamp),
+      groupSortValue: (items) => Math.min(...items.map((item) => item.durationGapDays)),
+      variantComparator: comparePppShortlistItem
+    }).map(toShortlistedPackage);
+  }
+
+  if (priorityLever === "participation") {
+    return stratifyPppShortlist(scored, depthCandidateCap, {
+      groupKey: (item) => String(item.candidateParticipationBps),
+      groupSortValue: (items) => Math.min(...items.map((item) => item.participationGapBps)),
+      variantComparator: comparePppShortlistItem
+    }).map(toShortlistedPackage);
+  }
+
+  return stratifyPppShortlist(scored, depthCandidateCap, {
+    groupKey: (item) => String(item.expirationTimestamp),
+    groupSortValue: (items) => Math.min(...items.map((item) => item.durationGapDays)),
+    variantComparator: (a, b) =>
+      compareBy([
+        () => compareAsc(a.participationGapBps, b.participationGapBps),
+        () => compareDesc(a.candidateProtectionBps, b.candidateProtectionBps),
+        () => comparePppShortlistItem(a, b)
+      ])
+  }).map(toShortlistedPackage);
+}
+
+interface PppScoredPackage extends PppShortlistedPackage {
+  index: number;
+  key: string;
+  expirationTimestamp: number;
+  durationGapDays: number;
+  protectionGapBps: number;
+  participationGapBps: number;
+  candidateProtectionBps: number;
+  candidateParticipationBps: number;
+}
+
+function buildPppShortlistItem(
+  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "participationLevelBps" | "selectorMode" | "priorityLever">,
+  marketPackage: PppMarketPackageInput,
+  nowMs: number,
+  index: number
+): PppScoredPackage {
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const runwayDays = positiveOr(request.runwayDays, 92);
+  const dayCount = dayCountFromExpiry(marketPackage.expirationTimestamp, nowMs);
+  const requestedProtectionBps = clamp(Math.round(Number(request.protectionLevelBps ?? 8000)), MIN_PROTECTION_LEVEL * 10000, 10000);
+  const requestedParticipationBps = clamp(Math.round(Number(request.participationLevelBps ?? 3000)), 0, 10000);
+  const candidateProtectionBps = clamp(
+    Math.round((marketPackage.candidateProtectionLevel ?? requestedProtectionBps / 10000) * 10000),
+    MIN_PROTECTION_LEVEL * 10000,
+    10000
+  );
+  const candidateParticipationBps =
+    selectorMode === "auto_protection"
+      ? clamp(Math.round((marketPackage.candidateParticipationLevel ?? requestedParticipationBps / 10000) * 10000), 0, 10000)
+      : requestedParticipationBps;
+
+  return {
+    marketPackage,
+    score: scorePppPackageForShortlist(request, marketPackage, nowMs),
+    index,
+    key: getPppMarketPackageKey(marketPackage, candidateProtectionBps, candidateParticipationBps),
+    expirationTimestamp: marketPackage.expirationTimestamp,
+    durationGapDays: Math.abs(dayCount - runwayDays),
+    protectionGapBps: Math.abs(candidateProtectionBps - requestedProtectionBps),
+    participationGapBps: Math.abs(candidateParticipationBps - requestedParticipationBps),
+    candidateProtectionBps,
+    candidateParticipationBps
+  };
+}
+
+function getPppMarketPackageKey(
+  marketPackage: PppMarketPackageInput,
+  candidateProtectionBps: number,
+  candidateParticipationBps: number
+): string {
+  return [
+    marketPackage.expirationTimestamp,
+    candidateProtectionBps,
+    candidateParticipationBps,
+    marketPackage.atmCall.instrumentName,
+    marketPackage.atmPut.instrumentName,
+    marketPackage.floorPut.instrumentName
+  ].join(":");
+}
+
+function uniquePppShortlistPackages(items: PppScoredPackage[]): PppScoredPackage[] {
+  const byKey = new Map<string, PppScoredPackage>();
+  for (const item of items) {
+    const existing = byKey.get(item.key);
+    if (!existing || comparePppShortlistItem(item, existing) < 0) {
+      byKey.set(item.key, item);
+    }
+  }
+  return [...byKey.values()].sort(comparePppShortlistItem);
+}
+
+function stratifyPppShortlist(
+  items: PppScoredPackage[],
+  depthCandidateCap: number,
+  options: {
+    groupKey: (item: PppScoredPackage) => string;
+    groupSortValue: (items: PppScoredPackage[]) => number;
+    variantComparator: (a: PppScoredPackage, b: PppScoredPackage) => number;
+  }
+): PppScoredPackage[] {
+  const groupsByKey = new Map<string, PppScoredPackage[]>();
+  for (const item of items) {
+    const key = options.groupKey(item);
+    const bucket = groupsByKey.get(key) ?? [];
+    bucket.push(item);
+    groupsByKey.set(key, bucket);
+  }
+
+  const groups = [...groupsByKey.values()]
+    .map((group) => ({
+      variants: [...group].sort(options.variantComparator),
+      sortValue: options.groupSortValue(group)
+    }))
+    .sort((a, b) =>
+      compareBy([
+        () => compareAsc(a.sortValue, b.sortValue),
+        () => comparePppShortlistItem(a.variants[0], b.variants[0])
+      ])
+    );
+
+  const selected: PppScoredPackage[] = [];
+  const selectedKeys = new Set<string>();
+  const push = (item: PppScoredPackage | undefined) => {
+    if (!item || selectedKeys.has(item.key) || selected.length >= depthCandidateCap) return;
+    selected.push(item);
+    selectedKeys.add(item.key);
+  };
+
+  for (const group of groups) {
+    for (const item of group.variants) {
+      push(item);
+      if (selected.length >= depthCandidateCap) return selected;
+    }
+  }
+
+  for (const item of items) {
+    push(item);
+    if (selected.length >= depthCandidateCap) break;
+  }
+
+  return selected;
+}
+
+function comparePppShortlistItem(a: PppScoredPackage | undefined, b: PppScoredPackage | undefined): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return compareBy([
+    () => compareDesc(a.score, b.score),
+    () => compareAsc(a.durationGapDays, b.durationGapDays),
+    () => compareAsc(a.protectionGapBps, b.protectionGapBps),
+    () => compareAsc(a.participationGapBps, b.participationGapBps),
+    () => compareAsc(a.index, b.index)
+  ]);
+}
+
+function toShortlistedPackage(item: PppScoredPackage): PppShortlistedPackage {
+  return {
+    marketPackage: item.marketPackage,
+    score: item.score
+  };
 }
 
 function comparePppCandidates(
@@ -1293,21 +1520,13 @@ export function roundPppParticipationDown(participation: number | null, roundDow
 
 export function buildPppAutoParticipationProtectionBps(targetProtectionBps: number): number[] {
   const targetBps = clamp(Math.round(targetProtectionBps), MIN_PROTECTION_LEVEL * 10000, 10000);
-  const minBps = clamp(
-    Math.floor((targetBps - AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS) / AUTO_PARTICIPATION_PROTECTION_STEP_BPS) *
-      AUTO_PARTICIPATION_PROTECTION_STEP_BPS,
-    MIN_PROTECTION_LEVEL * 10000,
-    10000
-  );
-  const maxBps = clamp(
-    Math.ceil((targetBps + AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS) / AUTO_PARTICIPATION_PROTECTION_STEP_BPS) *
-      AUTO_PARTICIPATION_PROTECTION_STEP_BPS,
-    MIN_PROTECTION_LEVEL * 10000,
-    10000
-  );
   const levels = new Set<number>([targetBps]);
-  for (let bps = minBps; bps <= maxBps; bps += AUTO_PARTICIPATION_PROTECTION_STEP_BPS) {
-    levels.add(Math.round(bps));
+  for (
+    let offset = -AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS;
+    offset <= AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS;
+    offset += AUTO_PARTICIPATION_PROTECTION_STEP_BPS
+  ) {
+    levels.add(Math.round(clamp(targetBps + offset, MIN_PROTECTION_LEVEL * 10000, 10000)));
   }
   return [...levels].sort((a, b) => a - b);
 }

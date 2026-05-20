@@ -7,6 +7,7 @@ import type {
   MarketExpirySummary,
   MarketOption,
   PppCandidate,
+  PppPricingDiagnostics,
   PppSelectorMode,
   PricingConfig,
   SellPutPricingMethod
@@ -82,6 +83,7 @@ export function AdminConsole() {
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [audit, setAudit] = useState<DcnCandidate | null>(null);
   const [pppAudit, setPppAudit] = useState<PppCandidate | null>(null);
+  const [pppDiagnostics, setPppDiagnostics] = useState<PppPricingDiagnostics | null>(null);
   const [marginCheck, setMarginCheck] = useState<DeribitMarginCheck | null>(null);
   const [quoteVerification, setQuoteVerification] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
@@ -203,6 +205,7 @@ export function AdminConsole() {
   useEffect(() => {
     setAudit(null);
     setPppAudit(null);
+    setPppDiagnostics(null);
     setMarginCheck(null);
     setQuoteVerification(null);
     setConfigMessage(null);
@@ -488,9 +491,15 @@ export function AdminConsole() {
         orderBookDepth: 100
       })
     });
-    const payload = (await response.json()) as { calculation?: PppCandidate; bestCandidate?: PppCandidate; error?: string };
+    const payload = (await response.json()) as {
+      calculation?: PppCandidate;
+      bestCandidate?: PppCandidate;
+      diagnostics?: PppPricingDiagnostics;
+      error?: string;
+    };
     const calculation = payload.calculation ?? payload.bestCandidate ?? null;
     setPppAudit(calculation);
+    setPppDiagnostics(payload.diagnostics ?? null);
     setExpiryPrice(null);
     setVerificationRunId((current) => current + 1);
     return calculation;
@@ -968,6 +977,7 @@ export function AdminConsole() {
             {pppAudit ? (
               <PppAdminAuditPanel
                 audit={pppAudit}
+                diagnostics={pppDiagnostics}
                 verificationRunId={verificationRunId}
                 scenarioRange={pppScenarioRange}
                 selectedExpiryPrice={selectedPppExpiryPrice}
@@ -1472,6 +1482,7 @@ function DcnAdminHedgePackage({ audit }: { audit: DcnCandidate }) {
 
 function PppAdminAuditPanel({
   audit,
+  diagnostics,
   verificationRunId,
   scenarioRange,
   selectedExpiryPrice,
@@ -1479,6 +1490,7 @@ function PppAdminAuditPanel({
   onExpiryPriceChange
 }: {
   audit: PppCandidate;
+  diagnostics: PppPricingDiagnostics | null;
   verificationRunId: number;
   scenarioRange: ReturnType<typeof getPppScenarioRange> | null;
   selectedExpiryPrice: number | null;
@@ -1601,6 +1613,24 @@ function PppAdminAuditPanel({
           </tbody>
         </table>
       </div>
+
+      {diagnostics ? (
+        <div className="scenario-panel">
+          <div>
+            <div className="field-label">PPP pricing coverage</div>
+            <strong>Shortlist diagnostics</strong>
+          </div>
+          <div className="metric-grid">
+            <Metric label="Expiries scanned" value={formatNumber(diagnostics.totalExpiriesScanned, 0)} />
+            <Metric label="Rough packages" value={formatNumber(diagnostics.totalRoughPackages, 0)} />
+            <Metric label="Shortlisted packages" value={formatNumber(diagnostics.shortlistedPackages, 0)} />
+            <Metric label="Live priced packages" value={formatNumber(diagnostics.livePricedPackages, 0)} />
+            <Metric label="Unique order books" value={formatNumber(diagnostics.uniqueOrderBooksFetched, 0)} />
+            <Metric label="Depth cap" value={formatNumber(diagnostics.depthCandidateCap, 0)} />
+            <Metric label="Pricing time" value={`${formatNumber(diagnostics.pricingElapsedMs, 0)} ms`} />
+          </div>
+        </div>
+      ) : null}
 
       <CalculationVerificationGuide
         resetKey={`ppp-${verificationRunId}`}

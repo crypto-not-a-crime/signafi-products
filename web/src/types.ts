@@ -280,7 +280,18 @@ export interface PppPricingResponse {
     optimizedParticipationBps: number | null;
     optimizedProtectionBps: number | null;
   };
+  diagnostics?: PppPricingDiagnostics;
   mock?: boolean;
+}
+
+export interface PppPricingDiagnostics {
+  totalExpiriesScanned: number;
+  totalRoughPackages: number;
+  shortlistedPackages: number;
+  livePricedPackages: number;
+  uniqueOrderBooksFetched: number;
+  depthCandidateCap: number;
+  pricingElapsedMs: number;
 }
 
 export interface DeribitMarginResult {
