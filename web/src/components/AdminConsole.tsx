@@ -1034,6 +1034,8 @@ export function AdminConsole() {
                   </div>
                 ) : null}
 
+                <DcnAdminHedgePackage audit={audit} />
+
                 <CalculationVerificationGuide
                   resetKey={`dcn-${verificationRunId}`}
                   steps={dcnVerificationSteps}
@@ -1422,6 +1424,52 @@ function CalculationVerificationGuide({
   );
 }
 
+function DcnAdminHedgePackage({ audit }: { audit: DcnCandidate }) {
+  const requiredContracts = Number.isFinite(audit.depth.requiredContracts)
+    ? audit.depth.requiredContracts
+    : audit.requiredContracts;
+  const averagePrice =
+    audit.depth.effectiveOptionBidPrice ?? audit.effectiveOptionBidPrice ?? audit.effectivePutBidPrice;
+
+  return (
+    <div className="scenario-panel">
+      <div className="row-between">
+        <div>
+          <div className="field-label">DCN hedge package</div>
+          <strong>{formatDcnHedgeRole(audit.productType)}</strong>
+        </div>
+        <strong className="mono">{audit.dayCount} days</strong>
+      </div>
+      <table className="trace-table">
+        <thead>
+          <tr>
+            <th>Hedge</th>
+            <th>Side</th>
+            <th>Instrument</th>
+            <th>Strike</th>
+            <th>Contracts</th>
+            <th>Avg price</th>
+            <th>Slippage</th>
+            <th>Quote age</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>{formatDcnHedgeRole(audit.productType)}</td>
+            <td>Sell</td>
+            <td className="mono">{audit.instrumentName}</td>
+            <td className="mono">{formatUsd(audit.strike)}</td>
+            <td className="mono">{formatNumber(requiredContracts, 1)}</td>
+            <td className="mono">{formatNumber(averagePrice, 5)}</td>
+            <td className="mono">{formatPct(audit.depth.slippagePct, 3)}</td>
+            <td className="mono">{formatAge(audit.quoteAgeSeconds)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function PppAdminAuditPanel({
   audit,
   verificationRunId,
@@ -1589,6 +1637,10 @@ function formatPppLegRole(role: PppCandidate["legs"][number]["role"]): string {
   if (role === "long_call") return "Buy ATM call";
   if (role === "short_put") return "Sell ATM put";
   return "Buy floor put";
+}
+
+function formatDcnHedgeRole(productType: DcnCandidate["productType"]): string {
+  return productType === "sell_call" ? "Sell call" : "Sell put";
 }
 
 function formatAge(seconds: number | null | undefined): string {
