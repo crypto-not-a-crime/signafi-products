@@ -298,6 +298,108 @@ export interface PppPricingDiagnostics {
   pricingElapsedMs: number;
 }
 
+export interface PppOfferSurfaceRequest extends PppPricingRequest {
+  minDte?: number;
+  maxDte?: number;
+  minProtectionBps?: number;
+  maxProtectionBps?: number;
+  maxCells?: number;
+}
+
+export interface PppOfferSurfaceLeg {
+  role: PppHedgeLeg["role"];
+  side: PppHedgeLeg["side"];
+  instrumentName: string;
+  optionType: PppHedgeLeg["optionType"];
+  strike: number;
+  requiredContracts: number;
+  averagePrice: number | null;
+  bestPrice: number | null;
+  quoteAgeSeconds: number | null;
+  sufficientDepth: boolean;
+  slippagePct: number | null;
+}
+
+export interface PppOfferSurfacePoint {
+  id: string;
+  expirationTimestamp: number;
+  expiryLabel: string;
+  daysToExpiry: number;
+  floorPutStrike: number;
+  floorProtection: number;
+  floorProtectionBps: number;
+  quotedProtection: number | null;
+  quotedProtectionBps: number | null;
+  putSpreadImpliedFloor: number | null;
+  quotedParticipation: number | null;
+  quotedParticipationBps: number | null;
+  optimizedParticipation: number | null;
+  optimizedParticipationBps: number | null;
+  targetFirmMarginBps: number;
+  targetProfitUsdt: number;
+  minScenarioPnlUsdt: number | null;
+  marginHeadroomUsdt: number | null;
+  marginHeadroomBps: number | null;
+  stressPrice: number | null;
+  netOptionCashUsdt: number | null;
+  quoteAgeSeconds: number | null;
+  maxSlippagePct: number | null;
+  eligible: boolean;
+  best: boolean;
+  frontier: boolean;
+  checks: Record<string, boolean>;
+  atmCallStrike: number;
+  atmPutStrike: number;
+  spotPrice: number;
+  legs: PppOfferSurfaceLeg[];
+}
+
+export interface PppOfferSurfaceExpiry {
+  expirationTimestamp: number;
+  label: string;
+  daysToExpiry: number;
+  pointCount: number;
+}
+
+export interface PppOfferSurfaceFloorRow {
+  floorPutStrike: number;
+  floorProtection: number;
+  floorProtectionBps: number;
+  pointCount: number;
+}
+
+export interface PppOfferSurfaceDiagnostics {
+  totalExpiriesScanned: number;
+  totalRoughCells: number;
+  livePricedCells: number;
+  eligibleCells: number;
+  frontierCells: number;
+  uniqueOrderBooksFetched: number;
+  pricingElapsedMs: number;
+  truncated: boolean;
+  maxCells: number;
+  latestQuoteAgeSeconds: number | null;
+}
+
+export interface PppOfferSurfaceResponse {
+  generatedAt: number;
+  input: Record<string, unknown>;
+  objective: "client_terms";
+  source: "d1_latest" | "mock";
+  spotPrice: number | null;
+  expiries: PppOfferSurfaceExpiry[];
+  floorRows: PppOfferSurfaceFloorRow[];
+  points: PppOfferSurfacePoint[];
+  bestPoint: PppOfferSurfacePoint | null;
+  highestFrontierProtectionBps: number | null;
+  minParticipationBps: number | null;
+  maxParticipationBps: number | null;
+  minMarginHeadroomUsdt: number | null;
+  maxMarginHeadroomUsdt: number | null;
+  diagnostics: PppOfferSurfaceDiagnostics;
+  mock?: boolean;
+}
+
 export interface DeribitMarginResult {
   buy: number;
   sell: number;

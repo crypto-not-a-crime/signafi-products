@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { mockPppPricingResponse, mockPricingResponse } from "@/lib/mock-data";
+import { mockPppOfferSurfaceResponse, mockPppPricingResponse, mockPricingResponse } from "@/lib/mock-data";
 
 export async function proxyToWorker(request: NextRequest, workerPath: string, fallback?: () => unknown) {
   const baseUrl = process.env.WORKER_API_BASE_URL;
@@ -40,6 +40,10 @@ export function mockPricingFromRequest(body: unknown) {
 
 export function mockPppPricingFromRequest(body: unknown) {
   return mockPppPricingResponse(typeof body === "object" && body ? (body as Record<string, unknown>) : {});
+}
+
+export function mockPppOfferSurfaceFromRequest(body: unknown) {
+  return mockPppOfferSurfaceResponse(typeof body === "object" && body ? (body as Record<string, unknown>) : {});
 }
 
 export async function readJson(request: Request): Promise<unknown> {

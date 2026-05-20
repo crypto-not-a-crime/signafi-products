@@ -22,6 +22,7 @@ import {
   type VerificationStepStatus
 } from "@/lib/admin-verification-guide";
 import { AdminYieldSurface } from "@/components/AdminYieldSurface";
+import { AdminPppOfferSurface } from "@/components/AdminPppOfferSurface";
 
 interface Health {
   marketDataMode?: PricingConfig["marketDataMode"];
@@ -48,7 +49,7 @@ type AdminProductType = "sell_put" | "sell_call" | "ppp";
 type MarketDataMode = PricingConfig["marketDataMode"];
 
 export function AdminConsole() {
-  const [activeTab, setActiveTab] = useState<"audit" | "yield-surface">("audit");
+  const [activeTab, setActiveTab] = useState<"audit" | "yield-surface" | "ppp-matrix">("audit");
   const [selectedProductType, setSelectedProductType] = useState<AdminProductType>("sell_put");
   const [health, setHealth] = useState<Health | null>(null);
   const [marketDataMode, setMarketDataMode] = useState<MarketDataMode>("legacy_rest");
@@ -641,6 +642,13 @@ export function AdminConsole() {
           >
             Yield Surface
           </button>
+          <button
+            className={activeTab === "ppp-matrix" ? "active" : ""}
+            onClick={() => setActiveTab("ppp-matrix")}
+            type="button"
+          >
+            PPP Matrix
+          </button>
         </div>
 
         {activeTab === "audit" ? (
@@ -1231,9 +1239,13 @@ export function AdminConsole() {
             </div>
           </div>
         </div>
-        ) : (
+        ) : activeTab === "yield-surface" ? (
           <div style={{ marginTop: 24 }}>
             <AdminYieldSurface />
+          </div>
+        ) : (
+          <div style={{ marginTop: 24 }}>
+            <AdminPppOfferSurface />
           </div>
         )}
       </section>

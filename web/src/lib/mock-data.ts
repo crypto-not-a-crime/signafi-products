@@ -4,6 +4,8 @@ import type {
   DcnPriorityLever,
   DcnSelectorMode,
   PppCandidate,
+  PppOfferSurfacePoint,
+  PppOfferSurfaceResponse,
   PppPricingResponse,
   YieldSurfaceResponse
 } from "@/types";
@@ -565,6 +567,174 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       outOfWindowPackages: 0,
       durationFallbackUsed: false,
       pricingElapsedMs: 42
+    },
+    mock: true
+  };
+}
+
+export function mockPppOfferSurfaceResponse(input: Record<string, unknown> = {}): PppOfferSurfaceResponse {
+  const generatedAt = Date.now();
+  const investmentUsdt = Number(input.investmentUsdt ?? 1_000_000);
+  const spotPrice = 80_000;
+  const targetFirmMarginBps = Number(input.targetFirmMarginBps ?? 500);
+  const minDte = Number(input.minDte ?? 1);
+  const maxDte = Number(input.maxDte ?? 365);
+  const minProtectionBps = Number(input.minProtectionBps ?? 6000);
+  const maxProtectionBps = Number(input.maxProtectionBps ?? 9500);
+  const dtes = [35, 92, 180, 300].filter((days) => days >= minDte && days <= maxDte);
+  const floorStrikes = [52000, 56000, 60000, 64000, 68000, 72000, 76000].filter((strike) => {
+    const bps = Math.round((strike / spotPrice) * 10000);
+    return bps >= minProtectionBps && bps <= maxProtectionBps;
+  });
+
+  let points: PppOfferSurfacePoint[] = dtes.flatMap((daysToExpiry) => {
+    const expirationTimestamp = expiryTimestampFromDte(generatedAt, daysToExpiry);
+    return floorStrikes.map((floorPutStrike) => {
+      const floorProtection = floorPutStrike / spotPrice;
+      const floorProtectionBps = Math.round(floorProtection * 10000);
+      const rawParticipation = Math.max(0.08, 0.72 - floorProtection * 0.42 - daysToExpiry / 1400);
+      const quotedParticipation = roundParticipationDown(rawParticipation, Number(input.participationRoundDownBps ?? 0)) ?? rawParticipation;
+      const quotedParticipationBps = Math.round(quotedParticipation * 10000);
+      const targetProfitUsdt = investmentUsdt * (targetFirmMarginBps / 10000) * (daysToExpiry / 365);
+      const marginHeadroomUsdt = investmentUsdt * (0.015 + (0.95 - floorProtection) * 0.012) * (daysToExpiry / 365);
+      const eligible = quotedParticipationBps > 0 && marginHeadroomUsdt >= 0;
+      const expiryLabel = formatMockExpiry(expirationTimestamp);
+      return {
+        id: `${expirationTimestamp}:${floorPutStrike}`,
+        expirationTimestamp,
+        expiryLabel,
+        daysToExpiry,
+        floorPutStrike,
+        floorProtection,
+        floorProtectionBps,
+        quotedProtection: floorProtection,
+        quotedProtectionBps: floorProtectionBps,
+        putSpreadImpliedFloor: floorProtection + 0.006,
+        quotedParticipation,
+        quotedParticipationBps,
+        optimizedParticipation: rawParticipation,
+        optimizedParticipationBps: Math.round(rawParticipation * 10000),
+        targetFirmMarginBps,
+        targetProfitUsdt,
+        minScenarioPnlUsdt: targetProfitUsdt + marginHeadroomUsdt,
+        marginHeadroomUsdt,
+        marginHeadroomBps: (marginHeadroomUsdt / investmentUsdt / daysToExpiry) * 365 * 10000,
+        stressPrice: spotPrice,
+        netOptionCashUsdt: 25000 + (0.95 - floorProtection) * 10000,
+        quoteAgeSeconds: 3,
+        maxSlippagePct: 0.002,
+        eligible,
+        best: false,
+        frontier: false,
+        checks: {
+          spotValid: true,
+          expiryValid: true,
+          quoteFresh: true,
+          sufficientDepth: true,
+          slippageWithinLimit: true,
+          participationPositive: quotedParticipation > 0,
+          targetProfitMet: eligible,
+          floorAtOrAboveProtection: true,
+          callHedgeAtOrAboveParticipation: true
+        },
+        atmCallStrike: 80000,
+        atmPutStrike: 80000,
+        spotPrice,
+        legs: [
+          mockPppLeg("long_call", "buy", `BTC-${expiryLabel}-80000-C`, 80000, 3.2, 0.15),
+          mockPppLeg("short_put", "sell", `BTC-${expiryLabel}-80000-P`, 80000, 12.5, 0.12),
+          mockPppLeg("long_floor_put", "buy", `BTC-${expiryLabel}-${floorPutStrike}-P`, floorPutStrike, 12.5, 0.05)
+        ].map((leg) => ({
+          role: leg.role,
+          side: leg.side,
+          instrumentName: leg.instrumentName,
+          optionType: leg.optionType,
+          strike: leg.strike,
+          requiredContracts: leg.requiredContracts,
+          averagePrice: leg.averagePrice,
+          bestPrice: leg.bestPrice,
+          quoteAgeSeconds: leg.quoteAgeSeconds,
+          sufficientDepth: leg.depth.sufficientDepth,
+          slippagePct: leg.depth.slippagePct
+        }))
+      };
+    });
+  });
+
+  const eligiblePoints = points.filter((point) => point.eligible);
+  const bestId =
+    [...eligiblePoints].sort((a, b) => {
+      if ((b.quotedParticipationBps ?? 0) !== (a.quotedParticipationBps ?? 0)) {
+        return (b.quotedParticipationBps ?? 0) - (a.quotedParticipationBps ?? 0);
+      }
+      return (b.quotedProtectionBps ?? 0) - (a.quotedProtectionBps ?? 0);
+    })[0]?.id ?? null;
+  const frontierIds = new Set(
+    eligiblePoints
+      .filter(
+        (point) =>
+          !eligiblePoints.some((other) => {
+            if (other.id === point.id) return false;
+            const protectionDominates = (other.quotedProtectionBps ?? 0) >= (point.quotedProtectionBps ?? 0);
+            const participationDominates = (other.quotedParticipationBps ?? 0) >= (point.quotedParticipationBps ?? 0);
+            const visiblyBetter =
+              (other.quotedProtectionBps ?? 0) > (point.quotedProtectionBps ?? 0) ||
+              (other.quotedParticipationBps ?? 0) > (point.quotedParticipationBps ?? 0);
+            return protectionDominates && participationDominates && visiblyBetter;
+          })
+      )
+      .map((point) => point.id)
+  );
+  points = points.map((point) => ({ ...point, best: point.id === bestId, frontier: frontierIds.has(point.id) }));
+  const participationValues = points
+    .map((point) => point.quotedParticipationBps)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const marginHeadroom = points
+    .map((point) => point.marginHeadroomUsdt)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  return {
+    generatedAt,
+    input,
+    objective: "client_terms",
+    source: "mock",
+    spotPrice,
+    expiries: dtes.map((daysToExpiry) => {
+      const expirationTimestamp = expiryTimestampFromDte(generatedAt, daysToExpiry);
+      return {
+        expirationTimestamp,
+        label: formatMockExpiry(expirationTimestamp),
+        daysToExpiry,
+        pointCount: points.filter((point) => point.expirationTimestamp === expirationTimestamp).length
+      };
+    }),
+    floorRows: floorStrikes
+      .map((floorPutStrike) => ({
+        floorPutStrike,
+        floorProtection: floorPutStrike / spotPrice,
+        floorProtectionBps: Math.round((floorPutStrike / spotPrice) * 10000),
+        pointCount: points.filter((point) => point.floorPutStrike === floorPutStrike).length
+      }))
+      .sort((a, b) => b.floorPutStrike - a.floorPutStrike),
+    points,
+    bestPoint: points.find((point) => point.best) ?? null,
+    highestFrontierProtectionBps:
+      Math.max(...points.filter((point) => point.frontier).map((point) => point.quotedProtectionBps ?? 0)) || null,
+    minParticipationBps: participationValues.length ? Math.min(...participationValues) : null,
+    maxParticipationBps: participationValues.length ? Math.max(...participationValues) : null,
+    minMarginHeadroomUsdt: marginHeadroom.length ? Math.min(...marginHeadroom) : null,
+    maxMarginHeadroomUsdt: marginHeadroom.length ? Math.max(...marginHeadroom) : null,
+    diagnostics: {
+      totalExpiriesScanned: dtes.length,
+      totalRoughCells: dtes.length * floorStrikes.length,
+      livePricedCells: points.length,
+      eligibleCells: points.filter((point) => point.eligible).length,
+      frontierCells: points.filter((point) => point.frontier).length,
+      uniqueOrderBooksFetched: Math.max(3, points.length + dtes.length * 2),
+      pricingElapsedMs: 36,
+      truncated: false,
+      maxCells: Number(input.maxCells ?? 180),
+      latestQuoteAgeSeconds: 3
     },
     mock: true
   };
