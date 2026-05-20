@@ -571,7 +571,7 @@ function getPppPriorityOptions(selectorMode: PppSelectorMode): Array<{ id: PppPr
 function getPppScenarioRange(candidate: PppCandidate) {
   const step = 1000;
   const min = roundToStep(candidate.spotPrice * 0.5, step);
-  const max = roundToStep(candidate.spotPrice * 1.6, step);
+  const max = roundToStep(candidate.spotPrice * 3, step);
   const defaultPrice = clamp(roundToStep(candidate.spotPrice, step), min, max);
   return { min, max, step, defaultPrice };
 }
