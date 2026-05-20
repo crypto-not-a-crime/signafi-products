@@ -1,6 +1,9 @@
 import type { PppCandidate, PppPriorityLever, PppSelectorMode } from "../types";
 
 const DISPLAY_PARTICIPATION_STEP_BPS = 500;
+const DURATION_GUARDRAIL_RATIO = 0.25;
+const DURATION_GUARDRAIL_MIN_DAYS = 21;
+const DURATION_GUARDRAIL_MAX_DAYS = 120;
 
 export function getPppCandidateKey(candidate: PppCandidate): string {
   return [
@@ -17,6 +20,7 @@ export function getPppRecommendations({
   priorityLever,
   targetProtectionBps,
   targetParticipationBps,
+  runwayDays,
   limit = 3
 }: {
   best: PppCandidate | null;
@@ -25,24 +29,59 @@ export function getPppRecommendations({
   priorityLever: PppPriorityLever | undefined;
   targetProtectionBps: number;
   targetParticipationBps?: number;
+  runwayDays?: number;
   limit?: number;
 }): PppCandidate[] {
   const ordered = collapseRecommendationCandidates(selectorMode, [best, ...(candidates ?? [])]);
   const eligible = ordered.filter((candidate) => candidate.eligible);
   const pool = eligible.length > 0 ? eligible : ordered;
+  const { pool: displayPool, best: displayBest } = applyDurationGuardrailDisplayOrder({
+    pool,
+    best,
+    selectorMode,
+    priorityLever,
+    runwayDays
+  });
   let recommendations: PppCandidate[];
   if (selectorMode === "auto_participation" && priorityLever === "duration") {
-    recommendations = shapeDurationPriorityRecommendations(pool, best, targetProtectionBps, limit);
+    recommendations = shapeDurationPriorityRecommendations(displayPool, displayBest, targetProtectionBps, limit);
   } else if (selectorMode === "auto_participation" && priorityLever === "protection") {
-    recommendations = shapeAutoParticipationProtectionPriorityRecommendations(pool, targetProtectionBps, limit);
+    recommendations = shapeAutoParticipationProtectionPriorityRecommendations(displayPool, targetProtectionBps, limit);
   } else if (selectorMode === "auto_protection" && priorityLever === "duration") {
-    recommendations = shapeAutoProtectionDurationPriorityRecommendations(pool, best, targetParticipationBps ?? 0, limit);
+    recommendations = shapeAutoProtectionDurationPriorityRecommendations(displayPool, displayBest, targetParticipationBps ?? 0, limit);
   } else if (selectorMode === "auto_protection" && priorityLever === "participation") {
-    recommendations = shapeAutoProtectionParticipationPriorityRecommendations(pool, targetParticipationBps ?? 0, limit);
+    recommendations = shapeAutoProtectionParticipationPriorityRecommendations(displayPool, targetParticipationBps ?? 0, limit);
   } else {
-    recommendations = pool.slice(0, limit);
+    recommendations = displayPool.slice(0, limit);
   }
-  return putBestCandidateFirst(recommendations, best, limit);
+  return putBestCandidateFirst(recommendations, displayBest, limit);
+}
+
+function applyDurationGuardrailDisplayOrder({
+  pool,
+  best,
+  selectorMode,
+  priorityLever,
+  runwayDays
+}: {
+  pool: PppCandidate[];
+  best: PppCandidate | null;
+  selectorMode: PppSelectorMode;
+  priorityLever: PppPriorityLever | undefined;
+  runwayDays?: number;
+}): { pool: PppCandidate[]; best: PppCandidate | null } {
+  if (!usesDurationGuardrail(selectorMode, priorityLever) || typeof runwayDays !== "number" || !Number.isFinite(runwayDays)) {
+    return { pool, best };
+  }
+
+  const guardrailDays = getDurationGuardrailDays(runwayDays);
+  const inWindow = pool.filter((candidate) => Math.abs(candidate.dayCount - runwayDays) <= guardrailDays);
+  if (inWindow.length === 0) return { pool, best };
+
+  const inWindowKeys = new Set(inWindow.map(getPppCandidateKey));
+  const ordered = [...inWindow, ...pool.filter((candidate) => !inWindowKeys.has(getPppCandidateKey(candidate)))];
+  const displayBest = best && inWindowKeys.has(getPppCandidateKey(best)) ? best : inWindow[0] ?? best;
+  return { pool: ordered, best: displayBest };
 }
 
 function putBestCandidateFirst(candidates: PppCandidate[], best: PppCandidate | null, limit: number): PppCandidate[] {
@@ -279,6 +318,25 @@ function buildDisplayParticipationSlots(targetParticipationBps: number): number[
     slots.add(clamp(target + offset, 0, 10000));
   }
   return [...slots];
+}
+
+function usesDurationGuardrail(
+  selectorMode: PppSelectorMode,
+  priorityLever: PppPriorityLever | undefined
+): boolean {
+  return (
+    selectorMode === "closest" ||
+    (selectorMode === "auto_participation" && priorityLever === "protection") ||
+    (selectorMode === "auto_protection" && priorityLever === "participation")
+  );
+}
+
+function getDurationGuardrailDays(runwayDays: number): number {
+  return clamp(
+    Math.round(runwayDays * DURATION_GUARDRAIL_RATIO),
+    DURATION_GUARDRAIL_MIN_DAYS,
+    DURATION_GUARDRAIL_MAX_DAYS
+  );
 }
 
 function collapseRecommendationCandidates(

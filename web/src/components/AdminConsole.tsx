@@ -1627,6 +1627,10 @@ function PppAdminAuditPanel({
             <Metric label="Live priced packages" value={formatNumber(diagnostics.livePricedPackages, 0)} />
             <Metric label="Unique order books" value={formatNumber(diagnostics.uniqueOrderBooksFetched, 0)} />
             <Metric label="Depth cap" value={formatNumber(diagnostics.depthCandidateCap, 0)} />
+            <Metric label="Duration guardrail" value={`${formatNumber(diagnostics.durationGuardrailDays, 0)} days`} />
+            <Metric label="In-window packages" value={formatNumber(diagnostics.inWindowPackages, 0)} />
+            <Metric label="Out-of-window packages" value={formatNumber(diagnostics.outOfWindowPackages, 0)} />
+            <Metric label="Duration fallback" value={diagnostics.durationFallbackUsed ? "Used" : "No"} />
             <Metric label="Pricing time" value={`${formatNumber(diagnostics.pricingElapsedMs, 0)} ms`} />
           </div>
         </div>

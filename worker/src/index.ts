@@ -34,6 +34,7 @@ import {
   buildPppAutoParticipationProtectionBps,
   calculatePppCandidate,
   getPppDepthCandidateCount,
+  getPppDurationGuardrailDays,
   normalizePppPricingRequest,
   selectPppCandidate,
   shortlistPppPackages,
@@ -981,6 +982,7 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
   const totalExpiriesScanned = countPppScannedExpiries(rows, normalized.expirationTimestamp);
+  const durationGuardrailDays = getPppDurationGuardrailDays(normalized.runwayDays);
   const buildDiagnostics = (partial: Partial<PppPricingDiagnostics> = {}): PppPricingDiagnostics => ({
     totalExpiriesScanned,
     totalRoughPackages: 0,
@@ -988,6 +990,10 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
     livePricedPackages: 0,
     uniqueOrderBooksFetched: 0,
     depthCandidateCap: getPppDepthCandidateCount(normalized.selectorMode, config.maxDepthCandidates),
+    durationGuardrailDays,
+    inWindowPackages: 0,
+    outOfWindowPackages: 0,
+    durationFallbackUsed: false,
     pricingElapsedMs: Date.now() - startedAtMs,
     ...partial
   });
@@ -1050,12 +1056,26 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   }
 
   const selected = selectPppCandidate(normalized, priced);
+  const usesDurationGuardrail =
+    normalized.selectorMode === "closest" ||
+    (normalized.selectorMode === "auto_participation" && normalized.priorityLever === "protection") ||
+    (normalized.selectorMode === "auto_protection" && normalized.priorityLever === "participation");
+  const inWindowPackages = usesDurationGuardrail
+    ? priced.filter((candidate) => Math.abs(candidate.dayCount - normalized.runwayDays) <= durationGuardrailDays).length
+    : 0;
+  const outOfWindowPackages = usesDurationGuardrail ? Math.max(0, priced.length - inWindowPackages) : 0;
+  const hasEligibleInWindow =
+    usesDurationGuardrail &&
+    priced.some((candidate) => candidate.eligible && Math.abs(candidate.dayCount - normalized.runwayDays) <= durationGuardrailDays);
   const diagnostics = buildDiagnostics({
     totalRoughPackages: packages.length,
     shortlistedPackages: shortlisted.length,
     livePricedPackages: priced.length,
     uniqueOrderBooksFetched: bookCache.size,
-    depthCandidateCap: depthCandidateCount
+    depthCandidateCap: depthCandidateCount,
+    inWindowPackages,
+    outOfWindowPackages,
+    durationFallbackUsed: usesDurationGuardrail && !hasEligibleInWindow && selected.bestCandidate !== null
   });
 
   return {

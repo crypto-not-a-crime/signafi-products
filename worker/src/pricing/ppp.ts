@@ -176,6 +176,10 @@ export interface PppPricingDiagnostics {
   livePricedPackages: number;
   uniqueOrderBooksFetched: number;
   depthCandidateCap: number;
+  durationGuardrailDays: number;
+  inWindowPackages: number;
+  outOfWindowPackages: number;
+  durationFallbackUsed: boolean;
   pricingElapsedMs: number;
 }
 
@@ -232,6 +236,9 @@ const AUTO_PROTECTION_PARTICIPATION_STEP_BPS = 500;
 const AUTO_PROTECTION_PARTICIPATION_MAX_OFFSET_BPS = 2000;
 const AUTO_PARTICIPATION_PROTECTION_WINDOW_BPS = 1000;
 const AUTO_PARTICIPATION_PROTECTION_STEP_BPS = 500;
+const PPP_DURATION_GUARDRAIL_RATIO = 0.25;
+const PPP_DURATION_GUARDRAIL_MIN_DAYS = 21;
+const PPP_DURATION_GUARDRAIL_MAX_DAYS = 120;
 
 const PPP_DEPTH_CAPS: Record<PppSelectorMode, { min: number; max: number }> = {
   closest: { min: 8, max: 12 },
@@ -383,6 +390,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const quoteFreshnessSeconds = positiveOr(request.quoteFreshnessSeconds, 10);
   const dayCount = dayCountFromExpiry(market.expirationTimestamp, nowMs);
   const targetProfitUsdt = dayCount > 0 ? (dayCount / 365) * targetFirmMargin * investmentUsdt : 0;
+  const usesMaxParticipationSolver = selectorMode === "auto_participation" || selectorMode === "closest";
   const putSpreadContracts = floorToIncrement(spotPrice > 0 ? investmentUsdt / spotPrice : 0, CONTRACT_INCREMENT);
   const putBidDepth = modelLegDepth("sell", putSpreadContracts, market.atmPut);
   const floorPutAskDepth = modelLegDepth("buy", putSpreadContracts, market.floorPut);
@@ -390,7 +398,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const baseFloorLeg = buildLeg("long_floor_put", "buy", market.floorPut, putSpreadContracts, floorPutAskDepth, nowMs);
   let bestOptimization: OptimizationRow | null = null;
 
-  if (selectorMode === "auto_participation") {
+  if (usesMaxParticipationSolver) {
     const maxCallContracts = getMaxCallContracts(investmentUsdt, spotPrice);
     for (let callContracts = 0; callContracts <= maxCallContracts + 1e-9; callContracts = roundToDecimals(callContracts + CONTRACT_INCREMENT, 10)) {
       const callDepth = modelLegDepth("buy", callContracts, market.atmCall);
@@ -452,9 +460,9 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
   const quotesFresh = legs.every((leg) => leg.quoteAgeSeconds !== null && leg.quoteAgeSeconds <= quoteFreshnessSeconds);
   const participation = bestOptimization?.participation ?? null;
   const quotedParticipation =
-    selectorMode === "auto_participation" ? roundPppParticipationDown(participation, participationRoundDownBps) : selectedParticipation;
+    usesMaxParticipationSolver ? roundPppParticipationDown(participation, participationRoundDownBps) : selectedParticipation;
   const displayOptimization =
-    selectorMode === "auto_participation" &&
+    usesMaxParticipationSolver &&
     bestOptimization &&
     quotedParticipation !== null &&
     quotedParticipation !== participation &&
@@ -482,13 +490,13 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
       ? (optimalCallContracts * spotPrice) / investmentUsdt * (1 - (includeDeliveryFees ? DELIVERY_FEE_CAP_BTC : 0))
       : null;
   const participationGapBps =
-    selectorMode === "auto_participation" || quotedParticipation === null
+    quotedParticipation === null
       ? null
       : selectorMode === "auto_protection"
         ? Math.abs(quotedParticipation - requestedParticipationLevel) * 10000
-        : actualCallHedgeParticipation === null
-          ? null
-          : Math.abs(actualCallHedgeParticipation - quotedParticipation) * 10000;
+        : selectorMode === "closest"
+          ? Math.abs(quotedParticipation - requestedParticipationLevel) * 10000
+          : null;
   const minScenarioPnlUsdt = displayOptimization?.minScenarioPnlUsdt ?? null;
   const stressPrice = displayOptimization?.stressPrice ?? null;
   const netOptionCashBtc = displayOptimization?.netOptionCashBtc ?? null;
@@ -524,7 +532,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     targetProfitMet: minScenarioPnlUsdt !== null && minScenarioPnlUsdt >= targetProfitUsdt,
     floorAtOrAboveProtection: putSpreadImpliedFloor !== null && putSpreadImpliedFloor >= protectionLevel,
     callHedgeAtOrAboveParticipation:
-      selectorMode === "auto_participation" ||
+      usesMaxParticipationSolver ||
       (quotedParticipation !== null && actualCallHedgeParticipation !== null && actualCallHedgeParticipation + 1e-12 >= quotedParticipation)
   };
   const eligible = Object.values(checks).every(Boolean);
@@ -550,8 +558,8 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
     targetFirmMarginBps,
     targetProfitUsdt,
     participationRoundDownBps,
-    optimizedParticipation: selectorMode === "auto_participation" ? participation : null,
-    optimizedParticipationBps: selectorMode === "auto_participation" && participation !== null ? participation * 10000 : null,
+    optimizedParticipation: usesMaxParticipationSolver ? participation : null,
+    optimizedParticipationBps: usesMaxParticipationSolver && participation !== null ? participation * 10000 : null,
     optimalCallContracts,
     putSpreadContracts,
     atmCallStrike: market.atmCall.strike,
@@ -588,7 +596,7 @@ export function calculatePppCandidate(request: PppPricingRequest, market: PppMar
       protectionLevel,
       selectedParticipation,
       quotedParticipation,
-      optimizedParticipation: selectorMode === "auto_participation" ? participation : null,
+      optimizedParticipation: usesMaxParticipationSolver ? participation : null,
       participationRoundDownBps,
       targetFirmMargin,
       targetProfitUsdt,
@@ -615,7 +623,12 @@ export function selectPppCandidate(
   candidates: PppCandidate[]
 ): PppPricingResponse["recommendation"] & { candidates: PppCandidate[]; bestCandidate: PppCandidate | null } {
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
-  const sorted = collapsePppCandidatesForSelection(request, candidates).sort((a, b) => comparePppCandidates(request, a, b));
+  const collapsed = collapsePppCandidatesForSelection(request, candidates);
+  const guardrailDays = getPppDurationGuardrailDays(request.runwayDays);
+  const enforceDurationGuardrail =
+    usesPppDurationGuardrail(request) &&
+    collapsed.some((candidate) => candidate.eligible && Math.abs(candidate.dayCount - request.runwayDays) <= guardrailDays);
+  const sorted = collapsed.sort((a, b) => comparePppCandidates(request, a, b, enforceDurationGuardrail));
   const bestCandidate = sorted.find((candidate) => candidate.eligible) ?? null;
   const recommendedLever = getPppRecommendedLever(selectorMode);
   const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
@@ -751,14 +764,20 @@ export function getPppDepthCandidateCount(selectorMode: PppPricingRequest["selec
   return clamp(configured, caps.min, caps.max);
 }
 
+export function getPppDurationGuardrailDays(runwayDays: number): number {
+  return clamp(
+    Math.round(positiveOr(runwayDays, 92) * PPP_DURATION_GUARDRAIL_RATIO),
+    PPP_DURATION_GUARDRAIL_MIN_DAYS,
+    PPP_DURATION_GUARDRAIL_MAX_DAYS
+  );
+}
+
 export function shortlistPppPackages(
   request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "participationLevelBps" | "selectorMode" | "priorityLever">,
   packages: PppMarketPackageInput[],
   nowMs: number,
   depthCandidateCap: number
 ): PppShortlistedPackage[] {
-  const selectorMode = normalizePppSelectorMode(request.selectorMode);
-  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
   const scored = uniquePppShortlistPackages(
     packages
       .map((marketPackage, index) => buildPppShortlistItem(request, marketPackage, nowMs, index))
@@ -767,7 +786,30 @@ export function shortlistPppPackages(
   );
 
   if (depthCandidateCap <= 0 || scored.length === 0) return [];
-  if (selectorMode === "closest") return scored.slice(0, depthCandidateCap).map(toShortlistedPackage);
+  if (usesPppDurationGuardrail(request)) {
+    const guardrailDays = getPppDurationGuardrailDays(Number(request.runwayDays ?? 92));
+    const inWindow = scored.filter((item) => item.durationGapDays <= guardrailDays);
+    const outOfWindow = scored.filter((item) => item.durationGapDays > guardrailDays);
+    const selectedInWindow = shortlistPppScoredPackages(request, inWindow, depthCandidateCap);
+    const selected = [
+      ...selectedInWindow,
+      ...shortlistPppScoredPackages(request, outOfWindow, Math.max(0, depthCandidateCap - selectedInWindow.length))
+    ].slice(0, depthCandidateCap);
+    return selected.map(toShortlistedPackage);
+  }
+
+  return shortlistPppScoredPackages(request, scored, depthCandidateCap).map(toShortlistedPackage);
+}
+
+function shortlistPppScoredPackages(
+  request: Pick<PppPricingRequest, "runwayDays" | "protectionLevelBps" | "participationLevelBps" | "selectorMode" | "priorityLever">,
+  scored: PppScoredPackage[],
+  depthCandidateCap: number
+): PppScoredPackage[] {
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
+  if (depthCandidateCap <= 0 || scored.length === 0) return [];
+  if (selectorMode === "closest") return scored.slice(0, depthCandidateCap);
 
   if (selectorMode === "auto_participation") {
     if (priorityLever === "protection") {
@@ -775,14 +817,14 @@ export function shortlistPppPackages(
         groupKey: (item) => String(item.candidateProtectionBps),
         groupSortValue: (items) => Math.min(...items.map((item) => item.protectionGapBps)),
         variantComparator: comparePppShortlistItem
-      }).map(toShortlistedPackage);
+      });
     }
 
     return stratifyPppShortlist(scored, depthCandidateCap, {
       groupKey: (item) => String(item.expirationTimestamp),
       groupSortValue: (items) => Math.min(...items.map((item) => item.durationGapDays)),
       variantComparator: comparePppShortlistItem
-    }).map(toShortlistedPackage);
+    });
   }
 
   if (priorityLever === "participation") {
@@ -790,7 +832,7 @@ export function shortlistPppPackages(
       groupKey: (item) => String(item.candidateParticipationBps),
       groupSortValue: (items) => Math.min(...items.map((item) => item.participationGapBps)),
       variantComparator: comparePppShortlistItem
-    }).map(toShortlistedPackage);
+    });
   }
 
   return stratifyPppShortlist(scored, depthCandidateCap, {
@@ -802,7 +844,7 @@ export function shortlistPppPackages(
         () => compareDesc(a.candidateProtectionBps, b.candidateProtectionBps),
         () => comparePppShortlistItem(a, b)
       ])
-  }).map(toShortlistedPackage);
+  });
 }
 
 interface PppScoredPackage extends PppShortlistedPackage {
@@ -952,11 +994,18 @@ function toShortlistedPackage(item: PppScoredPackage): PppShortlistedPackage {
 function comparePppCandidates(
   request: NormalizedPppPricingRequest,
   a: PppCandidate,
-  b: PppCandidate
+  b: PppCandidate,
+  enforceDurationGuardrail = false
 ): number {
   if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
   const selectorMode = normalizePppSelectorMode(request.selectorMode);
   const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
+  if (enforceDurationGuardrail && usesPppDurationGuardrail(request)) {
+    const guardrailDays = getPppDurationGuardrailDays(request.runwayDays);
+    const aInWindow = Math.abs(a.dayCount - request.runwayDays) <= guardrailDays;
+    const bInWindow = Math.abs(b.dayCount - request.runwayDays) <= guardrailDays;
+    if (aInWindow !== bInWindow) return aInWindow ? -1 : 1;
+  }
   const requestedProtectionLevel = clamp(request.protectionLevelBps / 10000, MIN_PROTECTION_LEVEL, 1);
   const durationComparator = () => compareAsc(Math.abs(a.dayCount - request.runwayDays), Math.abs(b.dayCount - request.runwayDays));
   const protectionGapComparator = () =>
@@ -1335,10 +1384,16 @@ function buildFormulaTrace(input: {
       cell: PPP_TEMPLATE.cells.selectedParticipation,
       label: "Client participation quote",
       formula:
-        input.selectorMode === "auto_participation"
-          ? "IF(roundingBps > 0, FLOOR(maxParticipationBps / roundingBps) * roundingBps / 10000, maxParticipation)"
-          : "selected participationLevelBps / 10000",
+        input.selectorMode === "auto_protection"
+          ? "selected participationLevelBps / 10000"
+          : "IF(roundingBps > 0, FLOOR(maxParticipationBps / roundingBps) * roundingBps / 10000, maxParticipation)",
       value: input.quotedParticipation
+    },
+    {
+      cell: "Request.participationLevelBps",
+      label: "Selected participation target",
+      formula: "selected participationLevelBps / 10000",
+      value: input.selectedParticipation
     },
     {
       cell: "pricing_config.ppp_participation_round_down_bps",
@@ -1496,6 +1551,18 @@ function normalizePppPriorityLever(
   if (selectorMode === "auto_participation") return priorityLever === "protection" ? "protection" : "duration";
   if (selectorMode === "auto_protection") return priorityLever === "participation" ? "participation" : "duration";
   return undefined;
+}
+
+function usesPppDurationGuardrail(
+  request: Pick<PppPricingRequest, "selectorMode" | "priorityLever">
+): boolean {
+  const selectorMode = normalizePppSelectorMode(request.selectorMode);
+  const priorityLever = normalizePppPriorityLever(request.priorityLever, selectorMode);
+  return (
+    selectorMode === "closest" ||
+    (selectorMode === "auto_participation" && priorityLever === "protection") ||
+    (selectorMode === "auto_protection" && priorityLever === "participation")
+  );
 }
 
 function getPppRecommendedLever(selectorMode: PppSelectorMode): PppRecommendedLever {

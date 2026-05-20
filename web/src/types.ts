@@ -291,6 +291,10 @@ export interface PppPricingDiagnostics {
   livePricedPackages: number;
   uniqueOrderBooksFetched: number;
   depthCandidateCap: number;
+  durationGuardrailDays: number;
+  inWindowPackages: number;
+  outOfWindowPackages: number;
+  durationFallbackUsed: boolean;
   pricingElapsedMs: number;
 }
 

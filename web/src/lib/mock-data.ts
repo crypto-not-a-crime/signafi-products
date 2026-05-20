@@ -330,13 +330,14 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
   const autoParticipationDurationMock = selectorMode === "auto_participation" && priorityLever === "duration";
   const autoParticipationProtectionMock = selectorMode === "auto_participation" && priorityLever === "protection";
   const autoProtectionDurationMock = selectorMode === "auto_protection" && priorityLever === "duration";
+  const maxParticipationQuoteMode = selectorMode === "auto_participation" || selectorMode === "closest";
   const lowerProtection = Math.max(0.1, protectionLevel - 0.05);
   const upperProtection = Math.min(1, protectionLevel + 0.05);
   const dominatedProtection = Math.max(0.1, protectionLevel - 0.01);
   const lowerParticipation = Math.max(0, participationLevel - 0.05);
   const upperParticipation = Math.min(1, participationLevel + 0.05);
   const bestProtection = selectorMode === "auto_protection" ? 0.753 : autoParticipationDurationMock ? lowerProtection : protectionLevel;
-  const bestRawParticipation = autoParticipationDurationMock ? 0.612 : 0.239;
+  const bestRawParticipation = autoParticipationDurationMock ? 0.612 : selectorMode === "closest" ? 0.36 : 0.239;
   const bestQuotedAutoParticipation = quoteParticipation(bestRawParticipation);
   const best = mockPppCandidate({
     investmentUsdt,
@@ -347,13 +348,18 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
     targetFirmMarginBps,
     includeDeliveryFees,
     participationRoundDownBps,
-    quotedParticipation: selectorMode === "auto_participation" ? bestQuotedAutoParticipation : participationLevel,
-    quotedParticipationBps: selectorMode === "auto_participation" ? bestQuotedAutoParticipation * 10000 : participationLevel * 10000,
-    optimizedParticipation: selectorMode === "auto_participation" ? bestRawParticipation : null,
-    optimizedParticipationBps: selectorMode === "auto_participation" ? bestRawParticipation * 10000 : null,
+    quotedParticipation: maxParticipationQuoteMode ? bestQuotedAutoParticipation : participationLevel,
+    quotedParticipationBps: maxParticipationQuoteMode ? bestQuotedAutoParticipation * 10000 : participationLevel * 10000,
+    optimizedParticipation: maxParticipationQuoteMode ? bestRawParticipation : null,
+    optimizedParticipationBps: maxParticipationQuoteMode ? bestRawParticipation * 10000 : null,
     optimizedProtection: selectorMode === "auto_protection" ? 0.753 : null,
     optimizedProtectionBps: selectorMode === "auto_protection" ? 7530 : null,
-    participationGapBps: selectorMode === "auto_protection" ? 0 : undefined
+    participationGapBps:
+      selectorMode === "auto_protection"
+        ? 0
+        : selectorMode === "closest"
+          ? Math.abs(bestQuotedAutoParticipation - participationLevel) * 10000
+          : undefined
   });
   const bestQuotedParticipation = best.quotedParticipation ?? 0;
   const bestQuotedParticipationBps = best.quotedParticipationBps ?? bestQuotedParticipation * 10000;
@@ -490,11 +496,12 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
           selectorMode,
           expirationTimestamp: expiryTimestampFromDte(Date.now(), 180),
           dayCount: 180,
-          optimizedParticipation: selectorMode === "auto_participation" ? 0.212 : null,
-          optimizedParticipationBps: selectorMode === "auto_participation" ? 2120 : null,
-          quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.212) : participationLevel,
+          optimizedParticipation: maxParticipationQuoteMode ? 0.212 : null,
+          optimizedParticipationBps: maxParticipationQuoteMode ? 2120 : null,
+          quotedParticipation: maxParticipationQuoteMode ? quoteParticipation(0.212) : participationLevel,
           quotedParticipationBps:
-            selectorMode === "auto_participation" ? quoteParticipation(0.212) * 10000 : participationLevel * 10000,
+            maxParticipationQuoteMode ? quoteParticipation(0.212) * 10000 : participationLevel * 10000,
+          participationGapBps: selectorMode === "closest" ? Math.abs(quoteParticipation(0.212) - participationLevel) * 10000 : undefined,
           participationRoundDownBps,
           optimizedProtection: selectorMode === "auto_protection" ? 0.742 : null,
           optimizedProtectionBps: selectorMode === "auto_protection" ? 7420 : null,
@@ -510,11 +517,12 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
           selectorMode,
           expirationTimestamp: expiryTimestampFromDte(Date.now(), 365),
           dayCount: 365,
-          optimizedParticipation: selectorMode === "auto_participation" ? 0.186 : null,
-          optimizedParticipationBps: selectorMode === "auto_participation" ? 1860 : null,
-          quotedParticipation: selectorMode === "auto_participation" ? quoteParticipation(0.186) : participationLevel,
+          optimizedParticipation: maxParticipationQuoteMode ? 0.186 : null,
+          optimizedParticipationBps: maxParticipationQuoteMode ? 1860 : null,
+          quotedParticipation: maxParticipationQuoteMode ? quoteParticipation(0.186) : participationLevel,
           quotedParticipationBps:
-            selectorMode === "auto_participation" ? quoteParticipation(0.186) * 10000 : participationLevel * 10000,
+            maxParticipationQuoteMode ? quoteParticipation(0.186) * 10000 : participationLevel * 10000,
+          participationGapBps: selectorMode === "closest" ? Math.abs(quoteParticipation(0.186) - participationLevel) * 10000 : undefined,
           participationRoundDownBps,
           optimizedProtection: selectorMode === "auto_protection" ? 0.728 : null,
           optimizedProtectionBps: selectorMode === "auto_protection" ? 7280 : null,
@@ -552,6 +560,10 @@ export function mockPppPricingResponse(input: Record<string, unknown> = {}): Ppp
       livePricedPackages: candidates.length,
       uniqueOrderBooksFetched: Math.max(3, candidates.length + 2),
       depthCandidateCap: selectorMode === "auto_protection" ? 36 : selectorMode === "auto_participation" ? 18 : 8,
+      durationGuardrailDays: Math.min(120, Math.max(21, Math.round(Number(input.runwayDays ?? 92) * 0.25))),
+      inWindowPackages: candidates.length,
+      outOfWindowPackages: 0,
+      durationFallbackUsed: false,
       pricingElapsedMs: 42
     },
     mock: true

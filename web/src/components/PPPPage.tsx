@@ -47,9 +47,10 @@ export function PPPPage() {
         priorityLever: effectivePriorityLever,
         targetProtectionBps,
         targetParticipationBps,
+        runwayDays,
         limit: 3
       }),
-    [best, data?.candidates, effectivePriorityLever, selectorMode, targetParticipationBps, targetProtectionBps]
+    [best, data?.candidates, effectivePriorityLever, runwayDays, selectorMode, targetParticipationBps, targetProtectionBps]
   );
   const selectedCandidate = selectedCandidateKey
     ? candidates.find((candidate) => getPppCandidateKey(candidate) === selectedCandidateKey) ?? best
