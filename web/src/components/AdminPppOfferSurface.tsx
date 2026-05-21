@@ -143,6 +143,7 @@ export function AdminPppOfferSurface() {
 
         <div className="admin-grid yield-metrics">
           <Metric label="Eligible / total cells" value={surface ? `${surface.diagnostics.eligibleCells} / ${surface.points.length}` : "-"} />
+          <Metric label="BTC spot reference" value={formatUsd(surface?.spotPrice)} />
           <Metric label="Best participation" value={formatBps(surface?.bestPoint?.quotedParticipationBps)} tone="status-live" />
           <Metric label="Highest frontier protection" value={formatBps(surface?.highestFrontierProtectionBps)} />
           <Metric label="Latest quote age" value={formatAge(surface?.diagnostics.latestQuoteAgeSeconds)} />
