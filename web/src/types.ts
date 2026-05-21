@@ -39,6 +39,8 @@ export interface PricingConfig {
   maxSlippageBps: number;
 }
 
+export type MarketDataSource = "live_rest" | "short_lived_stream" | "stale_d1_fallback" | "mock";
+
 export interface DcnScenarioResult {
   expiryPrice: number;
   side: "downside" | "upside";
@@ -148,6 +150,9 @@ export interface DcnPricingResponse {
   candidates: DcnCandidate[];
   bestCandidate: DcnCandidate | null;
   recommendation?: DcnRecommendation;
+  marketDataSource?: MarketDataSource;
+  degradedReason?: string;
+  livePricingAttempted?: boolean;
   mock?: boolean;
 }
 
@@ -281,6 +286,9 @@ export interface PppPricingResponse {
     optimizedProtectionBps: number | null;
   };
   diagnostics?: PppPricingDiagnostics;
+  marketDataSource?: MarketDataSource;
+  degradedReason?: string;
+  livePricingAttempted?: boolean;
   mock?: boolean;
 }
 

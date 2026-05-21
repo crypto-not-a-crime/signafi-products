@@ -59,6 +59,47 @@ const STREAM_TICKER_PERSIST_INTERVAL_MS = 15 * 60 * 1000;
 const DEPTH_REQUEST_SPACING_MS = 75;
 const INSTRUMENT_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const SUMMARY_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+const SHORT_LIVED_STREAM_TIMEOUT_MS = 2_500;
+
+type MarketDataSource = "live_rest" | "short_lived_stream" | "stale_d1_fallback" | "mock";
+
+interface PricingMarketDataState {
+  source: MarketDataSource;
+  livePricingAttempted: boolean;
+  degradedReasons: string[];
+  shortLivedQuotes: Map<string, DeribitTicker>;
+  shortLivedAttemptedInstruments: Set<string>;
+  durableObjectUnavailable: boolean;
+}
+
+interface QuoteFallbackRow {
+  instrument_name?: string;
+  instrumentName?: string;
+  bid_price?: number | null;
+  bidPrice?: number | null;
+  bid_amount?: number | null;
+  bidAmount?: number | null;
+  ask_price?: number | null;
+  askPrice?: number | null;
+  ask_amount?: number | null;
+  askAmount?: number | null;
+  mark_price?: number | null;
+  markPrice?: number | null;
+  last_price?: number | null;
+  lastPrice?: number | null;
+  open_interest?: number | null;
+  openInterest?: number | null;
+  underlying_price?: number | null;
+  underlyingPrice?: number | null;
+  underlying_index?: string | null;
+  underlyingIndex?: string | null;
+  interest_rate?: number | null;
+  interestRate?: number | null;
+  deribit_timestamp?: number | null;
+  deribitTimestamp?: number | null;
+  ingested_at?: number | null;
+  ingestedAt?: number | null;
+}
 
 export interface Env {
   DB: D1Database;
@@ -90,7 +131,8 @@ const routes: Array<[method: string, pattern: RegExp, handler: RouteHandler, adm
   ["POST", /^\/api\/admin\/refresh-selected-market$/, handleRefreshSelectedMarket, true],
   ["POST", /^\/api\/admin\/sync-market-data$/, handleSyncMarketData, true],
   ["GET", /^\/api\/admin\/stream-status$/, handleStreamStatus, true],
-  ["POST", /^\/api\/admin\/stream-start$/, handleStreamStart, true]
+  ["POST", /^\/api\/admin\/stream-start$/, handleStreamStart, true],
+  ["POST", /^\/api\/admin\/stream-stop$/, handleStreamStop, true]
 ];
 
 export default {
@@ -115,7 +157,7 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(syncMarketData(env).then(() => ensurePricingStream(env)));
+    ctx.waitUntil(syncMarketData(env));
   }
 };
 
@@ -187,6 +229,16 @@ export class MarketDataDurableObject {
       return json({ started: true, subscribed: this.subscribed });
     }
 
+    if (url.pathname.endsWith("/stop")) {
+      const stopped = this.stop();
+      return json({ stopped, connected: false, subscribed: this.subscribed });
+    }
+
+    if (url.pathname.endsWith("/refresh-quotes")) {
+      const payload = await request.json().catch(() => ({})) as { instruments?: string[]; timeoutMs?: number };
+      return json(await this.refreshQuotes(payload.instruments ?? [], payload.timeoutMs));
+    }
+
     return json({ ok: true });
   }
 
@@ -216,11 +268,33 @@ export class MarketDataDurableObject {
     });
   }
 
+  private stop(): boolean {
+    const wasConnected = this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING;
+    try {
+      this.ws?.close(1000, "Stopped by admin");
+    } catch {
+      // Ignore close errors; the object state below is authoritative for future calls.
+    }
+    this.ws = null;
+    this.subscribed = [];
+    this.quotes.clear();
+    this.quoteReceivedAt.clear();
+    this.quotePersistedAt.clear();
+    this.orderBookCache = null;
+    this.depthQueue = Promise.resolve();
+    this.lastDepthRequestAt = 0;
+    return Boolean(wasConnected);
+  }
+
   private subscribe(instruments: string[]): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || instruments.length === 0) return;
+    this.sendSubscribe(this.ws, instruments);
+  }
+
+  private sendSubscribe(ws: WebSocket, instruments: string[]): void {
     for (let index = 0; index < instruments.length; index += 500) {
       const batch = instruments.slice(index, index + 500);
-      this.ws.send(
+      ws.send(
         JSON.stringify({
           jsonrpc: "2.0",
           id: Date.now() + index,
@@ -231,6 +305,90 @@ export class MarketDataDurableObject {
         })
       );
     }
+  }
+
+  private async refreshQuotes(
+    instruments: string[],
+    requestedTimeoutMs?: number
+  ): Promise<{
+    connectedAt: number | null;
+    closedAt: number;
+    requested: string[];
+    receivedCount: number;
+    quotes: Record<string, DeribitTicker>;
+    error?: string;
+  }> {
+    const requested = normalizeInstruments(instruments, 500);
+    if (requested.length === 0) {
+      return {
+        connectedAt: null,
+        closedAt: Date.now(),
+        requested,
+        receivedCount: 0,
+        quotes: {}
+      };
+    }
+
+    const timeoutMs = Math.max(500, Math.min(5_000, Number(requestedTimeoutMs ?? SHORT_LIVED_STREAM_TIMEOUT_MS)));
+    const requestedSet = new Set(requested);
+    const quotes = new Map<string, DeribitTicker>();
+    const wsUrl = this.env.DERIBIT_WS_URL ?? "wss://www.deribit.com/ws/api/v2";
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let connectedAt: number | null = null;
+      let ws: WebSocket | null = null;
+      const finish = (error?: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws?.close(1000, "Short-lived quote refresh complete");
+        } catch {
+          // The websocket may already be closed; that is fine for this short refresh path.
+        }
+        resolve({
+          connectedAt,
+          closedAt: Date.now(),
+          requested,
+          receivedCount: quotes.size,
+          quotes: Object.fromEntries(quotes),
+          ...(error ? { error } : {})
+        });
+      };
+      const timer = setTimeout(() => finish(), timeoutMs);
+
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (error) {
+        finish(error instanceof Error ? error.message : "Short-lived Deribit websocket failed to open");
+        return;
+      }
+
+      ws.addEventListener("open", () => {
+        connectedAt = Date.now();
+        this.sendSubscribe(ws as WebSocket, requested);
+      });
+      ws.addEventListener("message", (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as { method?: string; params?: { data?: DeribitTicker } };
+          const data = payload.params?.data;
+          if (!data?.instrument_name || !requestedSet.has(data.instrument_name)) return;
+          quotes.set(data.instrument_name, data);
+          this.quotes.set(data.instrument_name, data);
+          this.quoteReceivedAt.set(data.instrument_name, Date.now());
+          if (quotes.size >= requested.length) finish();
+        } catch {
+          // Ignore non-ticker messages and malformed frames from the short-lived refresh.
+        }
+      });
+      ws.addEventListener("close", () => {
+        finish(quotes.size > 0 ? undefined : "Short-lived Deribit websocket closed before quotes arrived");
+      });
+      ws.addEventListener("error", () => {
+        finish("Short-lived Deribit websocket failed");
+      });
+    });
   }
 
   private async onMessage(message: string): Promise<void> {
@@ -377,23 +535,27 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
+  const marketData = createPricingMarketDataState();
+  const spotPrice = await getBtcUsdcSpotPriceForPricing(env, client, marketData, candidates);
   const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 6), 12);
   const shortlisted = candidates
     .map((row) => ({ row, score: scorePutCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
     .filter((item) => Number.isFinite(item.score))
     .sort((a, b) => b.score - a.score)
     .slice(0, depthCandidateCount);
+  const shortLivedUniverse = normalizeInstruments(["BTC_USDC", ...shortlisted.map((item) => item.row.instrument_name)], 500);
 
   const priced = [];
 
   for (const item of shortlisted) {
-    const book = await getOrderBookForPricing(
+    const book = await getOrderBookForQuote(
       env,
       client,
-      config,
+      marketData,
       item.row.instrument_name,
-      normalized.orderBookDepth ?? config.defaultOrderBookDepth
+      normalized.orderBookDepth ?? config.defaultOrderBookDepth,
+      item.row,
+      shortLivedUniverse
     );
     const calculation = priceCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
     priced.push({ score: item.score, snapshotId: null, ...calculation });
@@ -406,7 +568,8 @@ async function handleSellPutPrice(request: Request, env: Env): Promise<Response>
     input: normalized,
     candidates: selected.candidates,
     bestCandidate: selected.bestCandidate,
-    recommendation: selected.recommendation
+    recommendation: selected.recommendation,
+    ...marketDataMetadata(marketData)
   });
 }
 
@@ -423,23 +586,27 @@ async function handleSellCallPrice(request: Request, env: Env): Promise<Response
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
+  const marketData = createPricingMarketDataState();
+  const spotPrice = await getBtcUsdcSpotPriceForPricing(env, client, marketData, candidates);
   const depthCandidateCount = Math.min(Math.max(config.maxDepthCandidates, 6), 12);
   const shortlisted = candidates
     .map((row) => ({ row, score: scoreCallCandidate(normalized, rowToMarket(row, [], undefined, spotPrice)) }))
     .filter((item) => Number.isFinite(item.score))
     .sort((a, b) => b.score - a.score)
     .slice(0, depthCandidateCount);
+  const shortLivedUniverse = normalizeInstruments(["BTC_USDC", ...shortlisted.map((item) => item.row.instrument_name)], 500);
 
   const priced = [];
 
   for (const item of shortlisted) {
-    const book = await getOrderBookForPricing(
+    const book = await getOrderBookForQuote(
       env,
       client,
-      config,
+      marketData,
       item.row.instrument_name,
-      normalized.orderBookDepth ?? config.defaultOrderBookDepth
+      normalized.orderBookDepth ?? config.defaultOrderBookDepth,
+      item.row,
+      shortLivedUniverse
     );
     const calculation = priceCallCandidateAtSize(normalized, rowToMarket(item.row, book.bids, book.timestamp, spotPrice));
     priced.push({ score: item.score, snapshotId: null, ...calculation });
@@ -452,7 +619,8 @@ async function handleSellCallPrice(request: Request, env: Env): Promise<Response
     input: normalized,
     candidates: selected.candidates,
     bestCandidate: selected.bestCandidate,
-    recommendation: selected.recommendation
+    recommendation: selected.recommendation,
+    ...marketDataMetadata(marketData)
   });
 }
 
@@ -516,7 +684,7 @@ async function handleVerifyQuote(request: Request, env: Env): Promise<Response> 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
   const [ticker, memory] = await Promise.all([
     client.ticker(payload.instrumentName),
-    getDurableObjectQuote(env, payload.instrumentName)
+    config.marketDataMode === "hybrid_cache" ? getDurableObjectQuote(env, payload.instrumentName) : Promise.resolve(null)
   ]);
   const depth = normalizeDepth(payload.depth ?? config.defaultOrderBookDepth);
   const cachedBook =
@@ -745,12 +913,17 @@ async function handleRefreshSelectedMarket(request: Request, env: Env): Promise<
   });
 }
 
-async function handleMarketHealth(_request: Request, env: Env): Promise<Response> {
+async function handleMarketHealth(request: Request, env: Env): Promise<Response> {
   const nowMs = Date.now();
   const summaryFreshnessSeconds = 180;
   const liveFreshnessSeconds = 10;
+  const url = new URL(request.url);
+  const config = await getPricingConfig(env.DB);
+  const includeStreamStatus =
+    config.marketDataMode === "hybrid_cache" ||
+    url.searchParams.get("includeStream") === "1" ||
+    url.searchParams.get("includeStream") === "true";
   const [
-    config,
     syncStatus,
     instrumentStats,
     quoteStats,
@@ -758,7 +931,6 @@ async function handleMarketHealth(_request: Request, env: Env): Promise<Response
     latestAudit,
     streamStatus
   ] = await Promise.all([
-    getPricingConfig(env.DB),
     getMarketDataSyncStatus(env.DB),
     env.DB
       .prepare("SELECT COUNT(*) AS count FROM option_instruments WHERE is_active = 1 AND expiration_timestamp > ?")
@@ -790,7 +962,7 @@ async function handleMarketHealth(_request: Request, env: Env): Promise<Response
       .bind(nowMs, nowMs - summaryFreshnessSeconds * 1000)
       .first<{ count: number }>(),
     env.DB.prepare("SELECT MAX(created_at) AS latest FROM dcn_quote_audit").first<{ latest: number | null }>(),
-    getDurableObjectStatus(env)
+    includeStreamStatus ? getDurableObjectStatus(env) : Promise.resolve(null)
   ]);
   const latestQuoteAt = quoteStats?.latest ?? null;
   const latestDeribitQuoteAt = quoteStats?.latestDeribit ?? null;
@@ -824,7 +996,7 @@ async function handleMarketHealth(_request: Request, env: Env): Promise<Response
     freshDepthCacheCount,
     staleQuoteCount: summaryStaleStats?.count ?? 0,
     latestAuditAt: latestAudit?.latest ?? null,
-    streamStatus,
+    ...(includeStreamStatus ? { streamStatus } : {}),
     d1FreeTierGuard: {
       quotePersistence: `summary writes are throttled to ${SUMMARY_SYNC_INTERVAL_MS / 60000}m and stream writes to ${STREAM_TICKER_PERSIST_INTERVAL_MS / 60000}m per instrument`,
       depthStorage: "hybrid depth cache is in Durable Object memory; only admin/pricing snapshots are persisted",
@@ -835,8 +1007,7 @@ async function handleMarketHealth(_request: Request, env: Env): Promise<Response
 
 async function handleSyncMarketData(_request: Request, env: Env): Promise<Response> {
   const result = await syncMarketData(env, { force: true });
-  const stream = await ensurePricingStream(env);
-  return json({ ...result, stream });
+  return json(result);
 }
 
 async function handleStreamStatus(_request: Request, env: Env): Promise<Response> {
@@ -845,6 +1016,10 @@ async function handleStreamStatus(_request: Request, env: Env): Promise<Response
 
 async function handleStreamStart(_request: Request, env: Env): Promise<Response> {
   return json(await ensurePricingStream(env));
+}
+
+async function handleStreamStop(_request: Request, env: Env): Promise<Response> {
+  return json(await stopPricingStream(env));
 }
 
 async function ensurePricingStream(env: Env): Promise<unknown> {
@@ -856,6 +1031,13 @@ async function ensurePricingStream(env: Env): Promise<unknown> {
     body: JSON.stringify({ instruments })
   });
   return response.json().catch(() => ({ started: false, subscribed: instruments }));
+}
+
+async function stopPricingStream(env: Env): Promise<unknown> {
+  const id = env.MARKET_DATA.idFromName("btc-options");
+  const stub = env.MARKET_DATA.get(id);
+  const response = await stub.fetch("https://durable-object/stop", { method: "POST" });
+  return response.json().catch(() => ({ stopped: false }));
 }
 
 async function getPricingStreamInstruments(env: Env): Promise<string[]> {
@@ -887,19 +1069,155 @@ async function getPricingStreamInstruments(env: Env): Promise<string[]> {
   return ["BTC_USDC", ...optionInstruments];
 }
 
+function createPricingMarketDataState(): PricingMarketDataState {
+  return {
+    source: "live_rest",
+    livePricingAttempted: false,
+    degradedReasons: [],
+    shortLivedQuotes: new Map(),
+    shortLivedAttemptedInstruments: new Set(),
+    durableObjectUnavailable: false
+  };
+}
+
+function marketDataMetadata(state: PricingMarketDataState): {
+  marketDataSource: MarketDataSource;
+  degradedReason?: string;
+  livePricingAttempted: boolean;
+} {
+  return {
+    marketDataSource: state.source,
+    ...(state.degradedReasons.length > 0 ? { degradedReason: Array.from(new Set(state.degradedReasons)).join(" ") } : {}),
+    livePricingAttempted: state.livePricingAttempted
+  };
+}
+
+function markMarketDataSource(state: PricingMarketDataState, source: MarketDataSource, reason?: string): void {
+  const priority: Record<MarketDataSource, number> = {
+    live_rest: 0,
+    short_lived_stream: 1,
+    stale_d1_fallback: 2,
+    mock: 3
+  };
+  if (priority[source] > priority[state.source]) state.source = source;
+  if (reason) state.degradedReasons.push(reason);
+}
+
+async function getBtcUsdcSpotPriceForPricing(
+  env: Env,
+  client: DeribitClient,
+  state: PricingMarketDataState,
+  fallbackRows: QuoteFallbackRow[] = []
+): Promise<number | null> {
+  state.livePricingAttempted = true;
+  try {
+    return spotPriceFromTicker(await client.btcUsdcSpotTicker());
+  } catch (error) {
+    const message = errorMessage(error);
+    const streamed = await getShortLivedTicker(env, state, "BTC_USDC", ["BTC_USDC"]);
+    const streamedSpot = spotPriceFromTicker(streamed);
+    if (streamedSpot) {
+      markMarketDataSource(state, "short_lived_stream", `BTC_USDC REST spot failed; used short-lived stream. ${message}`);
+      return streamedSpot;
+    }
+    const fallbackSpot = latestFallbackSpotPrice(fallbackRows);
+    if (fallbackSpot) {
+      markMarketDataSource(state, "stale_d1_fallback", `BTC_USDC live spot unavailable; used latest D1 underlying price. ${message}`);
+      return fallbackSpot;
+    }
+    markMarketDataSource(state, "stale_d1_fallback", `BTC_USDC live spot unavailable. ${message}`);
+    return null;
+  }
+}
+
+async function getOrderBookForQuote(
+  env: Env,
+  client: DeribitClient,
+  state: PricingMarketDataState,
+  instrumentName: string,
+  depth: number,
+  fallback: QuoteFallbackRow,
+  shortLivedUniverse: string[]
+): Promise<DeribitOrderBook> {
+  state.livePricingAttempted = true;
+  try {
+    return await client.getOrderBook(instrumentName, depth);
+  } catch (error) {
+    const message = errorMessage(error);
+    const streamed = await getShortLivedTicker(env, state, instrumentName, shortLivedUniverse);
+    const streamedBook = streamed ? orderBookFromTicker(streamed) : null;
+    if (streamedBook) {
+      markMarketDataSource(state, "short_lived_stream", `${instrumentName} REST depth failed; used short-lived stream top of book. ${message}`);
+      return streamedBook;
+    }
+    markMarketDataSource(state, "stale_d1_fallback", `${instrumentName} live depth unavailable; used latest D1 top of book. ${message}`);
+    return orderBookFromFallback(fallback, instrumentName);
+  }
+}
+
+async function getShortLivedTicker(
+  env: Env,
+  state: PricingMarketDataState,
+  instrumentName: string,
+  instruments: string[]
+): Promise<DeribitTicker | null> {
+  const cached = state.shortLivedQuotes.get(instrumentName);
+  if (cached) return cached;
+  if (state.durableObjectUnavailable) return null;
+
+  const missing = normalizeInstruments(instruments, 500).filter(
+    (instrument) => !state.shortLivedAttemptedInstruments.has(instrument)
+  );
+  if (missing.length === 0) return state.shortLivedQuotes.get(instrumentName) ?? null;
+  for (const instrument of missing) state.shortLivedAttemptedInstruments.add(instrument);
+
+  const id = env.MARKET_DATA.idFromName("btc-options");
+  const stub = env.MARKET_DATA.get(id);
+  const response = await stub
+    .fetch("https://durable-object/refresh-quotes", {
+      method: "POST",
+      body: JSON.stringify({ instruments: missing, timeoutMs: SHORT_LIVED_STREAM_TIMEOUT_MS })
+    })
+    .catch((error) => {
+      const message = errorMessage(error);
+      if (isCloudflareLimitError(message)) state.durableObjectUnavailable = true;
+      state.degradedReasons.push(`Short-lived stream unavailable. ${message}`);
+      return null;
+    });
+  if (!response) return null;
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    const message = `HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
+    if (isCloudflareLimitError(message)) state.durableObjectUnavailable = true;
+    state.degradedReasons.push(`Short-lived stream unavailable. ${message}`);
+    return null;
+  }
+  const payload = await response.json().catch(() => null) as
+    | { quotes?: Record<string, DeribitTicker>; error?: string }
+    | null;
+  if (payload?.error) {
+    if (isCloudflareLimitError(payload.error)) state.durableObjectUnavailable = true;
+    state.degradedReasons.push(`Short-lived stream returned an error. ${payload.error}`);
+  }
+  for (const [instrument, quote] of Object.entries(payload?.quotes ?? {})) {
+    if (quote?.instrument_name) state.shortLivedQuotes.set(instrument, quote);
+  }
+  return state.shortLivedQuotes.get(instrumentName) ?? null;
+}
+
 async function getBtcUsdcSpotPrice(
   env: Env,
   client: DeribitClient,
   config: Awaited<ReturnType<typeof getPricingConfig>>
 ): Promise<number | null> {
-  if (config.marketDataMode === "hybrid_cache") {
-    const streamed = await getDurableObjectTicker(env, "BTC_USDC");
-    const spotPrice = spotPriceFromTicker(streamed?.quote);
-    if (spotPrice) return spotPrice;
-  }
   try {
     return spotPriceFromTicker(await client.btcUsdcSpotTicker());
   } catch {
+    if (config.marketDataMode === "hybrid_cache") {
+      const streamed = await getDurableObjectTicker(env, "BTC_USDC");
+      const spotPrice = spotPriceFromTicker(streamed?.quote);
+      if (spotPrice) return spotPrice;
+    }
     return null;
   }
 }
@@ -911,12 +1229,15 @@ async function getOrderBookForPricing(
   instrumentName: string,
   depth: number
 ): Promise<DeribitOrderBook> {
-  if (config.marketDataMode !== "hybrid_cache") {
-    return client.getOrderBook(instrumentName, depth);
+  try {
+    return await client.getOrderBook(instrumentName, depth);
+  } catch (error) {
+    if (config.marketDataMode === "hybrid_cache") {
+      const cached = await getDurableObjectOrderBook(env, instrumentName, depth, DEFAULT_DEPTH_CACHE_MAX_AGE_MS);
+      if (cached?.book) return cached.book;
+    }
+    throw error;
   }
-
-  const cached = await getDurableObjectOrderBook(env, instrumentName, depth, DEFAULT_DEPTH_CACHE_MAX_AGE_MS);
-  return cached?.book ?? client.getOrderBook(instrumentName, depth);
 }
 
 async function getBtcUsdcSpotMetadata(client: DeribitClient): Promise<
@@ -996,7 +1317,8 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
+  const marketData = createPricingMarketDataState();
+  const spotPrice = await getBtcUsdcSpotPriceForPricing(env, client, marketData, rows);
   const totalExpiriesScanned = countPppScannedExpiries(rows, normalized.expirationTimestamp);
   const durationGuardrailDays = getPppDurationGuardrailDays(normalized.runwayDays);
   const buildDiagnostics = (partial: Partial<PppPricingDiagnostics> = {}): PppPricingDiagnostics => ({
@@ -1036,28 +1358,44 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
         optimizedParticipationBps: null,
         optimizedProtectionBps: null
       },
-      diagnostics: buildDiagnostics()
+      diagnostics: buildDiagnostics(),
+      ...marketDataMetadata(marketData)
     };
   }
 
   const packages = buildPppMarketPackages(rows, spotPrice, normalized, nowMs);
   const depthCandidateCount = getPppDepthCandidateCount(normalized.selectorMode, config.maxDepthCandidates);
   const shortlisted = shortlistPppPackages(normalized, packages, nowMs, depthCandidateCount);
+  const fallbackByInstrument = new Map<string, PppMarketLegInput>();
+  for (const item of shortlisted) {
+    fallbackByInstrument.set(item.marketPackage.atmCall.instrumentName, item.marketPackage.atmCall);
+    fallbackByInstrument.set(item.marketPackage.atmPut.instrumentName, item.marketPackage.atmPut);
+    fallbackByInstrument.set(item.marketPackage.floorPut.instrumentName, item.marketPackage.floorPut);
+  }
+  const shortLivedUniverse = normalizeInstruments(["BTC_USDC", ...fallbackByInstrument.keys()], 500);
 
   const priced = [];
-  const bookCache = new Map<string, Promise<Awaited<ReturnType<DeribitClient["getOrderBook"]>>>>();
-  const getCachedOrderBook = (instrumentName: string) => {
-    const cached = bookCache.get(instrumentName);
+  const bookCache = new Map<string, Promise<DeribitOrderBook>>();
+  const getCachedOrderBook = (leg: PppMarketLegInput) => {
+    const cached = bookCache.get(leg.instrumentName);
     if (cached) return cached;
-    const next = getOrderBookForPricing(env, client, config, instrumentName, normalized.orderBookDepth);
-    bookCache.set(instrumentName, next);
+    const next = getOrderBookForQuote(
+      env,
+      client,
+      marketData,
+      leg.instrumentName,
+      normalized.orderBookDepth,
+      leg,
+      shortLivedUniverse
+    );
+    bookCache.set(leg.instrumentName, next);
     return next;
   };
   for (const item of shortlisted) {
     const [callBook, atmPutBook, floorPutBook] = await Promise.all([
-      getCachedOrderBook(item.marketPackage.atmCall.instrumentName),
-      getCachedOrderBook(item.marketPackage.atmPut.instrumentName),
-      getCachedOrderBook(item.marketPackage.floorPut.instrumentName)
+      getCachedOrderBook(item.marketPackage.atmCall),
+      getCachedOrderBook(item.marketPackage.atmPut),
+      getCachedOrderBook(item.marketPackage.floorPut)
     ]);
     const marketPackage: PppMarketPackageInput = {
       expirationTimestamp: item.marketPackage.expirationTimestamp,
@@ -1110,7 +1448,8 @@ async function pricePppRequest(payload: PppPricingRequest, env: Env) {
       optimizedParticipationBps: selected.optimizedParticipationBps,
       optimizedProtectionBps: selected.optimizedProtectionBps
     },
-    diagnostics
+    diagnostics,
+    ...marketDataMetadata(marketData)
   };
 }
 
@@ -1370,6 +1709,98 @@ async function getDurableObjectOrderBook(
   return response.json().then((data) => data as CachedOrderBookResult).catch(() => null);
 }
 
+function normalizeInstruments(instruments: Iterable<string | null | undefined>, max: number): string[] {
+  return Array.from(new Set(Array.from(instruments).map((instrument) => instrument?.trim()).filter(Boolean) as string[])).slice(
+    0,
+    max
+  );
+}
+
+function orderBookFromTicker(ticker: DeribitTicker): DeribitOrderBook | null {
+  const bidPrice = finitePositiveOrUndefined(ticker.best_bid_price);
+  const bidAmount = finitePositiveOrUndefined(ticker.best_bid_amount);
+  const askPrice = finitePositiveOrUndefined(ticker.best_ask_price);
+  const askAmount = finitePositiveOrUndefined(ticker.best_ask_amount);
+  const bids: BidAskLevel[] = bidPrice && bidAmount ? [[bidPrice, bidAmount]] : [];
+  const asks: BidAskLevel[] = askPrice && askAmount ? [[askPrice, askAmount]] : [];
+  if (bids.length === 0 && asks.length === 0) return null;
+  return {
+    ...ticker,
+    best_bid_price: bidPrice ?? ticker.best_bid_price ?? null,
+    best_bid_amount: bidAmount ?? ticker.best_bid_amount ?? null,
+    best_ask_price: askPrice ?? ticker.best_ask_price ?? null,
+    best_ask_amount: askAmount ?? ticker.best_ask_amount ?? null,
+    index_price: finitePositiveOrUndefined(ticker.index_price),
+    min_price: finitePositiveOrUndefined(ticker.min_price),
+    max_price: finitePositiveOrUndefined(ticker.max_price),
+    bids,
+    asks
+  };
+}
+
+function orderBookFromFallback(fallback: QuoteFallbackRow, instrumentName: string): DeribitOrderBook {
+  const bidPrice = fallbackNumber(fallback, "bid_price", "bidPrice");
+  const bidAmount = fallbackNumber(fallback, "bid_amount", "bidAmount");
+  const askPrice = fallbackNumber(fallback, "ask_price", "askPrice");
+  const askAmount = fallbackNumber(fallback, "ask_amount", "askAmount");
+  const bids: BidAskLevel[] = bidPrice && bidAmount ? [[bidPrice, bidAmount]] : [];
+  const asks: BidAskLevel[] = askPrice && askAmount ? [[askPrice, askAmount]] : [];
+  return {
+    instrument_name: fallback.instrument_name ?? fallback.instrumentName ?? instrumentName,
+    timestamp: fallbackNumber(fallback, "deribit_timestamp", "deribitTimestamp") ?? fallbackNumber(fallback, "ingested_at", "ingestedAt") ?? 0,
+    best_bid_price: bidPrice,
+    best_bid_amount: bidAmount,
+    best_ask_price: askPrice,
+    best_ask_amount: askAmount,
+    mark_price: fallbackNumber(fallback, "mark_price", "markPrice"),
+    last_price: fallbackNumber(fallback, "last_price", "lastPrice"),
+    open_interest: fallbackNumber(fallback, "open_interest", "openInterest"),
+    underlying_price: fallbackNumber(fallback, "underlying_price", "underlyingPrice"),
+    underlying_index: fallback.underlying_index ?? fallback.underlyingIndex ?? undefined,
+    interest_rate: fallbackNumber(fallback, "interest_rate", "interestRate"),
+    bids,
+    asks
+  };
+}
+
+function latestFallbackSpotPrice(rows: QuoteFallbackRow[]): number | null {
+  const candidates = rows
+    .map((row) => ({
+      price: fallbackNumber(row, "underlying_price", "underlyingPrice"),
+      timestamp: fallbackNumber(row, "deribit_timestamp", "deribitTimestamp") ?? fallbackNumber(row, "ingested_at", "ingestedAt") ?? 0
+    }))
+    .filter((item): item is { price: number; timestamp: number } => isPositiveFinite(item.price));
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => b.timestamp - a.timestamp)[0].price;
+}
+
+function fallbackNumber<TSnake extends keyof QuoteFallbackRow, TCamel extends keyof QuoteFallbackRow>(
+  row: QuoteFallbackRow,
+  snakeKey: TSnake,
+  camelKey: TCamel
+): number | null {
+  const value = row[snakeKey] ?? row[camelKey];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function finitePositiveOrUndefined(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "Unknown market data error");
+}
+
+function isCloudflareLimitError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("1027") ||
+    normalized.includes("daily request") ||
+    normalized.includes("free tier") ||
+    normalized.includes("durable object") && normalized.includes("limit")
+  );
+}
+
 function isAuthorized(request: Request, env: Env): boolean {
   if (!env.BACKEND_API_TOKEN) return true;
   const header = request.headers.get("authorization") ?? "";
@@ -1428,6 +1859,15 @@ function cors(response: Response): Response {
     headers
   });
 }
+
+export const __test__ = {
+  createPricingMarketDataState,
+  isCloudflareLimitError,
+  marketDataMetadata,
+  markMarketDataSource,
+  normalizeInstruments,
+  orderBookFromFallback
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

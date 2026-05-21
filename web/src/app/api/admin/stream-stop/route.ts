@@ -5,10 +5,10 @@ import { requireAdminApi } from "@/lib/server/admin";
 export async function POST(request: NextRequest) {
   const auth = await requireAdminApi();
   if (auth) return auth;
-  return proxyToWorker(request, "/api/admin/sync-market-data", () => ({
-      mock: true,
-      instruments: 128,
-      quotes: 128,
-      syncedAt: Date.now()
-    }));
+  return proxyToWorker(request, "/api/admin/stream-stop", () => ({
+    mock: true,
+    stopped: true,
+    connected: false,
+    subscribed: []
+  }));
 }

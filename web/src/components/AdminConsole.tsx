@@ -607,7 +607,7 @@ export function AdminConsole() {
           <Metric
             label="Market data mode"
             value={formatMarketDataMode(health?.marketDataMode ?? savedMarketDataMode)}
-            tone={(health?.marketDataMode ?? savedMarketDataMode) === "hybrid_cache" ? "ok" : "warn"}
+            tone={(health?.marketDataMode ?? savedMarketDataMode) === "legacy_rest" ? "ok" : "warn"}
           />
           <Metric label="Active instruments" value={health?.activeInstrumentCount ?? "-"} />
           <Metric label="Stored quotes" value={health?.quoteCount ?? "-"} />
@@ -663,7 +663,7 @@ export function AdminConsole() {
                   value={marketDataMode}
                   onChange={(event) => setMarketDataMode(event.target.value as MarketDataMode)}
                 >
-                  <option value="legacy_rest">Legacy REST rollback</option>
+                  <option value="legacy_rest">On-demand REST</option>
                   <option value="hybrid_cache">Hybrid cache</option>
                 </select>
               </label>
@@ -1696,7 +1696,7 @@ function formatAge(seconds: number | null | undefined): string {
 }
 
 function formatMarketDataMode(mode: PricingConfig["marketDataMode"] | undefined): string {
-  return mode === "hybrid_cache" ? "Hybrid cache" : "Legacy REST";
+  return mode === "hybrid_cache" ? "Hybrid cache" : "On-demand REST";
 }
 
 function CheckRow({ label, ok }: { label: string; ok: boolean }) {

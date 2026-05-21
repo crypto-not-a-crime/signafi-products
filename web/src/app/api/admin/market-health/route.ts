@@ -18,12 +18,11 @@ export async function GET(request: NextRequest) {
     summaryFreshnessSeconds: 180,
     summaryStaleCount: 0,
     liveFreshnessSeconds: 10,
-    liveTickerFreshCount: 128,
+    liveTickerFreshCount: 0,
     subscribedStreamCount: 0,
     depthCacheCount: 0,
     freshDepthCacheCount: 0,
     staleQuoteCount: 0,
-    streamStatus: { connected: false, memoryQuoteCount: 0 },
     d1FreeTierGuard: {
       quotePersistence: "mock",
       depthStorage: "mock",

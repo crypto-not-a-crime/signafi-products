@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   DcnCandidate,
   DcnPricingRequest,
@@ -78,6 +78,8 @@ export function LeversPage({
   const [expiryPrice, setExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  const fetchRequestIdRef = useRef(0);
 
   const isCall = productType === "sell_call";
   const copy = isCall ? callCopy : putCopy;
@@ -108,7 +110,7 @@ export function LeversPage({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void fetchPricing();
-    }, 250);
+    }, 400);
     return () => window.clearTimeout(timer);
   }, [
     investmentUsdt,
@@ -121,6 +123,10 @@ export function LeversPage({
     effectivePriorityLever,
     productType
   ]);
+
+  useEffect(() => {
+    return () => fetchAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (effectivePriorityLever && effectivePriorityLever !== priorityLever) {
@@ -149,6 +155,11 @@ export function LeversPage({
   }, [selectedCandidate?.instrumentName, selectedCandidate?.spotPrice, selectedCandidate?.strike]);
 
   async function fetchPricing() {
+    const requestId = fetchRequestIdRef.current + 1;
+    fetchRequestIdRef.current = requestId;
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
@@ -170,14 +181,20 @@ export function LeversPage({
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(pricingRequest)
+        body: JSON.stringify(pricingRequest),
+        signal: controller.signal
       });
       if (!response.ok) throw new Error(`Pricing failed with ${response.status}`);
-      setData(await response.json());
+      const nextData = await response.json();
+      if (requestId === fetchRequestIdRef.current && !controller.signal.aborted) setData(nextData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Pricing failed");
+      if (controller.signal.aborted) return;
+      if (requestId === fetchRequestIdRef.current) setError(err instanceof Error ? err.message : "Pricing failed");
     } finally {
-      setLoading(false);
+      if (requestId === fetchRequestIdRef.current) {
+        setLoading(false);
+        fetchAbortRef.current = null;
+      }
     }
   }
 
@@ -232,6 +249,7 @@ export function LeversPage({
   const selectedIsAlternative = Boolean(
     selectedCandidate && best && selectedCandidate.instrumentName !== best.instrumentName
   );
+  const selectedQuoteStatus = formatQuoteStatus(data, selectedCandidate?.checks.quoteFresh);
 
   const controlsPanel = (
     <div className="lever-panel">
@@ -431,7 +449,7 @@ export function LeversPage({
         </div>
         <div className="metric-card">
           <div className="sum-lbl">Quote status</div>
-          <div className="metric-value">{selectedCandidate?.checks.quoteFresh ? "Live" : "Checking"}</div>
+          <div className="metric-value">{selectedQuoteStatus}</div>
         </div>
       </div>
     </div>
@@ -529,6 +547,8 @@ export function LeversPage({
                   loading={loading}
                   error={error}
                   mock={Boolean(data?.mock)}
+                  marketDataSource={data?.marketDataSource}
+                  degradedReason={data?.degradedReason}
                   onRefresh={() => void fetchPricing()}
                   onSelect={setSelectedInstrumentName}
                   selectedInstrumentName={selectedCandidate?.instrumentName ?? null}
@@ -579,11 +599,20 @@ function getRecommendationCandidates(
   );
 }
 
+function formatQuoteStatus(data: DcnPricingResponse | null, quoteFresh: boolean | undefined) {
+  if (data?.mock) return "Mock";
+  if (data?.marketDataSource === "stale_d1_fallback") return "Fallback";
+  if (data?.marketDataSource === "short_lived_stream") return quoteFresh ? "Short stream" : "Fallback";
+  return quoteFresh ? "Live" : "Checking";
+}
+
 function RecommendationRail({
   bestInstrumentName,
   candidates,
+  degradedReason,
   hasData,
   loading,
+  marketDataSource,
   error,
   mock,
   onRefresh,
@@ -592,16 +621,26 @@ function RecommendationRail({
 }: {
   bestInstrumentName: string | null;
   candidates: DcnCandidate[];
+  degradedReason?: string;
   hasData: boolean;
   loading: boolean;
+  marketDataSource?: DcnPricingResponse["marketDataSource"];
   error: string | null;
   mock: boolean;
   onRefresh: () => void;
   onSelect: (instrumentName: string) => void;
   selectedInstrumentName: string | null;
 }) {
-  const statusLabel = !hasData ? "Checking" : mock ? "Mock" : "Live";
-  const statusClassName = !hasData || mock ? "status-warn" : "status-live";
+  const statusLabel = !hasData
+    ? "Checking"
+    : mock
+      ? "Mock"
+      : marketDataSource === "stale_d1_fallback"
+        ? "Fallback"
+        : marketDataSource === "short_lived_stream"
+          ? "Short stream"
+          : "Live";
+  const statusClassName = !hasData || mock || marketDataSource === "stale_d1_fallback" ? "status-warn" : "status-live";
 
   return (
     <aside className="recommendation-rail" aria-label="Top product recommendations">
@@ -621,7 +660,9 @@ function RecommendationRail({
           >
             {loading ? <span className="loading-spinner" aria-hidden="true" /> : "Refresh quotes"}
           </button>
-          <span className={`status-badge ${statusClassName}`}>{statusLabel}</span>
+          <span className={`status-badge ${statusClassName}`} title={degradedReason}>
+            {statusLabel}
+          </span>
         </div>
       </div>
       <p className="card-copy rail-copy">The best fit stays in view while you adjust the levers.</p>

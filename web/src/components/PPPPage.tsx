@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PppCandidate, PppPricingRequest, PppPricingResponse, PppPriorityLever, PppSelectorMode } from "@/types";
 import { formatPct, formatUsd } from "@/lib/format";
 import { getPppCandidateKey, getPppRecommendations } from "@/lib/ppp-recommendations";
@@ -29,6 +29,8 @@ export function PPPPage() {
   const [simulatorExpiryPrice, setSimulatorExpiryPrice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  const fetchRequestIdRef = useRef(0);
 
   const runwayDays = useMemo(() => durationOptions.find((item) => item.id === duration)?.days ?? 92, [duration]);
   const priorityOptions = useMemo(() => getPppPriorityOptions(selectorMode), [selectorMode]);
@@ -64,9 +66,13 @@ export function PPPPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void fetchPricing();
-    }, 250);
+    }, 400);
     return () => window.clearTimeout(timer);
   }, [investmentUsdt, runwayDays, protectionPct, participationPct, selectorMode, effectivePriorityLever]);
+
+  useEffect(() => {
+    return () => fetchAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (effectivePriorityLever && effectivePriorityLever !== priorityLever) {
@@ -87,6 +93,11 @@ export function PPPPage() {
   }, [simulatorRange]);
 
   async function fetchPricing() {
+    const requestId = fetchRequestIdRef.current + 1;
+    fetchRequestIdRef.current = requestId;
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
@@ -104,14 +115,20 @@ export function PPPPage() {
       const response = await fetch("/api/products/ppp/price", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(pricingRequest)
+        body: JSON.stringify(pricingRequest),
+        signal: controller.signal
       });
       if (!response.ok) throw new Error(`Pricing failed with ${response.status}`);
-      setData(await response.json());
+      const nextData = await response.json();
+      if (requestId === fetchRequestIdRef.current && !controller.signal.aborted) setData(nextData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Pricing failed");
+      if (controller.signal.aborted) return;
+      if (requestId === fetchRequestIdRef.current) setError(err instanceof Error ? err.message : "Pricing failed");
     } finally {
-      setLoading(false);
+      if (requestId === fetchRequestIdRef.current) {
+        setLoading(false);
+        fetchAbortRef.current = null;
+      }
     }
   }
 
@@ -327,8 +344,11 @@ export function PPPPage() {
                   >
                     {loading ? <span className="loading-spinner" aria-hidden="true" /> : "Refresh quotes"}
                   </button>
-                  <span className={`status-badge ${data?.mock || !data ? "status-warn" : "status-live"}`}>
-                    {data?.mock ? "Mock" : data ? "Live" : "Checking"}
+                  <span
+                    className={`status-badge ${data?.mock || !data || data.marketDataSource === "stale_d1_fallback" ? "status-warn" : "status-live"}`}
+                    title={data?.degradedReason}
+                  >
+                    {formatPppQuoteStatus(data, selectedCandidate?.checks.quoteFresh)}
                   </span>
                 </div>
               </div>
@@ -372,7 +392,7 @@ export function PPPPage() {
                   <Metric label="Duration" value={`${selectedCandidate?.dayCount ?? runwayDays} days`} />
                   <Metric label="BTC spot" value={formatUsd(selectedCandidate?.spotPrice)} />
                   <Metric label="Target margin" value={formatPct((selectedCandidate?.targetFirmMarginBps ?? 500) / 10000, 1)} />
-                  <Metric label="Quote status" value={selectedCandidate?.checks.quoteFresh ? "Live" : "Checking"} />
+                  <Metric label="Quote status" value={formatPppQuoteStatus(data, selectedCandidate?.checks.quoteFresh)} />
                 </div>
               </div>
               {data?.mock ? (
@@ -446,6 +466,14 @@ function PppRecommendationCard({
       </dl>
     </button>
   );
+}
+
+function formatPppQuoteStatus(data: PppPricingResponse | null, quoteFresh: boolean | undefined) {
+  if (!data) return "Checking";
+  if (data.mock) return "Mock";
+  if (data.marketDataSource === "stale_d1_fallback") return "Fallback";
+  if (data.marketDataSource === "short_lived_stream") return quoteFresh ? "Short stream" : "Fallback";
+  return quoteFresh ? "Live" : "Checking";
 }
 
 function PppClientPayoutSimulator({
