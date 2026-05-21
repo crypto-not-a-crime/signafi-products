@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { PppOfferSurfacePoint, PppOfferSurfaceRequest, PppOfferSurfaceResponse } from "@/types";
+import { readApiJson } from "@/lib/api-response";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 
 type ViewMode = "heatmap" | "surface";
@@ -33,7 +34,6 @@ export function AdminPppOfferSurface() {
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const didInitialLoadRef = useRef(false);
 
   const loadSurface = useCallback(async () => {
     setLoading(true);
@@ -56,11 +56,7 @@ export function AdminPppOfferSurface() {
         body: JSON.stringify(payload),
         cache: "no-store"
       });
-      const data = (await response.json()) as PppOfferSurfaceResponse & { error?: string };
-      if (!response.ok) {
-        setError(data.error ?? `PPP matrix failed with HTTP ${response.status}`);
-        return;
-      }
+      const data = await readApiJson<PppOfferSurfaceResponse>(response, "PPP matrix");
       setSurface(data);
       setSelectedPointId(data.bestPoint?.id ?? data.points[0]?.id ?? null);
     } catch (err) {
@@ -78,12 +74,6 @@ export function AdminPppOfferSurface() {
     participationRoundDownPct,
     targetFirmMarginPct
   ]);
-
-  useEffect(() => {
-    if (didInitialLoadRef.current) return;
-    didInitialLoadRef.current = true;
-    void loadSurface();
-  }, [loadSurface]);
 
   const selectedPoint = useMemo(() => {
     if (!surface) return null;
@@ -106,7 +96,7 @@ export function AdminPppOfferSurface() {
             <h2 className="card-title">PPP client offer matrix</h2>
             <p className="card-copy">
               Floor put strike and expiry define the hedge package. Each eligible cell shows the max client participation
-              that still passes target margin, depth, freshness, slippage, and delivery-fee checks.
+              that still passes target margin, top-of-book, freshness, and delivery-fee checks.
             </p>
           </div>
           <div className="yield-surface-actions">
@@ -153,13 +143,20 @@ export function AdminPppOfferSurface() {
 
         {surface?.diagnostics.truncated ? (
           <p className="card-copy ppp-matrix-note">
-            Display capped at {surface.diagnostics.maxCells} live-priced cells from {surface.diagnostics.totalRoughCells} rough
-            cells to keep the calculation responsive.
+            Display capped at {surface.diagnostics.maxCells} priced cells from {surface.diagnostics.totalRoughCells} rough
+            cells to keep the calculation responsive{surface.diagnostics.guardrailReason ? ` (${surface.diagnostics.guardrailReason}).` : "."}
+          </p>
+        ) : null}
+
+        {surface?.diagnostics.depthValidation === "not_validated" ? (
+          <p className="card-copy ppp-matrix-note">
+            Top-of-book estimate; full depth not validated.
           </p>
         ) : null}
 
         <div className="ppp-matrix-stage">
           {loading && !surface ? <div className="yield-chart-state">Calculating PPP offer matrix...</div> : null}
+          {!loading && !surface ? <div className="yield-chart-state">Matrix not loaded.</div> : null}
           {surface && viewMode === "heatmap" ? (
             <PppHeatmap
               pointsByCell={pointsByCell}
@@ -183,7 +180,7 @@ export function AdminPppOfferSurface() {
       </div>
 
       <div className="audit-grid yield-detail-grid">
-        <PppPointDetail point={selectedPoint} />
+        <PppPointDetail point={selectedPoint} pricingMode={surface?.diagnostics.pricingMode} />
         <div className="admin-card">
           <h2 className="card-title">Matrix notes</h2>
           <div className="soft-row">
@@ -197,6 +194,14 @@ export function AdminPppOfferSurface() {
           <div className="soft-row">
             <span>Source</span>
             <strong className="mono">{surface?.source ?? "-"}</strong>
+          </div>
+          <div className="soft-row">
+            <span>Pricing mode</span>
+            <strong className="mono">{formatPricingMode(surface?.diagnostics.pricingMode)}</strong>
+          </div>
+          <div className="soft-row">
+            <span>Depth validation</span>
+            <strong className="mono">{formatDepthValidation(surface?.diagnostics.depthValidation)}</strong>
           </div>
           <p className="card-copy" style={{ marginTop: 12 }}>
             Protection is displayed from the selected floor put strike. The PPP model still validates the actual put-spread
@@ -423,7 +428,13 @@ function PppOfferSurfaceChart({
   );
 }
 
-function PppPointDetail({ point }: { point: PppOfferSurfacePoint | null }) {
+function PppPointDetail({
+  point,
+  pricingMode
+}: {
+  point: PppOfferSurfacePoint | null;
+  pricingMode?: PppOfferSurfaceResponse["diagnostics"]["pricingMode"];
+}) {
   if (!point) {
     return (
       <div className="admin-card">
@@ -477,7 +488,7 @@ function PppPointDetail({ point }: { point: PppOfferSurfacePoint | null }) {
             <th>Leg</th>
             <th>Instrument</th>
             <th>Contracts</th>
-            <th>Avg price</th>
+            <th>{pricingMode === "d1_top_of_book" ? "Top price" : "Avg price"}</th>
           </tr>
         </thead>
         <tbody>
@@ -660,6 +671,22 @@ function formatLegRole(role: string): string {
 
 function formatCheckLabel(key: string): string {
   return key.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function formatPricingMode(mode: PppOfferSurfaceResponse["diagnostics"]["pricingMode"] | undefined): string {
+  if (mode === "d1_top_of_book") return "D1 top of book";
+  if (mode === "live_order_book") return "Live order book";
+  if (mode === "mock") return "Mock";
+  return "-";
+}
+
+function formatDepthValidation(
+  validation: PppOfferSurfaceResponse["diagnostics"]["depthValidation"] | undefined
+): string {
+  if (validation === "not_validated") return "Not validated";
+  if (validation === "validated") return "Validated";
+  if (validation === "mock") return "Mock";
+  return "-";
 }
 
 function scale(value: number, min: number, max: number, outMin: number, outMax: number): number {

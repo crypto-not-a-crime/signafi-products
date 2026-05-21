@@ -45,7 +45,8 @@ import {
   buildPppMarketPackages,
   buildPppOfferSurfaceMarketPackages,
   countPppScannedExpiries,
-  limitPppOfferSurfacePackages
+  limitPppOfferSurfacePackages,
+  withTopOfBookPppDepth
 } from "./pricing/ppp-market";
 import {
   buildPppOfferSurfaceResponse,
@@ -1222,6 +1223,17 @@ async function getBtcUsdcSpotPrice(
   }
 }
 
+async function getBtcUsdcSpotPriceForAdminSurface(
+  client: DeribitClient,
+  fallbackRows: QuoteFallbackRow[] = []
+): Promise<number | null> {
+  try {
+    return spotPriceFromTicker(await client.btcUsdcSpotTicker());
+  } catch {
+    return latestFallbackSpotPrice(fallbackRows);
+  }
+}
+
 async function getOrderBookForPricing(
   env: Env,
   client: DeribitClient,
@@ -1466,9 +1478,11 @@ async function pricePppOfferSurfaceRequest(payload: PppOfferSurfaceRequest, env:
   }
 
   const client = new DeribitClient(env.DERIBIT_BASE_URL, env.DERIBIT_PROXY_TOKEN);
-  const spotPrice = await getBtcUsdcSpotPrice(env, client, config);
+  const spotPrice = await getBtcUsdcSpotPriceForAdminSurface(client, rows);
   const totalExpiriesScanned = countPppScannedExpiries(rows);
   const emptyDiagnostics = {
+    pricingMode: "d1_top_of_book" as const,
+    depthValidation: "not_validated" as const,
     totalExpiriesScanned,
     totalRoughCells: 0,
     livePricedCells: 0,
@@ -1502,29 +1516,9 @@ async function pricePppOfferSurfaceRequest(payload: PppOfferSurfaceRequest, env:
   );
   const limitedPackages = limitPppOfferSurfacePackages(roughPackages, normalized.maxCells);
   const priced = [];
-  const bookCache = new Map<string, Promise<Awaited<ReturnType<DeribitClient["getOrderBook"]>>>>();
-  const getCachedOrderBook = (instrumentName: string) => {
-    const cached = bookCache.get(instrumentName);
-    if (cached) return cached;
-    const next = getOrderBookForPricing(env, client, config, instrumentName, normalized.orderBookDepth);
-    bookCache.set(instrumentName, next);
-    return next;
-  };
 
   for (const item of limitedPackages) {
-    const [callBook, atmPutBook, floorPutBook] = await Promise.all([
-      getCachedOrderBook(item.atmCall.instrumentName),
-      getCachedOrderBook(item.atmPut.instrumentName),
-      getCachedOrderBook(item.floorPut.instrumentName)
-    ]);
-    const marketPackage: PppMarketPackageInput = {
-      expirationTimestamp: item.expirationTimestamp,
-      spotPrice,
-      candidateProtectionLevel: item.floorProtectionLevel,
-      atmCall: rowToPppMarketLeg(item.atmCall, callBook.bids, callBook.asks, callBook.timestamp),
-      atmPut: rowToPppMarketLeg(item.atmPut, atmPutBook.bids, atmPutBook.asks, atmPutBook.timestamp),
-      floorPut: rowToPppMarketLeg(item.floorPut, floorPutBook.bids, floorPutBook.asks, floorPutBook.timestamp)
-    };
+    const marketPackage = withTopOfBookPppDepth(item);
     priced.push(
       calculatePppCandidate(
         {
@@ -1550,10 +1544,13 @@ async function pricePppOfferSurfaceRequest(payload: PppOfferSurfaceRequest, env:
       totalExpiriesScanned,
       totalRoughCells: roughPackages.length,
       livePricedCells: priced.length,
-      uniqueOrderBooksFetched: bookCache.size,
+      uniqueOrderBooksFetched: 0,
       pricingElapsedMs: Date.now() - startedAtMs,
       truncated: limitedPackages.length < roughPackages.length,
-      maxCells: normalized.maxCells
+      maxCells: normalized.maxCells,
+      pricingMode: "d1_top_of_book",
+      depthValidation: "not_validated",
+      guardrailReason: limitedPackages.length < roughPackages.length ? "max_cells" : undefined
     }
   });
 }

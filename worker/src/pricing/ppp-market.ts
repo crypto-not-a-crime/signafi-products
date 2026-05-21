@@ -246,6 +246,25 @@ export function limitPppOfferSurfacePackages(
   });
 }
 
+export function withTopOfBookPppDepth(packageInput: PppMarketPackageInput): PppMarketPackageInput {
+  const depth = 1_000_000_000;
+  return {
+    ...packageInput,
+    atmCall: {
+      ...packageInput.atmCall,
+      asks: packageInput.atmCall.askPrice ? [[packageInput.atmCall.askPrice, depth]] : packageInput.atmCall.asks
+    },
+    atmPut: {
+      ...packageInput.atmPut,
+      bids: packageInput.atmPut.bidPrice ? [[packageInput.atmPut.bidPrice, depth]] : packageInput.atmPut.bids
+    },
+    floorPut: {
+      ...packageInput.floorPut,
+      asks: packageInput.floorPut.askPrice ? [[packageInput.floorPut.askPrice, depth]] : packageInput.floorPut.asks
+    }
+  };
+}
+
 function groupRowsByExpiry(rows: PppOptionCandidateRow[]): Map<number, PppOptionCandidateRow[]> {
   const byExpiry = new Map<number, PppOptionCandidateRow[]>();
   for (const row of rows) {
@@ -274,22 +293,7 @@ function getPppExpiryMarket(
 }
 
 function withRoughPppDepth(packageInput: PppMarketPackageInput): PppMarketPackageInput {
-  const depth = 1_000_000_000;
-  return {
-    ...packageInput,
-    atmCall: {
-      ...packageInput.atmCall,
-      asks: packageInput.atmCall.askPrice ? [[packageInput.atmCall.askPrice, depth]] : packageInput.atmCall.asks
-    },
-    atmPut: {
-      ...packageInput.atmPut,
-      bids: packageInput.atmPut.bidPrice ? [[packageInput.atmPut.bidPrice, depth]] : packageInput.atmPut.bids
-    },
-    floorPut: {
-      ...packageInput.floorPut,
-      asks: packageInput.floorPut.askPrice ? [[packageInput.floorPut.askPrice, depth]] : packageInput.floorPut.asks
-    }
-  };
+  return withTopOfBookPppDepth(packageInput);
 }
 
 function findHighestStrikeAtOrBelow(rows: PppOptionCandidateRow[], target: number): PppOptionCandidateRow | null {

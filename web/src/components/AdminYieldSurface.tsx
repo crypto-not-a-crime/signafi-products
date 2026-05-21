@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { YieldSurfacePoint, YieldSurfaceResponse } from "@/types";
+import { readApiJson } from "@/lib/api-response";
 import { formatNumber, formatPct, formatUsd } from "@/lib/format";
 
 type OptionType = "put" | "call";
@@ -75,6 +76,8 @@ const SURFACE_SMOOTHING_PASSES = 3;
 const SURFACE_SMOOTHING_CENTER_WEIGHT = 0.6;
 const DEFAULT_CAMERA_POSITION = new THREE.Vector3(10.8, 7.4, -11.6);
 const DEFAULT_CAMERA_TARGET = new THREE.Vector3(0.4, SURFACE_HEIGHT * 0.42, 0.25);
+const SURFACE_CACHE_TTL_MS = 60_000;
+const yieldSurfaceCache = new Map<OptionType, { payload: YieldSurfaceResponse; cachedAt: number }>();
 
 export function AdminYieldSurface() {
   const [optionType, setOptionType] = useState<OptionType>("put");
@@ -84,18 +87,25 @@ export function AdminYieldSurface() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadSurface = useCallback(async (nextType: OptionType = optionType) => {
+  const loadSurface = useCallback(async (nextType: OptionType = optionType, options: { force?: boolean } = {}) => {
+    const cached = yieldSurfaceCache.get(nextType);
+    if (!options.force && cached && Date.now() - cached.cachedAt <= SURFACE_CACHE_TTL_MS) {
+      setSurface(cached.payload);
+      setControls(defaultControlsForSurface(cached.payload));
+      setError(null);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       const response = await fetch(`/api/admin/yield-surface?type=${nextType}`, { cache: "no-store" });
-      const payload = (await response.json()) as YieldSurfaceResponse & { error?: string };
-      if (!response.ok) {
-        setError(payload.error ?? `Yield surface failed with HTTP ${response.status}`);
-        return;
-      }
+      const payload = await readApiJson<YieldSurfaceResponse>(response, "Yield surface");
+      yieldSurfaceCache.set(nextType, { payload, cachedAt: Date.now() });
       setSurface(payload);
       setControls(defaultControlsForSurface(payload));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Yield surface failed");
     } finally {
       setLoading(false);
     }
@@ -114,12 +124,10 @@ export function AdminYieldSurface() {
         headers: { "content-type": "application/json" },
         cache: "no-store"
       });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        setError(payload.error ?? `Market sync failed with HTTP ${response.status}`);
-        return;
-      }
-      await loadSurface(optionType);
+      await readApiJson<unknown>(response, "Market sync");
+      await loadSurface(optionType, { force: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Market sync failed");
     } finally {
       setRefreshing(false);
     }

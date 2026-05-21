@@ -85,6 +85,8 @@ export interface PppOfferSurfaceFloorRow {
 }
 
 export interface PppOfferSurfaceDiagnostics {
+  pricingMode: "d1_top_of_book" | "live_order_book" | "mock";
+  depthValidation: "not_validated" | "validated" | "mock";
   totalExpiriesScanned: number;
   totalRoughCells: number;
   livePricedCells: number;
@@ -95,6 +97,7 @@ export interface PppOfferSurfaceDiagnostics {
   truncated: boolean;
   maxCells: number;
   latestQuoteAgeSeconds: number | null;
+  guardrailReason?: string;
 }
 
 export interface PppOfferSurfaceResponse {

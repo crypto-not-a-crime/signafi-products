@@ -6,6 +6,7 @@ import {
 } from "../src/pricing/ppp-offer-surface";
 import {
   buildPppOfferSurfaceMarketPackages,
+  withTopOfBookPppDepth,
   type PppOptionCandidateRow
 } from "../src/pricing/ppp-market";
 import { calculatePppCandidate, type PppCandidate, type PppMarketPackageInput } from "../src/pricing/ppp";
@@ -40,6 +41,29 @@ describe("PPP offer surface market packages", () => {
     expect(packages.every((item) => item.atmCall.strike === 79000)).toBe(true);
     expect(packages.every((item) => item.atmPut.strike === 79000)).toBe(true);
     expect(packages[0].floorProtectionBps).toBe(Math.round((62000 / SPOT) * 10000));
+  });
+
+  it("can price surface cells from top-of-book rows without full order-book levels", () => {
+    const market = withTopOfBookPppDepth({
+      ...workbookMarket(),
+      atmCall: { ...workbookMarket().atmCall, askAmount: 0.1, asks: [] },
+      atmPut: { ...workbookMarket().atmPut, bidAmount: 0.1, bids: [] },
+      floorPut: { ...workbookMarket().floorPut, askAmount: 0.1, asks: [] }
+    });
+    const candidate = calculatePppCandidate(
+      {
+        investmentUsdt: 1_000_000,
+        targetFirmMarginBps: 500,
+        quoteFreshnessSeconds: 10,
+        maxSlippageBps: 500,
+        nowMs: NOW
+      },
+      market
+    );
+
+    expect(candidate.legs.every((leg) => leg.depth.sufficientDepth)).toBe(true);
+    expect(candidate.legs.every((leg) => leg.depth.fills.length <= 1)).toBe(true);
+    expect(candidate.legs.find((leg) => leg.role === "long_call")?.averagePrice).toBe(0.152);
   });
 });
 
@@ -85,6 +109,8 @@ describe("PPP offer surface response", () => {
     expect(response.points.filter((point) => point.frontier).map((point) => point.floorPutStrike).sort()).toEqual([62000, 66000]);
     expect(response.diagnostics.eligibleCells).toBe(3);
     expect(response.diagnostics.uniqueOrderBooksFetched).toBe(6);
+    expect(response.diagnostics.pricingMode).toBe("d1_top_of_book");
+    expect(response.diagnostics.depthValidation).toBe("not_validated");
   });
 
   it("carries candidate eligibility checks into each surface point", () => {
@@ -184,6 +210,8 @@ function diagnostics(
   overrides: Partial<Omit<PppOfferSurfaceDiagnostics, "eligibleCells" | "frontierCells" | "latestQuoteAgeSeconds">>
 ): Omit<PppOfferSurfaceDiagnostics, "eligibleCells" | "frontierCells" | "latestQuoteAgeSeconds"> {
   return {
+    pricingMode: "d1_top_of_book",
+    depthValidation: "not_validated",
     totalExpiriesScanned: 1,
     totalRoughCells: 0,
     livePricedCells: 0,
