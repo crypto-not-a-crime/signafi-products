@@ -86,7 +86,6 @@ export interface PppOfferSurfaceFloorRow {
 
 export interface PppOfferSurfaceDiagnostics {
   pricingMode: "d1_top_of_book" | "live_order_book" | "mock";
-  depthValidation: "not_validated" | "validated" | "mock";
   totalExpiriesScanned: number;
   totalRoughCells: number;
   livePricedCells: number;
@@ -190,7 +189,7 @@ export function buildPppOfferSurfaceResponse({
   diagnostics: Omit<PppOfferSurfaceDiagnostics, "eligibleCells" | "frontierCells" | "latestQuoteAgeSeconds">;
   mock?: boolean;
 }): PppOfferSurfaceResponse {
-  const basePoints = candidates.map(candidateToPoint);
+  const basePoints = candidates.map((candidate) => candidateToPoint(candidate, diagnostics.pricingMode));
   const frontierIds = new Set(findFrontierPointIds(basePoints));
   const bestPointId = selectBestPoint(basePoints)?.id ?? null;
   const points = basePoints.map((point) => ({
@@ -235,7 +234,10 @@ export function buildPppOfferSurfaceResponse({
   };
 }
 
-function candidateToPoint(candidate: PppCandidate): PppOfferSurfacePoint {
+function candidateToPoint(
+  candidate: PppCandidate,
+  pricingMode: PppOfferSurfaceDiagnostics["pricingMode"]
+): PppOfferSurfacePoint {
   const floorProtection = candidate.spotPrice > 0 ? candidate.floorPutStrike / candidate.spotPrice : 0;
   const floorProtectionBps = Math.round(floorProtection * 10000);
   const quotedProtection = candidate.quotedProtection ?? candidate.protectionLevel ?? null;
@@ -249,6 +251,7 @@ function candidateToPoint(candidate: PppCandidate): PppOfferSurfacePoint {
     marginHeadroomUsdt === null || candidate.investmentUsdt <= 0 || candidate.dayCount <= 0
       ? null
       : (marginHeadroomUsdt / candidate.investmentUsdt / candidate.dayCount) * 365 * 10000;
+  const checks = pricingMode === "d1_top_of_book" ? topOfBookMatrixChecks(candidate.checks) : candidate.checks;
 
   return {
     id: [
@@ -279,10 +282,10 @@ function candidateToPoint(candidate: PppCandidate): PppOfferSurfacePoint {
     netOptionCashUsdt: candidate.netOptionCashUsdt,
     quoteAgeSeconds: candidate.quoteAgeSeconds,
     maxSlippagePct: candidate.maxSlippagePct,
-    eligible: candidate.eligible,
+    eligible: Object.values(checks).every(Boolean),
     best: false,
     frontier: false,
-    checks: candidate.checks,
+    checks,
     atmCallStrike: candidate.atmCallStrike,
     atmPutStrike: candidate.atmPutStrike,
     spotPrice: candidate.spotPrice,
@@ -300,6 +303,14 @@ function candidateToPoint(candidate: PppCandidate): PppOfferSurfacePoint {
       slippagePct: leg.depth.slippagePct
     }))
   };
+}
+
+function topOfBookMatrixChecks(checks: Record<string, boolean>): Record<string, boolean> {
+  const businessChecks = { ...checks };
+  delete businessChecks.quoteFresh;
+  delete businessChecks.sufficientDepth;
+  delete businessChecks.slippageWithinLimit;
+  return businessChecks;
 }
 
 function selectBestPoint(points: PppOfferSurfacePoint[]): PppOfferSurfacePoint | null {

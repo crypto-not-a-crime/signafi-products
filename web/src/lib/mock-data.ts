@@ -629,9 +629,6 @@ export function mockPppOfferSurfaceResponse(input: Record<string, unknown> = {})
         checks: {
           spotValid: true,
           expiryValid: true,
-          quoteFresh: true,
-          sufficientDepth: true,
-          slippageWithinLimit: true,
           participationPositive: quotedParticipation > 0,
           targetProfitMet: eligible,
           floorAtOrAboveProtection: true,
@@ -726,7 +723,6 @@ export function mockPppOfferSurfaceResponse(input: Record<string, unknown> = {})
     maxMarginHeadroomUsdt: marginHeadroom.length ? Math.max(...marginHeadroom) : null,
     diagnostics: {
       pricingMode: "mock",
-      depthValidation: "mock",
       totalExpiriesScanned: dtes.length,
       totalRoughCells: dtes.length * floorStrikes.length,
       livePricedCells: points.length,

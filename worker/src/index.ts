@@ -1482,7 +1482,6 @@ async function pricePppOfferSurfaceRequest(payload: PppOfferSurfaceRequest, env:
   const totalExpiriesScanned = countPppScannedExpiries(rows);
   const emptyDiagnostics = {
     pricingMode: "d1_top_of_book" as const,
-    depthValidation: "not_validated" as const,
     totalExpiriesScanned,
     totalRoughCells: 0,
     livePricedCells: 0,
@@ -1549,7 +1548,6 @@ async function pricePppOfferSurfaceRequest(payload: PppOfferSurfaceRequest, env:
       truncated: limitedPackages.length < roughPackages.length,
       maxCells: normalized.maxCells,
       pricingMode: "d1_top_of_book",
-      depthValidation: "not_validated",
       guardrailReason: limitedPackages.length < roughPackages.length ? "max_cells" : undefined
     }
   });

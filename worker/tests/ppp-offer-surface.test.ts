@@ -110,10 +110,53 @@ describe("PPP offer surface response", () => {
     expect(response.diagnostics.eligibleCells).toBe(3);
     expect(response.diagnostics.uniqueOrderBooksFetched).toBe(6);
     expect(response.diagnostics.pricingMode).toBe("d1_top_of_book");
-    expect(response.diagnostics.depthValidation).toBe("not_validated");
   });
 
-  it("carries candidate eligibility checks into each surface point", () => {
+  it("excludes freshness, depth, and slippage checks from top-of-book matrix eligibility", () => {
+    const request = normalizePppOfferSurfaceRequest(
+      {
+        investmentUsdt: 1_000_000,
+        targetFirmMarginBps: 500,
+        includeDeliveryFees: false
+      },
+      {
+        pppTargetFirmMarginBps: 500,
+        pppIncludeDeliveryFees: false,
+        pppParticipationRoundDownBps: 0,
+        quoteFreshnessSeconds: 10,
+        defaultOrderBookDepth: 100,
+        maxSlippageBps: 500
+      }
+    );
+    const candidate = calculatePppCandidate({ ...request, nowMs: NOW }, workbookMarket());
+    const depthFailed = {
+      ...candidate,
+      eligible: false,
+      checks: {
+        ...candidate.checks,
+        quoteFresh: false,
+        sufficientDepth: false,
+        slippageWithinLimit: false
+      }
+    };
+    const response = buildPppOfferSurfaceResponse({
+      nowMs: NOW,
+      request,
+      candidates: [depthFailed],
+      spotPrice: SPOT,
+      source: "d1_latest",
+      diagnostics: diagnostics({ totalRoughCells: 1, livePricedCells: 1 })
+    });
+
+    expect(response.points[0].eligible).toBe(true);
+    expect(response.points[0].checks.quoteFresh).toBeUndefined();
+    expect(response.points[0].checks.sufficientDepth).toBeUndefined();
+    expect(response.points[0].checks.slippageWithinLimit).toBeUndefined();
+    expect(response.diagnostics.eligibleCells).toBe(1);
+    expect(response.bestPoint?.id).toBe(response.points[0].id);
+  });
+
+  it("carries business check failures into each surface point", () => {
     const request = normalizePppOfferSurfaceRequest({}, {
       pppTargetFirmMarginBps: 500,
       pppIncludeDeliveryFees: true,
@@ -211,7 +254,6 @@ function diagnostics(
 ): Omit<PppOfferSurfaceDiagnostics, "eligibleCells" | "frontierCells" | "latestQuoteAgeSeconds"> {
   return {
     pricingMode: "d1_top_of_book",
-    depthValidation: "not_validated",
     totalExpiriesScanned: 1,
     totalRoughCells: 0,
     livePricedCells: 0,

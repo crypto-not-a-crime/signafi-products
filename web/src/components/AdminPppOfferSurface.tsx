@@ -96,7 +96,7 @@ export function AdminPppOfferSurface() {
             <h2 className="card-title">PPP client offer matrix</h2>
             <p className="card-copy">
               Floor put strike and expiry define the hedge package. Each eligible cell shows the max client participation
-              that still passes target margin, top-of-book, freshness, and delivery-fee checks.
+              from indicative top-of-book pricing and the PPP business checks.
             </p>
           </div>
           <div className="yield-surface-actions">
@@ -148,12 +148,6 @@ export function AdminPppOfferSurface() {
           </p>
         ) : null}
 
-        {surface?.diagnostics.depthValidation === "not_validated" ? (
-          <p className="card-copy ppp-matrix-note">
-            Top-of-book estimate; full depth not validated.
-          </p>
-        ) : null}
-
         <div className="ppp-matrix-stage">
           {loading && !surface ? <div className="yield-chart-state">Calculating PPP offer matrix...</div> : null}
           {!loading && !surface ? <div className="yield-chart-state">Matrix not loaded.</div> : null}
@@ -199,13 +193,9 @@ export function AdminPppOfferSurface() {
             <span>Pricing mode</span>
             <strong className="mono">{formatPricingMode(surface?.diagnostics.pricingMode)}</strong>
           </div>
-          <div className="soft-row">
-            <span>Depth validation</span>
-            <strong className="mono">{formatDepthValidation(surface?.diagnostics.depthValidation)}</strong>
-          </div>
           <p className="card-copy" style={{ marginTop: 12 }}>
-            Protection is displayed from the selected floor put strike. The PPP model still validates the actual put-spread
-            implied floor, so the detail panel shows both the client-facing protection and the hedge-implied floor.
+            Protection is displayed from the selected floor put strike. This matrix uses indicative top-of-book pricing;
+            quote age remains visible, but depth, slippage, and freshness do not gate the surface.
           </p>
         </div>
       </div>
@@ -677,15 +667,6 @@ function formatPricingMode(mode: PppOfferSurfaceResponse["diagnostics"]["pricing
   if (mode === "d1_top_of_book") return "D1 top of book";
   if (mode === "live_order_book") return "Live order book";
   if (mode === "mock") return "Mock";
-  return "-";
-}
-
-function formatDepthValidation(
-  validation: PppOfferSurfaceResponse["diagnostics"]["depthValidation"] | undefined
-): string {
-  if (validation === "not_validated") return "Not validated";
-  if (validation === "validated") return "Validated";
-  if (validation === "mock") return "Mock";
   return "-";
 }
 
